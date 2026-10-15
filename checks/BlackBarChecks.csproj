@@ -1,0 +1,23 @@
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <OutputPath>bin\</OutputPath>
+    <AssemblyName>BlackBarChecks</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <PackageReference Include="Mono.Cecil" Version="0.11.4" />
+    <Compile Include="BlackBarChecks.cs" />
+    <Compile Include="IronPillReservationChecks.cs" />
+    <Compile Include="GearOptimizerChecks.cs" />
+    <Compile Include="GearSearchChecks.cs" />
+    <Compile Include="GearEquipChecks.cs" />
+    <Compile Include="GearSingleStatChecks.cs" />
+    <Compile Include="..\NGUInjector\Managers\BloodGoalEstimate.cs">
+      <Link>BloodGoalEstimate.cs</Link>
+    </Compile>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

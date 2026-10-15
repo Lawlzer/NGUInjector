@@ -1,23 +1,28 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
-using System.Text;
 
 namespace NGUInjector.Managers
 {
     internal static class MoneyPitManager
     {
-        internal static void CheckMoneyPit()
-        {
-            if (Main.Character.pit.pitTime.totalseconds < Main.Character.pitController.currentPitTime()) return;
-            if (Main.Character.realGold < Main.Settings.MoneyPitThreshold) return;
-            if (Main.Character.realGold < 1e5) return;
+        private const double MinimumMoneyPitGold = 200000.0;
 
-            if (Main.Settings.MoneyPitLoadout.Length > 0)
-            {
-                if (!LoadoutManager.TryMoneyPitSwap()) return;
-            }
+        internal static string CheckMoneyPit()
+        {
+            if (Main.Character.pit.pitTime.totalseconds < Main.Character.pitController.currentPitTime())
+                return "Money Pit skipped: pit is not ready.";
+
+            var effectiveThreshold = Math.Max(MinimumMoneyPitGold, Main.Settings.MoneyPitThreshold);
+            if (Main.Character.realGold <= effectiveThreshold)
+                return $"Money Pit skipped: gold is below {effectiveThreshold:0}.";
+
+            DiggerManager.UpdateCheapestDigger(true);
+            DiggerManager.UpgradeCheapestDigger(true, effectiveThreshold);
+
+            if (Main.Character.realGold <= effectiveThreshold)
+                return $"Money Pit skipped: digger upgrades used gold down to the {effectiveThreshold:0} reserve.";
+
+            string result;
             if (Main.Character.realGold >= 1e50 && Main.Settings.ManageMagic && Main.Character.wishes.wishes[4].level > 0)
             {
                 Main.Character.removeMostMagic();
@@ -27,40 +32,41 @@ namespace NGUInjector.Managers
                 }
 
                 if (!DiggerManager.CanSwap())
-                    return;
+                    return "Money Pit skipped: digger swap is locked.";
                 DiggerManager.SaveDiggers();
                 DiggerManager.EquipDiggers(new[] {10});
-                DoMoneyPit();
+                result = DoMoneyPit();
                 DiggerManager.RestoreDiggers();
             }
             else
             {
-                DoMoneyPit();
+                result = DoMoneyPit();
             }
-            
-            if (Main.Settings.MoneyPitLoadout.Length > 0)
-            {
-                LoadoutManager.RestoreGear();
-                LoadoutManager.ReleaseLock();
-            }
+
+            return result;
         }
 
-        private static void DoMoneyPit()
+        private static string DoMoneyPit()
         {
             var controller = Main.Character.pitController;
             typeof(PitController).GetMethod("engage", BindingFlags.NonPublic | BindingFlags.Instance)
                 ?.Invoke(controller, null);
 
-            Main.LogPitSpin($"Money Pit Reward: {controller.pitText.text}");
+            var result = $"Money Pit Reward: {controller.pitText.text}";
+            Main.LogPitSpin(result);
+            return result;
         }
 
-        internal static void DoDailySpin()
+        internal static string DoDailySpin()
         {
-            if (Main.Character.daily.spinTime.totalseconds < Main.Character.dailyController.targetSpinTime()) return;
+            if (Main.Character.daily.spinTime.totalseconds < Main.Character.dailyController.targetSpinTime())
+                return "Daily Spin skipped: spin is not ready.";
 
             Main.Character.dailyController.startNoBullshitSpin();
             var result = Main.Character.dailyController.outcomeText.text;
-            Main.LogPitSpin($"Daily Spin Reward: {result}");
+            var message = $"Daily Spin Reward: {result}";
+            Main.LogPitSpin(message);
+            return message;
         }
     }
 }

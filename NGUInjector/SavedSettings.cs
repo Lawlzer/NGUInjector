@@ -2,12 +2,23 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
+using SimpleJSON;
 using UnityEngine;
 
 namespace NGUInjector
 {
+    [Serializable]
+    public class IronPillHistoryEntry
+    {
+        public string CastAtUtc;
+        public double WaitSeconds;
+        public double Worth;
+        public double RebirthSeconds;
+    }
+
     [Serializable]
     public class SavedSettings
     {
@@ -93,9 +104,35 @@ namespace NGUInjector
         [SerializeField] private int[] _specialBoostBlacklist;
         [SerializeField] private int[] _blacklistedBosses;
         [SerializeField] private bool _hackAdvance;
+        [SerializeField] private bool _useCustomRebirthPlan;
+        [SerializeField] private string _customPlanFile;
+        [SerializeField] private bool _customAdventureEnabled;
+        [SerializeField] private int _customAdventureMode;
+        [SerializeField] private int _customAdventureZone;
+        [SerializeField] private bool _customAdventureGoldPush;
+        [SerializeField] private bool _customAutoMoneyPitEnabled;
+        [SerializeField] private bool _customAutoBoostEnabled;
+        [SerializeField] private int _customAutoBoostCubePowerRatio;
+        [SerializeField] private int _customAugmentsBloodEstimateSeconds;
+        [SerializeField] private bool _customAutoBloodSpellsEnabled;
+        [SerializeField] private int _customBloodSpaghettiGoalPercent;
+        [SerializeField] private int _customBloodCounterfeitGoalPercent;
+        [SerializeField] private int _customIronPillSaveSeconds = 900;
+        [SerializeField] private double _customIronPillMinWorth;
+        [SerializeField] private IronPillHistoryEntry[] _customIronPillHistory = new IronPillHistoryEntry[0];
+        [SerializeField] private bool _manualAdventureEnabled;
+        [SerializeField] private int _manualAdventureZone;
+        [SerializeField] private bool _manualAdventureBossOnly;
+        [SerializeField] private bool _manualAdventureRecoverHealth = true;
+        [SerializeField] private bool _manualAdventurePrecastBuffs;
+        [SerializeField] private bool _manualAdventureFastCombat = true;
+        [SerializeField] private bool _manualAdventureBeastMode;
+        [SerializeField] private bool _manualAdventureAllowFallback = true;
 
         private readonly string _savePath;
         private bool _disableSave;
+        private string _lastAppliedText;
+        private JSONObject _sourceJson;
 
         public SavedSettings(string dir)
         {
@@ -108,19 +145,89 @@ namespace NGUInjector
             if (_savePath == null) return;
             if (_disableSave) return;
             Main.Log("Saving Settings");
-            Main.IgnoreNextChange = true;
-            var serialized = JsonUtility.ToJson(this, true);
-            using (var writer = new StreamWriter(_savePath))
-            {
-                writer.Write(serialized);
-                writer.Flush();
-            }
+            var serialized = SerializeWithUnknownFields(this);
+            JsonFiles.WriteAtomic(_savePath, serialized);
+            _lastAppliedText = serialized;
             Main.UpdateForm(this);
+        }
+
+        internal void ApplyPatch(JSONNode patch)
+        {
+            if (patch == null || !patch.IsObject)
+                throw new FormatException("args.patch must be a JSON object using serialized settings field names.");
+            if (_savePath == null || _disableSave)
+                throw new InvalidOperationException("Settings saving is unavailable.");
+
+            var merged = JsonFiles.ParseObject(JsonUtility.ToJson(this));
+            foreach (var item in patch.Linq)
+            {
+                if (item.Key == "_customIronPillHistory")
+                    throw new FormatException("Iron Pill history is backend-owned and read-only.");
+                var field = typeof(SavedSettings).GetField(item.Key, BindingFlags.NonPublic | BindingFlags.Instance);
+                if (field == null || !Attribute.IsDefined(field, typeof(SerializeField)))
+                    throw new FormatException("Unknown settings field: " + item.Key);
+                var type = field.FieldType;
+                var values = type.IsArray && item.Value.IsArray ? item.Value.Children.ToArray() : new[] {item.Value};
+                if (type.IsArray && !item.Value.IsArray)
+                    throw new FormatException(item.Key + " must be an array.");
+                var elementType = type.IsArray ? type.GetElementType() : type;
+                foreach (var value in values)
+                {
+                    var valid = elementType == typeof(bool) ? value.IsBoolean
+                        : elementType == typeof(string) ? value.IsString
+                        : value.IsNumber && !double.IsNaN(value.AsDouble) && !double.IsInfinity(value.AsDouble)
+                          && (elementType != typeof(int) || value.AsDouble >= int.MinValue && value.AsDouble <= int.MaxValue && value.AsDouble == Math.Truncate(value.AsDouble));
+                    if (!valid)
+                        throw new FormatException("Invalid value type for " + item.Key);
+                }
+                if (item.Key == "_allocationFile" || item.Key == "_customPlanFile")
+                {
+                    var name = item.Value.Value;
+                    if (string.IsNullOrWhiteSpace(name) || name != name.Trim(' ', '.') || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                        throw new FormatException("Invalid file stem for " + item.Key);
+                }
+                if (item.Key == "_customIronPillSaveSeconds" && (item.Value.AsDouble < 0d || item.Value.AsDouble > 604800d)
+                    || item.Key == "_customIronPillMinWorth" && (item.Value.AsDouble < 0d || item.Value.AsDouble > 1e8))
+                    throw new FormatException("Iron Pill threshold is out of range: " + item.Key);
+                if (item.Key == "_customAutoBoostCubePowerRatio" && (item.Value.AsDouble < 1d || item.Value.AsDouble > 4d)
+                    || item.Key == "_customAugmentsBloodEstimateSeconds" && (item.Value.AsDouble < 1d || item.Value.AsDouble > 100000d)
+                    || (item.Key == "_customBloodSpaghettiGoalPercent" || item.Key == "_customBloodCounterfeitGoalPercent")
+                       && (item.Value.AsDouble < 0d || item.Value.AsDouble > 100000d))
+                    throw new FormatException("Custom setting is out of range: " + item.Key);
+                if (item.Key == "_titanGoldTargets" || item.Key == "_titanSwapTargets" || item.Key == "_titanMoneyDone")
+                {
+                    if (item.Value.Count != Managers.ZoneHelpers.TitanZones.Length)
+                        throw new FormatException(item.Key + " must have one entry per titan.");
+                }
+                merged[item.Key] = item.Value;
+            }
+
+            // Merge against live state, not a UI snapshot; persist before publishing the candidate.
+            var candidate = new SavedSettings(null);
+            candidate.MassUpdate(JsonUtility.FromJson<SavedSettings>(merged.ToString()));
+            var serialized = SerializeWithUnknownFields(candidate);
+            JsonFiles.WriteAtomic(_savePath, serialized);
+            MassUpdate(candidate);
+            _lastAppliedText = serialized;
+            Main.UpdateForm(this);
+        }
+
+        private string SerializeWithUnknownFields(SavedSettings live)
+        {
+            var root = JsonFiles.ParseObject(_sourceJson?.ToString() ?? "{}");
+            foreach (var item in JsonFiles.ParseObject(JsonUtility.ToJson(live)).Linq)
+                root[item.Key] = item.Value;
+            return root.ToString(2);
         }
 
         internal void SetSaveDisabled(bool disabled)
         {
             _disableSave = disabled;
+        }
+
+        internal bool HasSettingsFileChanged()
+        {
+            return File.ReadAllText(_savePath) != _lastAppliedText;
         }
 
         internal bool LoadSettings()
@@ -129,10 +236,84 @@ namespace NGUInjector
             {
                 try
                 {
-                    var newSettings = JsonUtility.FromJson<SavedSettings>(File.ReadAllText(_savePath));
+                    var text = File.ReadAllText(_savePath);
+                    if (text == _lastAppliedText)
+                        return true;
+                    var root = JsonFiles.ParseObject(text);
+                    var hasCustomAdventureGoldPush = root["_customAdventureGoldPush"] != null;
+                    var hasCustomAutoMoneyPitEnabled = root["_customAutoMoneyPitEnabled"] != null;
+                    var hasCustomAutoBoostEnabled = root["_customAutoBoostEnabled"] != null;
+                    var hasCustomAutoBoostCubePowerRatio = root["_customAutoBoostCubePowerRatio"] != null;
+                    var hasCustomAugmentsBloodEstimateSeconds = root["_customAugmentsBloodEstimateSeconds"] != null;
+                    var hasCustomAutoBloodSpellsEnabled = root["_customAutoBloodSpellsEnabled"] != null;
+                    var hasCustomBloodSpaghettiGoalPercent = root["_customBloodSpaghettiGoalPercent"] != null;
+                    var hasCustomBloodCounterfeitGoalPercent = root["_customBloodCounterfeitGoalPercent"] != null;
+                    var hasManualAdventureRecoverHealth = root["_manualAdventureRecoverHealth"] != null;
+                    var hasManualAdventureFastCombat = root["_manualAdventureFastCombat"] != null;
+                    var hasManualAdventureAllowFallback = root["_manualAdventureAllowFallback"] != null;
+                    var newSettings = JsonUtility.FromJson<SavedSettings>(text);
                     MassUpdate(newSettings);
+                    if (root["_customIronPillSaveSeconds"] == null)
+                        _customIronPillSaveSeconds = 900;
+                    if (!hasCustomAdventureGoldPush)
+                    {
+                        _customAdventureGoldPush = true;
+                    }
+
+                    if (!hasCustomAutoMoneyPitEnabled)
+                    {
+                        _customAutoMoneyPitEnabled = false;
+                    }
+
+                    if (!hasCustomAutoBoostEnabled)
+                    {
+                        _customAutoBoostEnabled = true;
+                    }
+
+                    if (!hasCustomAutoBoostCubePowerRatio || _customAutoBoostCubePowerRatio < 1)
+                    {
+                        _customAutoBoostCubePowerRatio = 2;
+                    }
+
+                    if (!hasCustomAugmentsBloodEstimateSeconds || _customAugmentsBloodEstimateSeconds < 1)
+                    {
+                        _customAugmentsBloodEstimateSeconds = 300;
+                    }
+
+                    if (!hasCustomAutoBloodSpellsEnabled)
+                    {
+                        _customAutoBloodSpellsEnabled = true;
+                    }
+
+                    if (!hasCustomBloodSpaghettiGoalPercent || _customBloodSpaghettiGoalPercent < 0)
+                    {
+                        _customBloodSpaghettiGoalPercent = 30;
+                    }
+
+                    if (!hasCustomBloodCounterfeitGoalPercent || _customBloodCounterfeitGoalPercent < 0)
+                    {
+                        _customBloodCounterfeitGoalPercent = 400;
+                    }
+
+                    if (!hasManualAdventureRecoverHealth)
+                    {
+                        _manualAdventureRecoverHealth = true;
+                    }
+
+                    if (!hasManualAdventureFastCombat)
+                    {
+                        _manualAdventureFastCombat = true;
+                    }
+
+                    if (!hasManualAdventureAllowFallback)
+                    {
+                        _manualAdventureAllowFallback = true;
+                    }
+
                     Main.Log("Loaded Settings");
                     Main.Log(JsonUtility.ToJson(this, true));
+                    _lastAppliedText = text;
+                    _sourceJson = root;
                     return true;
                 }
                 catch (Exception e)
@@ -148,6 +329,9 @@ namespace NGUInjector
 
         internal void MassUpdate(SavedSettings other)
         {
+            var planRunChanged = _customPlanFile != other.CustomPlanFile
+                                 || _useCustomRebirthPlan != other.UseCustomRebirthPlan
+                                 || _autoRebirth != other.AutoRebirth;
             _priorityBoosts = other.PriorityBoosts;
             _boostBlacklist = other.BoostBlacklist;
 
@@ -241,6 +425,39 @@ namespace NGUInjector
             _specialBoostBlacklist = other.SpecialBoostBlacklist;
             _blacklistedBosses = other.BlacklistedBosses;
             _hackAdvance = other.HackAdvance;
+            _useCustomRebirthPlan = other.UseCustomRebirthPlan;
+            _customPlanFile = other.CustomPlanFile;
+            _customAdventureEnabled = other.CustomAdventureEnabled;
+            _customAdventureMode = other.CustomAdventureMode;
+            _customAdventureZone = other.CustomAdventureZone;
+            _customAdventureGoldPush = other.CustomAdventureGoldPush;
+            _customAutoMoneyPitEnabled = other.CustomAutoMoneyPitEnabled;
+            _customAutoBoostEnabled = other.CustomAutoBoostEnabled;
+            _customAutoBoostCubePowerRatio = other.CustomAutoBoostCubePowerRatio;
+            _customAugmentsBloodEstimateSeconds = other.CustomAugmentsBloodEstimateSeconds;
+            _customAutoBloodSpellsEnabled = other.CustomAutoBloodSpellsEnabled;
+            _customBloodSpaghettiGoalPercent = other.CustomBloodSpaghettiGoalPercent;
+            _customBloodCounterfeitGoalPercent = other.CustomBloodCounterfeitGoalPercent;
+            _customIronPillSaveSeconds = other.CustomIronPillSaveSeconds;
+            _customIronPillMinWorth = other.CustomIronPillMinWorth;
+            _customIronPillHistory = other.CustomIronPillHistory.Where(entry => entry != null).Take(10).ToArray();
+            _manualAdventureEnabled = other.ManualAdventureEnabled;
+            _manualAdventureZone = other.ManualAdventureZone;
+            _manualAdventureBossOnly = other.ManualAdventureBossOnly;
+            _manualAdventureRecoverHealth = other.ManualAdventureRecoverHealth;
+            _manualAdventurePrecastBuffs = other.ManualAdventurePrecastBuffs;
+            _manualAdventureFastCombat = other.ManualAdventureFastCombat;
+            _manualAdventureBeastMode = other.ManualAdventureBeastMode;
+            _manualAdventureAllowFallback = other.ManualAdventureAllowFallback;
+            if (planRunChanged)
+                NotifyCustomPlanRunChanged();
+        }
+
+        private void NotifyCustomPlanRunChanged()
+        {
+            // Candidate settings used for validation must not reset the live scheduler.
+            if (ReferenceEquals(Main.Settings, this))
+                Main.reference?.InvalidateCustomRuntimePlanCache();
         }
 
         public int SnipeZone
@@ -496,6 +713,7 @@ namespace NGUInjector
                 if (value == _autoRebirth) return;
                 _autoRebirth = value;
                 SaveSettings();
+                NotifyCustomPlanRunChanged();
             }
         }
 
@@ -1099,12 +1317,12 @@ namespace NGUInjector
 
         internal bool NeedsGoldSwap()
         {
-            for (var i = 0; i < TitanSwapTargets.Length; i++)
+            for (var i = 0; i < TitanGoldTargets.Length; i++)
             {
-                if (!TitanSwapTargets[i])
+                if (!TitanGoldTargets[i])
                     continue;
 
-                if (TitanSwapTargets[i] && !TitanMoneyDone[i])
+                if (TitanGoldTargets[i] && !TitanMoneyDone[i])
                     return true;
             }
 
@@ -1118,6 +1336,281 @@ namespace NGUInjector
             {
                 if (value == _hackAdvance) return;
                 _hackAdvance = value;
+                SaveSettings();
+            }
+        }
+
+        public bool UseCustomRebirthPlan
+        {
+            get => _useCustomRebirthPlan;
+            set
+            {
+                if (value == _useCustomRebirthPlan) return;
+                _useCustomRebirthPlan = value;
+                SaveSettings();
+                NotifyCustomPlanRunChanged();
+            }
+        }
+
+        public string CustomPlanFile
+        {
+            get => _customPlanFile;
+            set
+            {
+                if (value == _customPlanFile) return;
+                _customPlanFile = value;
+                SaveSettings();
+                NotifyCustomPlanRunChanged();
+            }
+        }
+
+        public bool CustomAdventureEnabled
+        {
+            get => _customAdventureEnabled;
+            set
+            {
+                if (value == _customAdventureEnabled) return;
+                _customAdventureEnabled = value;
+                SaveSettings();
+            }
+        }
+
+        public int CustomAdventureMode
+        {
+            get => _customAdventureMode;
+            set
+            {
+                if (value == _customAdventureMode) return;
+                _customAdventureMode = value;
+                SaveSettings();
+            }
+        }
+
+        public int CustomAdventureZone
+        {
+            get => _customAdventureZone;
+            set
+            {
+                if (value == _customAdventureZone) return;
+                _customAdventureZone = value;
+                SaveSettings();
+            }
+        }
+
+        public bool CustomAdventureGoldPush
+        {
+            get => _customAdventureGoldPush;
+            set
+            {
+                if (value == _customAdventureGoldPush) return;
+                _customAdventureGoldPush = value;
+                SaveSettings();
+            }
+        }
+
+        public bool CustomAutoBoostEnabled
+        {
+            get => _customAutoBoostEnabled;
+            set
+            {
+                if (value == _customAutoBoostEnabled) return;
+                _customAutoBoostEnabled = value;
+                SaveSettings();
+            }
+        }
+
+        public bool CustomAutoMoneyPitEnabled
+        {
+            get => _customAutoMoneyPitEnabled;
+            set
+            {
+                if (value == _customAutoMoneyPitEnabled) return;
+                _customAutoMoneyPitEnabled = value;
+                SaveSettings();
+            }
+        }
+
+        public int CustomAutoBoostCubePowerRatio
+        {
+            get => _customAutoBoostCubePowerRatio < 1 ? 2 : Math.Min(4, _customAutoBoostCubePowerRatio);
+            set
+            {
+                var normalized = Math.Max(1, Math.Min(4, value));
+                if (normalized == _customAutoBoostCubePowerRatio) return;
+                _customAutoBoostCubePowerRatio = normalized;
+                SaveSettings();
+            }
+        }
+
+        public int CustomAugmentsBloodEstimateSeconds
+        {
+            get => _customAugmentsBloodEstimateSeconds < 1 ? 300 : Math.Min(100000, _customAugmentsBloodEstimateSeconds);
+            set
+            {
+                var normalized = Math.Max(1, Math.Min(100000, value));
+                if (normalized == _customAugmentsBloodEstimateSeconds) return;
+                _customAugmentsBloodEstimateSeconds = normalized;
+                SaveSettings();
+            }
+        }
+
+        public bool CustomAutoBloodSpellsEnabled
+        {
+            get => _customAutoBloodSpellsEnabled;
+            set
+            {
+                if (value == _customAutoBloodSpellsEnabled) return;
+                _customAutoBloodSpellsEnabled = value;
+                SaveSettings();
+            }
+        }
+
+        public int CustomBloodSpaghettiGoalPercent
+        {
+            get => Math.Max(0, Math.Min(100000, _customBloodSpaghettiGoalPercent));
+            set
+            {
+                var normalized = Math.Max(0, Math.Min(100000, value));
+                if (normalized == _customBloodSpaghettiGoalPercent) return;
+                _customBloodSpaghettiGoalPercent = normalized;
+                SaveSettings();
+            }
+        }
+
+        public int CustomBloodCounterfeitGoalPercent
+        {
+            get => Math.Max(0, Math.Min(100000, _customBloodCounterfeitGoalPercent));
+            set
+            {
+                var normalized = Math.Max(0, Math.Min(100000, value));
+                if (normalized == _customBloodCounterfeitGoalPercent) return;
+                _customBloodCounterfeitGoalPercent = normalized;
+                SaveSettings();
+            }
+        }
+
+        public int CustomIronPillSaveSeconds
+        {
+            get => Math.Max(0, Math.Min(604800, _customIronPillSaveSeconds));
+            set
+            {
+                var normalized = Math.Max(0, Math.Min(604800, value));
+                if (normalized == _customIronPillSaveSeconds) return;
+                _customIronPillSaveSeconds = normalized;
+                SaveSettings();
+            }
+        }
+
+        public double CustomIronPillMinWorth
+        {
+            get => double.IsNaN(_customIronPillMinWorth) || double.IsInfinity(_customIronPillMinWorth)
+                ? 0d : Math.Max(0d, Math.Min(1e8, _customIronPillMinWorth));
+            set
+            {
+                if (double.IsNaN(value) || double.IsInfinity(value) || value < 0d || value > 1e8)
+                    throw new ArgumentOutOfRangeException(nameof(value));
+                if (value == _customIronPillMinWorth) return;
+                _customIronPillMinWorth = value;
+                SaveSettings();
+            }
+        }
+
+        public IronPillHistoryEntry[] CustomIronPillHistory => _customIronPillHistory ?? new IronPillHistoryEntry[0];
+
+        internal void AddIronPillHistory(IronPillHistoryEntry entry)
+        {
+            _customIronPillHistory = new[] {entry}.Concat(CustomIronPillHistory).Take(10).ToArray();
+            if (_savePath == null || _disableSave) return;
+            // Runtime history refreshes independently; do not rebuild an editor mid-edit.
+            var serialized = SerializeWithUnknownFields(this);
+            JsonFiles.WriteAtomic(_savePath, serialized);
+            _lastAppliedText = serialized;
+        }
+
+        public bool ManualAdventureEnabled
+        {
+            get => _manualAdventureEnabled;
+            set
+            {
+                if (value == _manualAdventureEnabled) return;
+                _manualAdventureEnabled = value;
+                SaveSettings();
+            }
+        }
+
+        public int ManualAdventureZone
+        {
+            get => _manualAdventureZone;
+            set
+            {
+                if (value == _manualAdventureZone) return;
+                _manualAdventureZone = value;
+                SaveSettings();
+            }
+        }
+
+        public bool ManualAdventureBossOnly
+        {
+            get => _manualAdventureBossOnly;
+            set
+            {
+                if (value == _manualAdventureBossOnly) return;
+                _manualAdventureBossOnly = value;
+                SaveSettings();
+            }
+        }
+
+        public bool ManualAdventureRecoverHealth
+        {
+            get => _manualAdventureRecoverHealth;
+            set
+            {
+                if (value == _manualAdventureRecoverHealth) return;
+                _manualAdventureRecoverHealth = value;
+                SaveSettings();
+            }
+        }
+
+        public bool ManualAdventurePrecastBuffs
+        {
+            get => _manualAdventurePrecastBuffs;
+            set
+            {
+                if (value == _manualAdventurePrecastBuffs) return;
+                _manualAdventurePrecastBuffs = value;
+                SaveSettings();
+            }
+        }
+
+        public bool ManualAdventureFastCombat
+        {
+            get => _manualAdventureFastCombat;
+            set
+            {
+                if (value == _manualAdventureFastCombat) return;
+                _manualAdventureFastCombat = value;
+                SaveSettings();
+            }
+        }
+
+        public bool ManualAdventureBeastMode
+        {
+            get => _manualAdventureBeastMode;
+            set
+            {
+                if (value == _manualAdventureBeastMode) return;
+                _manualAdventureBeastMode = value;
+                SaveSettings();
+            }
+        }
+
+        public bool ManualAdventureAllowFallback
+        {
+            get => _manualAdventureAllowFallback;
+            set
+            {
+                if (value == _manualAdventureAllowFallback) return;
+                _manualAdventureAllowFallback = value;
                 SaveSettings();
             }
         }

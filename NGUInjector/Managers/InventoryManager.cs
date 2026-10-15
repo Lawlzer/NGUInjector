@@ -139,6 +139,201 @@ namespace NGUInjector.Managers
             return result.Where(x => x.equipment.isEquipment()).Where(x => x.equipment.GetNeededBoosts().Total() > 0).ToArray();
         }
 
+        internal string ManageCustomAutoBoost()
+        {
+            if (_controller.midDrag)
+                return "Auto boost skipped: inventory drag active.";
+
+            var converted = _character.inventory.GetConvertedInventory().ToArray();
+            var lockedBoost = ManageLockedBoostPriority(converted);
+            if (!string.IsNullOrWhiteSpace(lockedBoost))
+                converted = _character.inventory.GetConvertedInventory().ToArray();
+
+            MergeBoosts(converted);
+
+            var boostSlots = GetCustomBoostSlots(converted);
+            foreach (var item in boostSlots)
+            {
+                if (!_character.inventory.HasBoosts())
+                    break;
+
+                _controller.applyAllBoosts(item.slot);
+            }
+
+            if (_character.inventory.HasBoosts())
+            {
+                BoostInfinityCube();
+            }
+
+            if (!string.IsNullOrWhiteSpace(lockedBoost))
+                return lockedBoost;
+
+            return ManageCustomBoostConversion();
+        }
+
+        private ih[] GetCustomBoostSlots(ih[] ci)
+        {
+            var equipped = _character.inventory.GetConvertedEquips()
+                .Where(IsCustomBoostTarget)
+                .ToArray();
+            var mergeSlots = ci
+                .Where(x => x.locked && IsCustomBoostTarget(x))
+                .ToArray();
+
+            var targets = new List<ih>();
+            targets.AddRange(OrderCustomEquipped(equipped.Where(x => !IsHeart(x))));
+            targets.AddRange(mergeSlots.Where(x => !IsHeart(x)).OrderBy(x => x.slot));
+            targets.AddRange(OrderCustomEquipped(equipped.Where(IsHeart)));
+            targets.AddRange(mergeSlots.Where(IsHeart).OrderBy(x => x.slot));
+            return targets.Where(NeedsAnyBoost).ToArray();
+        }
+
+        private static bool IsCustomBoostTarget(ih item)
+        {
+            return item != null
+                   && item.equipment != null
+                   && item.equipment.isEquipment()
+                   && !Settings.BoostBlacklist.Contains(item.id);
+        }
+
+        private static IEnumerable<ih> OrderCustomEquipped(IEnumerable<ih> items)
+        {
+            return items.OrderBy(CustomEquipBoostOrder).ThenBy(x => x.slot);
+        }
+
+        private static int CustomEquipBoostOrder(ih item)
+        {
+            if (item.slot == -5)
+                return 0;
+
+            if (item.slot == -6)
+                return 1;
+
+            if (item.slot < 0)
+                return 2;
+
+            return 3;
+        }
+
+        private static bool IsHeart(ih item)
+        {
+            try
+            {
+                var name = Main.Character.itemInfo.itemName[item.id];
+                return name != null && name.IndexOf("heart", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch
+            {
+                return item.name != null && item.name.IndexOf("heart", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+        }
+
+        private static bool NeedsAnyBoost(ih item)
+        {
+            var needed = item.equipment.GetNeededBoosts();
+            return needed.Power > 0 || needed.Toughness > 0 || needed.Special > 0;
+        }
+
+        private string ManageCustomBoostConversion()
+        {
+            if (_character.challenges.levelChallenge10k.curCompletions <
+                _character.allChallenges.level100Challenge.maxCompletions)
+                return "Auto boost: boost transform locked.";
+
+            var boostSlots = GetCustomBoostSlots(_character.inventory.GetConvertedInventory().ToArray());
+            foreach (var item in boostSlots)
+            {
+                var needed = item.equipment.GetNeededBoosts();
+                if (needed.Power > 0)
+                {
+                    _controller.selectAutoPowerTransform();
+                    return $"Auto boost: transforming Power for {SanitizeName(item.name)}.";
+                }
+
+                if (needed.Toughness > 0)
+                {
+                    _controller.selectAutoToughTransform();
+                    return $"Auto boost: transforming Toughness for {SanitizeName(item.name)}.";
+                }
+
+                if (needed.Special > 0)
+                {
+                    _controller.selectAutoSpecialTransform();
+                    return $"Auto boost: transforming Special for {SanitizeName(item.name)}.";
+                }
+            }
+
+            return SelectCustomCubeTransform();
+        }
+
+        private string ManageLockedBoostPriority(ih[] ci)
+        {
+            var target = ci
+                .Where(IsLockedUnmaxedBoost)
+                .OrderByDescending(x => x.level)
+                .ThenBy(x => x.slot)
+                .FirstOrDefault();
+            if (target == null)
+                return null;
+
+            if (ci.Count(x => x.id == target.id) > 1)
+            {
+                _controller.mergeAll(target.slot);
+                _controller.updateInventory();
+            }
+
+            var transform = SelectTransformForBoost(target);
+            return $"Auto boost: locked boost priority {SanitizeName(target.name)} level {target.level}/100. {transform}";
+        }
+
+        private static bool IsLockedUnmaxedBoost(ih item)
+        {
+            return item != null
+                   && item.id > 0
+                   && item.id <= 39
+                   && item.locked
+                   && item.level < 100;
+        }
+
+        private string SelectTransformForBoost(ih item)
+        {
+            var name = item.name ?? string.Empty;
+            if (name.IndexOf("power", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                _controller.selectAutoPowerTransform();
+                return "Transforming Power boosts for it.";
+            }
+
+            if (name.IndexOf("tough", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                _controller.selectAutoToughTransform();
+                return "Transforming Toughness boosts for it.";
+            }
+
+            if (name.IndexOf("special", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                _controller.selectAutoSpecialTransform();
+                return "Transforming Special boosts for it.";
+            }
+
+            return "Boost type unknown; leaving current transform unchanged.";
+        }
+
+        private string SelectCustomCubeTransform()
+        {
+            var power = _character.inventory.cubePower;
+            var toughness = _character.inventory.cubeToughness;
+            var ratio = Math.Max(1, Settings.CustomAutoBoostCubePowerRatio);
+            if (power < toughness * ratio)
+            {
+                _controller.selectAutoPowerTransform();
+                return $"Auto boost: transforming Power for cube {ratio}:1.";
+            }
+
+            _controller.selectAutoToughTransform();
+            return $"Auto boost: transforming Toughness for cube {ratio}:1.";
+        }
+
         internal void BoostInventory(ih[] boostSlots)
         {
             foreach (var item in boostSlots)

@@ -535,7 +535,7 @@ namespace SimpleJSON
             else
             {
                 double val;
-                if (double.TryParse(token, out val))
+                if (double.TryParse(token, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out val))
                     ctx.Add(tokenName, val);
                 else
                     ctx.Add(tokenName, token);
@@ -1017,11 +1017,11 @@ namespace SimpleJSON
 
         public override string Value
         {
-            get { return m_Data.ToString(); }
+            get { return m_Data.ToString("R", System.Globalization.CultureInfo.InvariantCulture); }
             set
             {
                 double v;
-                if (double.TryParse(value, out v))
+                if (double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v))
                     m_Data = v;
             }
         }
@@ -1044,7 +1044,7 @@ namespace SimpleJSON
 
         internal override void WriteToStringBuilder(StringBuilder aSB, int aIndent, int aIndentInc, JSONTextMode aMode)
         {
-            aSB.Append(m_Data);
+            aSB.Append(m_Data.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
         }
         private static bool IsNumeric(object value)
         {

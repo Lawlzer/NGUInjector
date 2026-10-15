@@ -1,0 +1,20 @@
+[package]
+name = "nguinjector-ui"
+version = "0.1.0"
+description = "External UI for NGUInjector"
+authors = ["NGUInjector contributors"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+fs2 = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+sha2 = "0.10"
+tauri = { version = "2.0", features = [] }
+tauri-plugin-dialog = "2.0"
+tempfile = "3.23"
+uuid = { version = "1.18", features = ["v4"] }

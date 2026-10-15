@@ -14,6 +14,7 @@ namespace NGUInjector.Managers
         private bool _isFighting = false;
         private float _fightTimer = 0;
         private string _enemyName;
+        private int _lastBlockedZone = int.MinValue;
 
         public CombatManager()
         {
@@ -42,6 +43,12 @@ namespace NGUInjector.Managers
                 return;
 
             if (Main.PlayerController.moveTimer > 0)
+                return;
+
+            if (TryHandleWalderpSays())
+                return;
+
+            if (IsWalderpFight() && WalderpAttacksLeft() <= 1)
                 return;
 
             if (!fastCombat)
@@ -231,6 +238,12 @@ namespace NGUInjector.Managers
         {
             var ac = _character.adventureController;
 
+            if (IsWalderpFight())
+            {
+                WalderpCombatAttacks();
+                return;
+            }
+
             if (ac.ultimateAttackMove.button.IsInteractable())
             {
                 if (fastCombat)
@@ -268,18 +281,185 @@ namespace NGUInjector.Managers
             }
         }
 
-        internal static bool IsZoneUnlocked(int zone)
+        private void WalderpCombatAttacks()
         {
-            return zone <= Main.Character.adventureController.zoneDropdown.options.Count - 2;
+            if (WalderpAttacksLeft() <= 1)
+                return;
+
+            TryWalderpAttack(3);
         }
 
-        internal void MoveToZone(int zone)
+        private bool TryHandleWalderpSays()
         {
+            if (!IsWalderpFight())
+                return false;
+
+            var eai = _character.adventureController.enemyAI;
+            if (!TryGetEnemyAIValue(eai, "inWaldoSaysLoop", out bool inWaldoSaysLoop) || !inWaldoSaysLoop)
+                return false;
+
+            if (!TryGetEnemyAIValue(eai, "waldoAttackID", out int waldoAttackID) || waldoAttackID < 3 || waldoAttackID > 6)
+                return true;
+
+            if (!TryGetEnemyAIValue(eai, "waldoSays", out bool waldoSays))
+                return true;
+
+            if (waldoSays)
+            {
+                TryWalderpAttack(waldoAttackID);
+                return true;
+            }
+
+            TryWalderpAlternateAttack(waldoAttackID);
+            return true;
+        }
+
+        private bool TryWalderpAlternateAttack(int forbiddenAttackID)
+        {
+            for (var attackID = 3; attackID <= 6; attackID++)
+            {
+                if (attackID != forbiddenAttackID && TryWalderpAttack(attackID))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private bool TryWalderpAttack(int attackID)
+        {
+            var ac = _character.adventureController;
+
+            // EnemyAI uses IDs 3-6 for regular, strong, piercing, and ultimate attacks.
+            switch (attackID)
+            {
+                case 3:
+                    if (!ac.regularAttackMove.button.IsInteractable())
+                        return false;
+
+                    ac.regularAttackMove.doMove();
+                    return true;
+                case 4:
+                    if (!ac.strongAttackMove.button.IsInteractable())
+                        return false;
+
+                    ac.strongAttackMove.doMove();
+                    return true;
+                case 5:
+                    if (!ac.pierceMove.button.IsInteractable())
+                        return false;
+
+                    ac.pierceMove.doMove();
+                    return true;
+                case 6:
+                    if (!ac.ultimateAttackMove.button.IsInteractable())
+                        return false;
+
+                    ac.ultimateAttackMove.doMove();
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private bool IsWalderpFight()
+        {
+            var enemy = _character.adventureController.currentEnemy;
+            if (enemy == null)
+                return false;
+
+            return enemy.enemyType == enemyType.waldo1
+                   || enemy.enemyType == enemyType.waldo2
+                   || enemy.enemyType == enemyType.waldo3
+                   || enemy.enemyType == enemyType.waldo4
+                   || enemy.enemyType == enemyType.bigBoss5;
+        }
+
+        private int WalderpAttacksLeft()
+        {
+            var eai = _character.adventureController.enemyAI;
+            if (!TryGetEnemyAIValue(eai, "growCount", out int growCount))
+                return int.MaxValue;
+
+            return 5 - ((growCount + 4) % 6);
+        }
+
+        private static bool TryGetEnemyAIValue<T>(EnemyAI eai, string fieldName, out T value)
+        {
+            value = default(T);
+            if (eai == null)
+                return false;
+
+            try
+            {
+                var field = eai.GetType().GetField(fieldName,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var raw = field?.GetValue(eai);
+                if (raw is T typed)
+                {
+                    value = typed;
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+
+            return false;
+        }
+
+        internal static bool IsZoneUnlocked(int zone)
+        {
+            return ZoneHelpers.IsZoneUnlocked(zone);
+        }
+
+        internal bool MoveToZone(int zone)
+        {
+            if (!CanRouteToZone(zone))
+                return false;
+
             _character.adventureController.zoneSelector.changeZone(zone);
+            return true;
+        }
+
+        private bool CanRouteToZone(int zone)
+        {
+            if (ZoneHelpers.IsZoneUnlocked(zone))
+            {
+                _lastBlockedZone = int.MinValue;
+                return true;
+            }
+
+            if (_lastBlockedZone != zone)
+            {
+                _lastBlockedZone = zone;
+                var required = ZoneHelpers.ZoneUnlockEffectiveBossId(zone);
+                Log($"Adventure route blocked: {ZoneName(zone)} ({zone}) requires effective boss {required}, current effective boss {ZoneHelpers.CurrentRebirthEffectiveBossId()}.");
+            }
+
+            if (_character.adventure.zone != -1)
+                _character.adventureController.zoneSelector.changeZone(-1);
+
+            return false;
+        }
+
+        private string ZoneName(int zone)
+        {
+            try
+            {
+                return _character.adventureController.zoneName(zone);
+            }
+            catch
+            {
+                return zone == -1 ? "Safe Zone" : $"zone {zone}";
+            }
         }
 
         internal void IdleZone(int zone, bool bossOnly, bool recoverHealth)
         {
+            if (!CanRouteToZone(zone))
+                return;
+
             if (zone == -1)
             {
                 if (_character.adventure.zone != -1)
@@ -289,7 +469,7 @@ namespace NGUInjector.Managers
                 }
             }
             //Enable idle attack if its not on
-            if (!_character.adventure.autoattacking)
+            if (!_character.adventure.autoattacking && !IsWalderpFight())
             {
                 _character.adventureController.idleAttackMove.setToggle();
                 return;
@@ -338,7 +518,7 @@ namespace NGUInjector.Managers
             }
 
             //If we only want boss enemies
-            if (bossOnly)
+            if (bossOnly && !IsWalderpFight())
             {
                 //Check the type of the enemy
                 var ec = _character.adventureController.currentEnemy.enemyType;
@@ -348,10 +528,25 @@ namespace NGUInjector.Managers
                     MoveToZone(-1);
                 }
             }
+
+            if (IsWalderpFight())
+            {
+                if (_character.adventure.autoattacking)
+                {
+                    _character.adventureController.idleAttackMove.setToggle();
+                    return;
+                }
+
+                DoCombat(false);
+                return;
+            }
         }
 
-        internal void ManualZone(int zone, bool bossOnly, bool recoverHealth, bool precastBuffs, bool fastCombat, bool beastMode)
+        internal void ManualZone(int zone, bool bossOnly, bool recoverHealth, bool precastBuffs, bool fastCombat, bool beastMode, bool preserveIdleMode = false)
         {
+            if (!CanRouteToZone(zone))
+                return;
+
             if (zone == -1)
             {
                 if (_character.adventure.zone != -1)
@@ -361,10 +556,18 @@ namespace NGUInjector.Managers
                 }
             }
 
-            //Start by turning off auto attack if its on unless we can only idle attack
-            if (!_character.adventure.autoattacking)
+            // Legacy manual combat turns idle off. Custom gold-push keeps idle on.
+            if (preserveIdleMode)
             {
-                if (_character.training.attackTraining[1] == 0)
+                if (!_character.adventure.autoattacking && !IsWalderpFight())
+                {
+                    _character.adventureController.idleAttackMove.setToggle();
+                    return;
+                }
+            }
+            else if (!_character.adventure.autoattacking)
+            {
+                if (_character.training.attackTraining[1] == 0 && !IsWalderpFight())
                 {
                     _character.adventureController.idleAttackMove.setToggle();
                     return;
@@ -528,7 +731,7 @@ namespace NGUInjector.Managers
             }
 
             //We have an enemy. Lets check if we're in bossOnly mode
-            if (bossOnly && zone < 1000)
+            if (bossOnly && zone < 1000 && !IsWalderpFight())
             {
                 var ec = _character.adventureController.currentEnemy.enemyType;
                 if (ec != enemyType.boss && !ec.ToString().Contains("bigBoss"))
@@ -539,10 +742,16 @@ namespace NGUInjector.Managers
                 }
             }
 
+            if (IsWalderpFight() && _character.adventure.autoattacking)
+            {
+                _character.adventureController.idleAttackMove.setToggle();
+                return;
+            }
+
             _isFighting = true;
             _enemyName = _character.adventureController.currentEnemy.name;
             //We have an enemy and we're ready to fight. Run through our combat routine
-            if (_character.training.attackTraining[1] > 0)
+            if (_character.training.attackTraining[1] > 0 || IsWalderpFight())
                 DoCombat(fastCombat);
         }
     }

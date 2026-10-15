@@ -351,3 +351,11 @@ MigrationBackup/
 
 # Ionide (cross platform F# VS Code tools) working folder
 .ionide/
+
+# External desktop UI
+NGUInjector.UI/dist/
+NGUInjector.UI/src-tauri/target/
+NGUInjector.UI/src-tauri/gen/
+NGUInjector.UI/test-results/
+NGUInjector.UI/playwright-report/
+*.tsbuildinfo

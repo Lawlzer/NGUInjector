@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <NoWarn>$(NoWarn);CS0649</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../NGUInjector/Main.CustomAdventure.cs" Link="Production/Main.CustomAdventure.cs" />
+    <Compile Include="../../NGUInjector/Managers/CombatManager.cs" Link="Production/CombatManager.cs" />
+    <Compile Include="../../NGUInjector/Managers/CombatHelpers.cs" Link="Production/CombatHelpers.cs" />
+    <Compile Include="../../NGUInjector/Managers/ZoneHelpers.cs" Link="Production/ZoneHelpers.cs" />
+  </ItemGroup>
+</Project>

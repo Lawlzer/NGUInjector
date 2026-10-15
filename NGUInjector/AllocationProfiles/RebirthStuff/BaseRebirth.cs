@@ -399,7 +399,9 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                 }
             }
 
-            if (Main.Settings.IronPillThreshold > 100)
+            // Custom automation owns Iron Pill; pre-rebirth legacy casting must not bypass its rules.
+            if (Main.LegacyAutomationEnabled && CharObj.rebirthTime.totalseconds >= 3600d
+                && CharObj.bossID >= 100 && Main.Settings.IronPillThreshold > 100)
             {
                 if (CharObj.bloodMagic.adventureSpellTime.totalseconds >
                     CharObj.bloodSpells.adventureSpellCooldown)

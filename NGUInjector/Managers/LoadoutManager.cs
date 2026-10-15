@@ -16,8 +16,9 @@ namespace NGUInjector.Managers
     }
     internal static class LoadoutManager
     {
-        private static int[] _savedLoadout;
-        private static int[] _tempLoadout;
+        // Each snapshot owns its helpers but retains the original Equipment references for identity.
+        private static ih[] _savedLoadout;
+        private static ih[] _tempLoadout;
         internal static LockType CurrentLock { get; set; }
 
         internal static bool CanSwap()
@@ -35,10 +36,26 @@ namespace NGUInjector.Managers
             CurrentLock = LockType.None;
         }
 
+        internal static void RemoveResourcesForGearSwap()
+        {
+            // Matches the in-game R/T behavior: keep basic energy training, clear gear-dependent allocations.
+            Main.Character.removeMostEnergy();
+            Main.Character.removeMostMagic();
+            Main.Character.removeAllRes3();
+        }
+
         internal static void RestoreGear()
         {
+            if (_savedLoadout == null)
+            {
+                Log("Failed to restore original loadout: no saved snapshot is available");
+                return;
+            }
+
             Log($"Restoring original loadout");
-            ChangeGear(_savedLoadout);
+            var failure = GearOptimizer.EquipGear(_savedLoadout, false, true);
+            if (failure != null)
+                Log($"Failed to restore original loadout: {failure}");
         }
 
         internal static void TryTitanSwap()
@@ -76,6 +93,7 @@ namespace NGUInjector.Managers
                 {
                     Log("Equipping Gold Drop Loadout");
                     ChangeGear(Settings.GoldDropLoadout);
+                    ZoneHelpers.MarkTitanMoneyDone(ts.GoldTargetIndex);
                     Settings.DoGoldSwap = false;
                 }
                 else
@@ -156,9 +174,7 @@ namespace NGUInjector.Managers
             var accSlot = 10000;
             var controller = Controller;
 
-            Main.Character.removeMostEnergy();
-            Main.Character.removeMostMagic();
-            Main.Character.removeAllRes3();
+            RemoveResourcesForGearSwap();
 
             try
             {
@@ -296,64 +312,29 @@ namespace NGUInjector.Managers
             return null;
         }
 
-        private static void SaveCurrentLoadout()
+        internal static void SaveCurrentLoadout()
         {
-            var inv = Main.Character.inventory;
-            var loadout = new List<int>
-            {
-                inv.head.id,
-                inv.boots.id,
-                inv.chest.id,
-                inv.legs.id,
-                inv.weapon.id
-            };
-
-
-            if (Main.Character.inventoryController.weapon2Unlocked())
-            {
-                loadout.Add(inv.weapon2.id);
-            }
-
-            for (var id = 10000; Controller.accessoryID(id) < Main.Character.inventory.accs.Count; ++id)
-            {
-                var index = Controller.accessoryID(id);
-                loadout.Add(Main.Character.inventory.accs[index].id);
-            }
-
-            _savedLoadout = loadout.ToArray();
-            Log($"Saved Loadout {string.Join(",", _savedLoadout.Select(x => x.ToString()).ToArray())}");
+            _savedLoadout = Main.Character.inventory.GetConvertedEquips().ToArray();
+            Log($"Saved Loadout {string.Join(",", _savedLoadout.Select(x => x.id.ToString()).ToArray())}");
         }
 
         internal static void SaveTempLoadout()
         {
-            var inv = Main.Character.inventory;
-            var loadout = new List<int>
-            {
-                inv.head.id,
-                inv.boots.id,
-                inv.chest.id,
-                inv.legs.id,
-                inv.weapon.id
-            };
-
-
-            if (Main.Character.inventoryController.weapon2Unlocked())
-            {
-                loadout.Add(inv.weapon2.id);
-            }
-
-            for (var id = 10000; Controller.accessoryID(id) < Main.Character.inventory.accs.Count; ++id)
-            {
-                var index = Controller.accessoryID(id);
-                loadout.Add(Main.Character.inventory.accs[index].id);
-            }
-            _tempLoadout = loadout.ToArray();
-            Log($"Saved Loadout {string.Join(",", _tempLoadout.Select(x => x.ToString()).ToArray())}");
+            _tempLoadout = Main.Character.inventory.GetConvertedEquips().ToArray();
+            Log($"Saved Temp Loadout {string.Join(",", _tempLoadout.Select(x => x.id.ToString()).ToArray())}");
         }
 
         internal static void RestoreTempLoadout()
         {
-            ChangeGear(_tempLoadout);
+            if (_tempLoadout == null)
+            {
+                Log("Failed to restore temporary loadout: no saved snapshot is available");
+                return;
+            }
+
+            var failure = GearOptimizer.EquipGear(_tempLoadout, false, true);
+            if (failure != null)
+                Log($"Failed to restore temporary loadout: {failure}");
         }
 
         //private static float GetSeedGain(Equipment e)

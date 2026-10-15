@@ -204,7 +204,7 @@ namespace NGUInjector
 
         internal static void DoAllocations(this CustomAllocation allocation)
         {
-            if (!Settings.GlobalEnabled)
+            if (!LegacyAutomationEnabled || !Settings.GlobalEnabled)
                 return;
 
             if (allocation.IsAllocationRunning)

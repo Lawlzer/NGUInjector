@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using UnityEngine;
@@ -12,9 +13,40 @@ namespace NGUInjector
         private static GameObject _load;
         public static void Init()
         {
-            _load = new GameObject();
-            _load.AddComponent<Main>();
-            Object.DontDestroyOnLoad(_load);
+            TraceStartup("Loader.Init entered.");
+            try
+            {
+                if (_load != null || Main.reference != null)
+                {
+                    TraceStartup("Loader.Init skipped: an existing injector object or reference is present.");
+                    return;
+                }
+                _load = new GameObject();
+                TraceStartup("Injector GameObject created.");
+                var component = _load.AddComponent<Main>();
+                TraceStartup("Main component added: " + (component != null));
+                Object.DontDestroyOnLoad(_load);
+                TraceStartup("Injector GameObject retained across scenes.");
+            }
+            catch (Exception e)
+            {
+                TraceStartup("Loader.Init failed: " + e);
+                throw;
+            }
+        }
+
+        internal static void TraceStartup(string message)
+        {
+            try
+            {
+                var directory = Path.Combine(Environment.ExpandEnvironmentVariables("%userprofile%/Desktop"), "NGUInjector");
+                Directory.CreateDirectory(directory);
+                File.AppendAllText(Path.Combine(directory, "loader-startup.log"), DateTime.UtcNow.ToString("o") + " " + message + Environment.NewLine);
+            }
+            catch
+            {
+                // A diagnostic failure must not prevent injection or cleanup.
+            }
         }
 
         public static void Unload()
@@ -24,9 +56,23 @@ namespace NGUInjector
 
         private static void _Unload()
         {
-            Main.reference.Unload();
-            _load.SetActive(false);
-            Object.Destroy(_load);
+            var load = _load;
+            _load = null;
+            try
+            {
+                var instance = Main.reference;
+                if (instance == null && load != null)
+                    instance = load.GetComponent<Main>();
+                instance?.Unload();
+            }
+            finally
+            {
+                if (load != null)
+                {
+                    load.SetActive(false);
+                    Object.Destroy(load);
+                }
+            }
         }
     }
 }

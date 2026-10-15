@@ -9,7 +9,9 @@
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>NGUInjector</RootNamespace>
     <AssemblyName>NGUInjector</AssemblyName>
-    <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <GameFolder Condition="'$(GameFolder)' == ''">$(NGU_IDLE_DIR)</GameFolder>
+    <ManagedPath Condition="'$(ManagedPath)' == '' and '$(GameFolder)' != ''">$(GameFolder)\NGUIdle_Data\Managed</ManagedPath>
     <FileAlignment>512</FileAlignment>
     <Deterministic>false</Deterministic>
     <TargetFrameworkProfile />
@@ -36,7 +38,8 @@
   <ItemGroup>
     <Reference Include="Assembly-CSharp, Version=0.0.0.0, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>.\Assembly-CSharp.dll</HintPath>
+      <HintPath>$(ManagedPath)\Assembly-CSharp.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
@@ -47,11 +50,29 @@
     <Reference Include="System.Data" />
     <Reference Include="System.Xml" />
     <Reference Include="UnityEngine">
-      <HintPath>..\..\..\..\..\..\Steam\steamapps\common\NGU IDLE\NGUIdle_Data\Managed\UnityEngine.dll</HintPath>
+      <HintPath>$(ManagedPath)\UnityEngine.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedPath)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(ManagedPath)\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(ManagedPath)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule">
+      <HintPath>$(ManagedPath)\UnityEngine.JSONSerializeModule.dll</HintPath>
+      <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.UI, Version=1.0.0.0, Culture=neutral, processorArchitecture=MSIL">
       <SpecificVersion>False</SpecificVersion>
-      <HintPath>..\..\..\..\..\..\Steam\steamapps\common\NGU IDLE\NGUIdle_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <HintPath>$(ManagedPath)\UnityEngine.UI.dll</HintPath>
+      <Private>False</Private>
     </Reference>
   </ItemGroup>
   <ItemGroup>
@@ -68,30 +89,67 @@
     <Compile Include="AllocationProfiles\BreakpointTypes\TimeMachineBP.cs" />
     <Compile Include="AllocationProfiles\BreakpointTypes\WandoosBP.cs" />
     <Compile Include="AllocationProfiles\BreakpointTypes\WishBP.cs" />
+    <Compile Include="AllocationProfiles\BreakpointModels.cs" />
+    <Compile Include="AllocationProfiles\CustomAllocation.Breakpoints.cs" />
+    <Compile Include="AllocationProfiles\CustomAllocation.Equipment.cs" />
+    <Compile Include="AllocationProfiles\CustomAllocation.Loading.cs" />
+    <Compile Include="AllocationProfiles\CustomAllocation.Rebirth.cs" />
+    <Compile Include="AllocationProfiles\CustomAllocation.ResourceAllocation.cs" />
+    <Compile Include="AllocationProfiles\CustomAllocation.Switching.cs" />
     <Compile Include="AllocationProfiles\CustomAllocation.cs" />
     <Compile Include="AllocationProfiles\AllocationProfile.cs" />
     <Compile Include="AllocationProfiles\BreakpointTypes\NGUBP.cs" />
     <Compile Include="AllocationProfiles\RebirthStuff\BaseRebirth.cs" />
     <Compile Include="AllocationProfiles\RebirthStuff\BossNumRebirth.cs" />
+    <Compile Include="AllocationProfiles\RebirthStuff\CustomPlanRebirth.cs" />
+    <Compile Include="AllocationProfiles\RebirthStuff\ManualRebirth.cs" />
     <Compile Include="AllocationProfiles\RebirthStuff\NoRebirth.cs" />
     <Compile Include="AllocationProfiles\RebirthStuff\NumberRebirth.cs" />
     <Compile Include="AllocationProfiles\RebirthStuff\TimeRebirth.cs" />
     <Compile Include="Consts.cs" />
+    <Compile Include="CustomPlans\CustomPlan.cs" />
+    <Compile Include="CustomPlans\CustomPlanStore.cs" />
     <Compile Include="Managers\ZoneStatHelper.cs" />
     <Compile Include="Managers\ZoneHelpers.cs" />
     <Compile Include="Managers\CombatHelpers.cs" />
     <Compile Include="Managers\CombatManager.cs" />
     <Compile Include="Managers\DiggerManager.cs" />
     <Compile Include="Extensions.cs" />
+    <Compile Include="Managers\AugmentOptimizer.cs" />
+    <Compile Include="Managers\BeardManager.cs" />
+    <Compile Include="Managers\BlackBarAllocator.cs" />
+    <Compile Include="Managers\BloodMagicOptimizer.cs" />
+    <Compile Include="Managers\BloodGoalEstimate.cs" />
+    <Compile Include="Managers\IronPillAutomation.cs" />
+    <Compile Include="Managers\BoostFarmHelper.cs" />
+    <Compile Include="Managers\CustomStageAllocator.cs" />
+    <Compile Include="Managers\GearOptimizer.cs" />
     <Compile Include="Managers\InventoryManager.cs" />
     <Compile Include="Loader.cs" />
+    <Compile Include="JsonFiles.cs" />
     <Compile Include="Managers\LoadoutManager.cs" />
+    <Compile Include="Main.AutomationLoop.cs" />
+    <Compile Include="Main.BossPush.cs" />
+    <Compile Include="Main.CombatRouting.cs" />
+    <Compile Include="Main.CustomAdventure.cs" />
+    <Compile Include="Main.CustomAutomation.cs" />
+    <Compile Include="Main.CustomFocus.cs" />
+    <Compile Include="Main.CustomProbe.cs" />
+    <Compile Include="Main.CustomPrep.cs" />
+    <Compile Include="Main.ExternalUi.cs" />
+    <Compile Include="Main.Logging.cs" />
+    <Compile Include="Main.Lifecycle.cs" />
+    <Compile Include="Main.Profiles.cs" />
+    <Compile Include="Main.Telemetry.cs" />
     <Compile Include="Main.cs" />
     <Compile Include="Managers\MoneyPitManager.cs" />
     <Compile Include="Managers\WishManager.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Managers\QuestManager.cs" />
     <Compile Include="SavedSettings.cs" />
+    <Compile Include="SettingsForm.Custom.cs">
+      <DependentUpon>SettingsForm.cs</DependentUpon>
+    </Compile>
     <Compile Include="SettingsForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -102,19 +160,12 @@
     <Compile Include="Managers\YggdrasilManager.cs" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="Assembly-CSharp.dll" />
-    <Content Include="inject\SharpMonoInjector.dll">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </Content>
-    <Content Include="inject\smi.exe">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </Content>
+    <None Include="inject\SharpMonoInjector.dll" />
+    <None Include="inject\smi.exe" />
   </ItemGroup>
   <ItemGroup>
     <None Include="defaultZoneStats.json" />
-    <None Include="inject.bat">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
+    <None Include="inject.bat" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="SettingsForm.dje.resx">
@@ -126,12 +177,21 @@
   </ItemGroup>
   <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Target Name="ValidateNGUManagedPath" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="'$(ManagedPath)' == '' or !Exists('$(ManagedPath)\Assembly-CSharp.dll')" Text="NGU Idle managed assemblies not found. Set /p:GameFolder=&quot;...\NGU IDLE&quot; or NGU_IDLE_DIR." />
+  </Target>
   <PropertyGroup>
-    <PostBuildEvent>rmdir /S /Q dist
-md dist
-xcopy /E /I inject dist\injector
-copy NGUInjector.dll dist\injector
-copy inject.bat dist\
-xcopy /E /I $(ProjectDir)SampleProfiles dist\sampleprofiles</PostBuildEvent>
+    <DistDir>$(TargetDir)dist\</DistDir>
   </PropertyGroup>
+  <Target Name="BuildDist" AfterTargets="Build">
+    <RemoveDir Directories="$(DistDir)" />
+    <MakeDir Directories="$(DistDir)injector" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(DistDir)injector" />
+    <Copy SourceFiles="$(ProjectDir)inject\SharpMonoInjector.dll;$(ProjectDir)inject\smi.exe" DestinationFolder="$(DistDir)injector" />
+    <Copy SourceFiles="$(ProjectDir)inject.bat" DestinationFolder="$(DistDir)" />
+    <ItemGroup>
+      <SampleProfileFiles Include="$(ProjectDir)SampleProfiles\**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(SampleProfileFiles)" DestinationFiles="@(SampleProfileFiles->'$(DistDir)sampleprofiles\%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
 </Project>

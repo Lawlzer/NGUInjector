@@ -21,10 +21,24 @@ namespace NGUInjector
         internal readonly Dictionary<int, string> CombatModeList;
         internal readonly Dictionary<int, string> CubePriorityList;
         internal readonly Dictionary<int, string> SpriteEnemyList;
+        private const int DesignerClientWidth = 605;
+        private const int DesignerClientHeight = 387;
+        private const float MinUiZoom = 0.75f;
+        private const float MaxUiZoom = 2.0f;
+        private const float UiZoomStep = 1.1f;
+        private float _uiZoom = 1.0f;
         private bool _initializing = true;
+        private readonly Dictionary<Control, Font> _baseFonts = new Dictionary<Control, Font>();
         public SettingsForm()
         {
             InitializeComponent();
+            RemoveLegacyTabs();
+            BuildCustomTab();
+            BuildCustomMiscTab();
+            BuildAdventureTab();
+            BuildCustomTogglesTab();
+            BuildCustomDebugTab();
+            ConfigureResponsiveLayout();
 
             // Populate our data sources
             CubePriorityList = new Dictionary<int, string>
@@ -114,23 +128,23 @@ namespace NGUInjector
                 }
             }
 
-            CubePriority.DataSource = new BindingSource(CubePriorityList, null);
+            CubePriority.DataSource = new BindingSource(CubePriorityList.ToList(), null);
             CubePriority.ValueMember = "Key";
             CubePriority.DisplayMember = "Value";
 
-            CombatMode.DataSource = new BindingSource(CombatModeList, null);
+            CombatMode.DataSource = new BindingSource(CombatModeList.ToList(), null);
             CombatMode.ValueMember = "Key";
             CombatMode.DisplayMember = "Value";
 
-            ITOPODCombatMode.DataSource = new BindingSource(CombatModeList, null);
+            ITOPODCombatMode.DataSource = new BindingSource(CombatModeList.ToList(), null);
             ITOPODCombatMode.ValueMember = "Key";
             ITOPODCombatMode.DisplayMember = "Value";
 
-            QuestCombatMode.DataSource = new BindingSource(CombatModeList, null);
+            QuestCombatMode.DataSource = new BindingSource(CombatModeList.ToList(), null);
             QuestCombatMode.ValueMember = "Key";
             QuestCombatMode.DisplayMember = "Value";
 
-            CombatTargetZone.DataSource = new BindingSource(ZoneList, null);
+            CombatTargetZone.DataSource = new BindingSource(ZoneList.ToList(), null);
             CombatTargetZone.ValueMember = "Key";
             CombatTargetZone.DisplayMember = "Value";
             
@@ -140,8 +154,10 @@ namespace NGUInjector
 
             EnemyBlacklistZone.ValueMember = "Key";
             EnemyBlacklistZone.DisplayMember = "Value";
-            EnemyBlacklistZone.DataSource = new BindingSource(ZoneList.Where(x => !ZoneHelpers.TitanZones.Contains(x.Key) ).ToDictionary(x => x.Key, x=> x.Value), null);
-            EnemyBlacklistZone.SelectedIndex = 0;
+            var enemyZoneCount = Main.Character.adventureController.enemyList.Count;
+            EnemyBlacklistZone.DataSource = new BindingSource(ZoneList.Where(x => x.Key >= 0 && x.Key < enemyZoneCount && !ZoneHelpers.TitanZones.Contains(x.Key)).ToList(), null);
+            if (EnemyBlacklistZone.Items.Count > 0)
+                EnemyBlacklistZone.SelectedIndex = 0;
 
 
             blacklistLabel.Text = "";
@@ -165,6 +181,138 @@ namespace NGUInjector
             WishDownButton.Text = char.ConvertFromUtf32(8595);
 
             VersionLabel.Text = $"Version: {Main.Version}";
+        }
+
+        private void ConfigureResponsiveLayout()
+        {
+            var workArea = Screen.FromPoint(Cursor.Position).WorkingArea;
+            FormBorderStyle = FormBorderStyle.Sizable;
+            MaximizeBox = true;
+            MinimizeBox = true;
+            SizeGripStyle = SizeGripStyle.Show;
+            MinimumSize = SizeFromClientSize(new Size(DesignerClientWidth, DesignerClientHeight));
+            KeyPreview = true;
+            KeyDown += SettingsForm_KeyDown;
+
+            flowLayoutPanel1.Controls.Remove(progressBar1);
+            flowLayoutPanel1.Controls.Remove(tabControl1);
+            Controls.Remove(flowLayoutPanel1);
+
+            progressBar1.Dock = DockStyle.Top;
+            progressBar1.Height = Math.Max(progressBar1.Height, 14);
+            tabControl1.Dock = DockStyle.Fill;
+            Controls.Add(tabControl1);
+            Controls.Add(progressBar1);
+            tabControl1.BringToFront();
+
+            foreach (TabPage tabPage in tabControl1.TabPages)
+            {
+                tabPage.AutoScroll = true;
+            }
+
+            ClientSize = FitToWorkArea(new Size(900, 650), workArea);
+            CenterToScreen();
+            CaptureBaseFonts(this);
+        }
+
+        private void SettingsForm_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (!e.Control)
+                return;
+
+            if (e.KeyCode == Keys.Oemplus || e.KeyCode == Keys.Add)
+            {
+                AdjustUiZoom(UiZoomStep);
+                e.SuppressKeyPress = true;
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.OemMinus || e.KeyCode == Keys.Subtract)
+            {
+                AdjustUiZoom(1.0f / UiZoomStep);
+                e.SuppressKeyPress = true;
+                e.Handled = true;
+            }
+        }
+
+        private void AdjustUiZoom(float factor)
+        {
+            var newZoom = Math.Max(MinUiZoom, Math.Min(MaxUiZoom, _uiZoom * factor));
+            if (Math.Abs(newZoom - _uiZoom) < 0.001f)
+                return;
+
+            var actualFactor = newZoom / _uiZoom;
+            _uiZoom = newZoom;
+
+            var oldClientSize = ClientSize;
+            var workArea = Screen.FromControl(this).WorkingArea;
+            SuspendLayout();
+            try
+            {
+                ScaleControlFonts(this);
+                ClientSize = FitToWorkArea(new Size(
+                    Math.Max(DesignerClientWidth, (int) (oldClientSize.Width * actualFactor)),
+                    Math.Max(DesignerClientHeight, (int) (oldClientSize.Height * actualFactor))), workArea);
+                ReflowAutoSizedLayout(this);
+            }
+            finally
+            {
+                ResumeLayout(true);
+                Invalidate(true);
+            }
+        }
+
+        private static void ReflowAutoSizedLayout(Control root)
+        {
+            foreach (Control child in root.Controls)
+            {
+                ReflowAutoSizedLayout(child);
+            }
+
+            root.PerformLayout();
+        }
+
+        private void CaptureBaseFonts(Control root)
+        {
+            if (root.Font != null && !_baseFonts.ContainsKey(root))
+            {
+                _baseFonts[root] = root.Font;
+            }
+
+            foreach (Control child in root.Controls)
+            {
+                CaptureBaseFonts(child);
+            }
+        }
+
+        private void ScaleControlFonts(Control root)
+        {
+            ScaleControlFont(root);
+            foreach (Control child in root.Controls)
+            {
+                ScaleControlFonts(child);
+            }
+        }
+
+        private void ScaleControlFont(Control control)
+        {
+            if (control.Font == null)
+                return;
+
+            if (!_baseFonts.TryGetValue(control, out var baseFont))
+            {
+                baseFont = control.Font;
+                _baseFonts[control] = baseFont;
+            }
+
+            var newSize = Math.Max(6.0f, Math.Min(36.0f, baseFont.Size * _uiZoom));
+            control.Font = new Font(baseFont.FontFamily, newSize, baseFont.Style, baseFont.Unit);
+        }
+
+        private static Size FitToWorkArea(Size size, Rectangle workArea)
+        {
+            return new Size(
+                Math.Max(DesignerClientWidth, Math.Min(size.Width, Math.Max(DesignerClientWidth, workArea.Width - 80))),
+                Math.Max(DesignerClientHeight, Math.Min(size.Height, Math.Max(DesignerClientHeight, workArea.Height - 80))));
         }
 
         internal void SetTitanGoldBox(SavedSettings newSettings)
@@ -220,6 +368,26 @@ namespace NGUInjector
         internal void UpdateFromSettings(SavedSettings newSettings)
         {
             _initializing = true;
+            try
+            {
+                if (!Main.LegacyAutomationEnabled)
+                {
+                    UpdateCustomTabFromSettings(newSettings);
+                    Refresh();
+                    return;
+                }
+
+                UpdateLegacyTabsFromSettings(newSettings);
+                Refresh();
+            }
+            finally
+            {
+                _initializing = false;
+            }
+        }
+
+        private void UpdateLegacyTabsFromSettings(SavedSettings newSettings)
+        {
             AutoDailySpin.Checked = newSettings.AutoSpin;
             AutoFightBosses.Checked = newSettings.AutoFight;
             AutoITOPOD.Checked = newSettings.AutoQuestITOPOD;
@@ -262,7 +430,8 @@ namespace NGUInjector
             ButterMinors.Checked = newSettings.UseButterMinor;
             ActivateFruits.Checked = newSettings.ActivateFruits;
             BeastMode.Checked = newSettings.BeastMode;
-            CubePriority.SelectedIndex = newSettings.CubePriority;
+            if (CubePriority.Items.Count > 0)
+                CubePriority.SelectedIndex = Math.Max(0, Math.Min(CubePriority.Items.Count - 1, newSettings.CubePriority));
             BloodNumberThreshold.Text = $"{newSettings.BloodNumberThreshold:#.##E+00}";
             ManageNGUDiff.Checked = newSettings.ManageNGUDiff;
             ManageGoldLoadouts.Checked = newSettings.ManageGoldLoadouts;
@@ -289,6 +458,7 @@ namespace NGUInjector
             MoreBlockParry.Checked = newSettings.MoreBlockParry;
             WishSortOrder.Checked = newSettings.WishSortOrder;
             WishSortPriorities.Checked = newSettings.WishSortPriorities;
+            UpdateCustomTabFromSettings(newSettings);
 
             SetTitanGoldBox(newSettings);
             SetTitanSwapBox(newSettings);
@@ -397,9 +567,6 @@ namespace NGUInjector
             {
                 BlacklistedBosses.Items.Clear();
             }
-
-            Refresh();
-            _initializing = false;
         }
 
         internal void UpdateProfileList(string[] profileList, string selectedProfile)
@@ -414,6 +581,7 @@ namespace NGUInjector
             if (progress < 0)
                 return;
             progressBar1.Value = progress;
+            UpdateCustomRuntimeStatus();
         }
 
         private void MasterEnable_CheckedChanged(object sender, EventArgs e)
@@ -1356,7 +1524,12 @@ namespace NGUInjector
         private void EnemyBlacklistZone_SelectedIndexChanged(object sender, EventArgs e)
         {
             var selected = EnemyBlacklistZone.SelectedItem;
-            var item = (KeyValuePair<int, string>) selected;
+            if (!(selected is KeyValuePair<int, string> item))
+                return;
+
+            if (item.Key < 0 || item.Key >= Main.Character.adventureController.enemyList.Count)
+                return;
+
             var values = Main.Character.adventureController.enemyList[item.Key]
                 .Select(x => new KeyValuePair<int, string>(x.spriteID, x.name)).ToList();
             EnemyBlacklistNames.DataSource = null;

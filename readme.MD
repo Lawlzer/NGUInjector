@@ -2,6 +2,28 @@
 
 NGUInjector is an automation platform for the steam version of NGU Idle.
 
+## External Desktop UI
+
+The new controller is in [`NGUInjector.UI`](NGUInjector.UI/README.md): **Tauri 2 / Rust + Svelte 5 / TypeScript**. The injected Unity automation remains C#; WinForms is retained as an optional fallback.
+
+From this repository root:
+
+```powershell
+.\start-ui.ps1
+# Development with hot reload:
+.\start-ui.ps1 -Dev
+# Checks without launching or modifying the game:
+.\verify-ui.ps1
+```
+
+The controller uses the existing `%USERPROFILE%\Desktop\NGUInjector` runtime folder. Enable external UI mode in the controller **before injecting**. If an injector is already running, unload it first; settings/plans are protected against offline writes while it owns the directory. Opening the controller does not automatically inject, restart NGU, or enable automation.
+
+See the UI README for runtime setup, command protocol, safety constraints, and verification details. The screenshots and instructions below describe the legacy WinForms interface.
+
+Custom stages optionally support **Fight on entry** (`FightOnEntry`, default false). Put it on the stage after Augments to run manual-style fight prep/boss push, then resume the current stage's gear/allocation without changing plan or auto-rebirth switches. See the UI README for lock, timing, and reload caveats; existing plans are unchanged until edited.
+
+Custom plans optionally set root `"AutoIronPillEnabled": false` to disable automatic Iron Pill reservation/prep/casting, including its Augments/Blood resource override. Omitted values default to true for existing and new plans. This leaves automatic blood spells, rebirth settings, and the stage schedule unchanged, allowing a final NGU-only phase without Iron Pill interruptions. The field accepts only JSON booleans and is preserved by plan reads, saves, and copies; no dedicated UI toggle is provided.
+
 # Instructions
 
 Releases can be found in the releases section of the github page [here](https://github.com/rvazarkar/NGUInjector/releases). The latest release can be found [here](https://github.com/rvazarkar/NGUInjector/releases/latest). Do not download the source code archive, instead download the zip file with the release version in the name (3.0.0.zip for example). Extract the downloaded archive to a directory of your choice. To start automation, run inject.bat in the extracted folder when NGU Idle is open. DO NOT RUN AS ADMINISTRATOR.

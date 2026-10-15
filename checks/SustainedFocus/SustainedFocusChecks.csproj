@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <NoWarn>$(NoWarn);CS0649</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../NGUInjector/Main.CustomFocus.cs" Link="Production/Main.CustomFocus.cs" />
+    <Compile Include="../../NGUInjector/Managers/BlackBarAllocator.cs" Link="Production/BlackBarAllocator.cs" />
+    <Compile Include="../../NGUInjector/Managers/CustomStageAllocator.cs" Link="Production/CustomStageAllocator.cs" />
+    <Compile Include="../../NGUInjector/Managers/BloodMagicOptimizer.cs" Link="Production/BloodMagicOptimizer.cs" />
+    <Compile Include="../../NGUInjector/CustomPlans/CustomPlan.cs" Link="Production/CustomPlan.cs" />
+    <Compile Include="../../NGUInjector/CustomPlans/CustomPlanStore.cs" Link="Production/CustomPlanStore.cs" />
+    <Compile Include="../../NGUInjector/JsonFiles.cs" Link="Production/JsonFiles.cs" />
+    <Compile Include="../../NGUInjector/SimpleJson.cs" Link="Production/SimpleJson.cs" />
+  </ItemGroup>
+</Project>
