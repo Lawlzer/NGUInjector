@@ -36,19 +36,17 @@
 </script>
 
 <article class="card span-2">
-  <p class="eyebrow">Augments</p>
-  <h2>Choose an augment</h2>
+  <h2>Augments</h2>
   <div class="form-grid two">
     <label class="toggle-row compact"><input type="checkbox" bind:checked={useSaved} disabled={busy} /><span><strong>Use saved duration</strong></span></label>
     <label>Duration (s)<input type="number" min="1" max={INT_MAX} step="1" value={expectedSeconds} disabled={useSaved || busy} on:input={event => expectedSeconds = (event.currentTarget as HTMLInputElement).value} /></label>
   </div>
-  {#if estimatePending && useSaved}<p class="notice">Using saved duration. Save Settings or enter a duration here.</p>{/if}
+  {#if estimatePending && useSaved}<p class="notice">Duration changes pending.</p>{/if}
   {#if validation}<p class="notice error" role="alert">{validation}</p>{/if}
   <div class="button-row">
     <button type="button" disabled={busy || !canPreview || !!validation} on:click={() => run('previewAugments')}>Preview</button>
-    <button type="button" class="danger" disabled={busy || !canAllocate || !!validation} on:click={() => run('allocateAugments')}>Allocate</button>
+    <button type="button" class="danger" title="Recalculate and replace energy assignments." disabled={busy || !canAllocate || !!validation} on:click={() => run('allocateAugments')}>Allocate</button>
   </div>
-  <p class="muted">Allocate recalculates and changes energy assignments.</p>
   {#if result}
     <h3>{result.command === 'allocateAugments' ? 'Last allocation' : 'Last preview'}</h3>
     {#if result.success === false}
@@ -63,7 +61,7 @@
       </dl>
     {/if}
     <details><summary>Details</summary>
-      <p class="muted">Completed {String(result.completedAt ?? result.completed_at ?? 'at an unknown time')}. Result at that time, not a live estimate.</p>
+      <p class="muted">Completed {String(result.completedAt ?? result.completed_at ?? 'at an unknown time')}.</p>
       <dl class="stats compact-stats">{#each metrics as [key, label]}<div><dt>{label}</dt><dd>{metric(data[key])}</dd></div>{/each}</dl>
       {#if result.message}<p class="muted">{String(result.message)}</p>{/if}
       <details><summary>Full result</summary><pre>{pretty(data)}</pre></details>

@@ -1375,15 +1375,15 @@ namespace NGUInjector
 
         private void HarvestAllButton_Click(object sender, EventArgs e)
         {
-            if (Main.Settings.SwapYggdrasilLoadouts && Main.Settings.YggdrasilLoadout.Length > 0 && YggdrasilManager.AnyHarvestable())
+            if (Main.reference != null && YggdrasilManager.AnyHarvestable())
             {
-                if (!LoadoutManager.TryYggdrasilSwap() || !DiggerManager.TryYggSwap())
+                if (!Main.reference.PrepareHarvestAction()) { Main.Log("Harvest setup is waiting."); return; }
+                try
                 {
-                    Main.Log("Unable to harvest now");
-                    return;
+                    for (var fruit = 0; fruit < Main.Character.yggdrasil.fruits.Count; fruit++)
+                        Main.reference.HarvestFruitAction(fruit, false, true);
                 }
-
-                YggdrasilManager.HarvestAll();
+                finally { Main.reference.ReleaseHarvestAction(); }
             }
         }
 

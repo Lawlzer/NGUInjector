@@ -4,12 +4,18 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>disable</Nullable>
-    <NoWarn>$(NoWarn);CS0649</NoWarn>
+    <NoWarn>$(NoWarn);CS0649;CS8981</NoWarn>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <CombatSourceRoot Condition="'$(CombatSourceRoot)' == ''">$(MSBuildProjectDirectory)/../../NGUInjector</CombatSourceRoot>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../NGUInjector/Main.CustomAdventure.cs" Link="Production/Main.CustomAdventure.cs" />
-    <Compile Include="../../NGUInjector/Managers/CombatManager.cs" Link="Production/CombatManager.cs" />
-    <Compile Include="../../NGUInjector/Managers/CombatHelpers.cs" Link="Production/CombatHelpers.cs" />
-    <Compile Include="../../NGUInjector/Managers/ZoneHelpers.cs" Link="Production/ZoneHelpers.cs" />
+    <Compile Include="$(CombatSourceRoot)/AdventureRule.cs" Link="Production/AdventureRule.cs" />
+    <Compile Include="../../NGUInjector/SimpleJson.cs" Link="Production/SimpleJson.cs" />
+    <Compile Include="$(CombatSourceRoot)/Managers/ZoneHelpers.cs" Link="Production/ZoneHelpers.cs" />
+    <Compile Include="Program.cs;Stubs.cs;NonFastCombatChecks.cs;AdventureRuleChecks.cs;TitanEligibilityChecks.cs" />
+    <Compile Include="$(IntermediateOutputPath)CombatDecisions.g.cs" />
   </ItemGroup>
+  <Target Name="ExtractCombatDecisions" BeforeTargets="CoreCompile">
+    <Exec Command="dotnet run --project &quot;$(MSBuildProjectDirectory)/SourceProjection/SourceProjection.csproj&quot; -c Release -- &quot;$(CombatSourceRoot)&quot; &quot;$([System.IO.Path]::Combine('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'CombatDecisions.g.cs'))&quot;" />
+  </Target>
 </Project>

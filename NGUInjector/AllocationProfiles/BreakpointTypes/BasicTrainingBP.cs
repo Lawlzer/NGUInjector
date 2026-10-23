@@ -28,24 +28,6 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return false;
         }
 
-        internal override bool Allocate()
-        {
-            if (Index <= 5)
-            {
-                var cap = Character.training.attackCaps[BTIndex];
-                SetInput(Math.Min(cap, MaxAllocation));
-                Character.allOffenseController.trains[BTIndex].addEnergy();
-            }
-            else
-            {
-                var cap = Character.training.defenseCaps[BTIndex];
-                SetInput(Math.Min(cap, MaxAllocation));
-                Character.allDefenseController.trains[BTIndex].addEnergy();
-            }
-
-            return true;
-        }
-
         protected override bool CorrectResourceType()
         {
             return Type == ResourceType.Energy;

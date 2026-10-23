@@ -1,0 +1,83 @@
+# Shared Support Contract
+
+`Managers/SupportProjection.cs` is the shared pure support projection/planning implementation, delegating drain and deterministic affordability/backfill to `DiggerAllocation`. It has no game references or preset/Combat objective policy. `Main.Support.cs` is the shared game capture/exact actuator. Preset wrappers and Combat phase capture/execution now delegate to these APIs rather than copying support formulas or native setters. Both sources are included in the normal production manifest.
+
+## Pure API
+
+All types/members are `internal` in `NGUInjector.Managers`.
+
+```csharp
+SupportDiggerLevel(int id, long level) // readonly Id and Level
+SupportSelection(int[] beardIds, SupportDiggerLevel[] diggerLevels)
+SupportEvaluation SupportProjection.Plan(SupportContext context,
+    int[] beardPriorities, DiggerBudgetRequest[] requests, double gpsFraction)
+SupportEvaluation SupportProjection.Evaluate(SupportContext context,
+    SupportSelection selection, double budgetFraction, bool enforceBudget)
+```
+
+`SupportSelection.Beards` and `.Diggers` return defensive canonical ID-sorted arrays; construction copies inputs without silently dropping duplicates. `.StableKey` retains exact decimal `long` levels. Evaluation rejects duplicate/illegal IDs, nonpositive levels, purchased-bound/slot/availability violations, invalid fractions, nonfinite projections, negative net GPS and optionally policy-budget excess. An empty selection is genuinely empty. Free diggers still consume slots and can be planned at zero GPS/fraction. `Plan` filters/distincts the caller's ordered beard priorities, then caps them; it never inserts policy beards. Combat supplies its core/required/retained/optional priorities itself. The preset planner generates its own bounded legal portfolios and scores their actual modeled six-goal production; shared `Plan` is the legality/funding primitive, not that objective search.
+
+`SupportContext` contains availability/disabled flags, native slot counts, unlocked beard IDs, `CurrentBeards`, all purchased/current digger rows in `Diggers` (including inactive levels), `CurrentDiggers`, and derived `.CurrentSelection`. Each `SupportDigger` contains `Id`, `Name`, exact `Maximum`/`Level`, drain coefficients/consumption and native boost coefficients. `DiggerLevelBonus` is the captured native purchased-level multiplier, independent of active selection. Existing `PresetSnapshot : SupportContext` fixtures therefore use the real shared data, not compatibility aliases.
+
+`BeardTemporary`, `BeardPermanent`, `BeardEffective` contain NGU/Gold/Adventure/Loot in that order. The temporary values are native potential getters with `true`, not offset guesses. W (ID 4) has separate float `BeardWTemporary`, `BeardWPermanent`, `BeardWEffective`; Stat (ID 0) has separate double `BeardStatTemporary`, `BeardStatPermanent`, `BeardStatEffective`. Disabled beards suppress both temporary and permanent bonuses. Dormant active flags can still be captured when beards are disabled; selecting disabled beards remains infeasible.
+
+`SupportEvaluation` names `Selection`, `Feasible`, `Reason` (null on success), `GrossGold`, `Drain`, `NetGold`, `Budget`, `BeardNGU`, `BeardW`, `BeardStat`, `BeardGold`, `BeardAdv`, `BeardLoot`, `DiggerLoot`, `DiggerW`, `DiggerStat`, `DiggerAdv`, `DiggerEnergyNGU`, `DiggerMagicNGU`, `DiggerEnergyBeard`, `DiggerMagicBeard`, `DiggerPP`, `DiggerDaycare`, `DiggerBlood`, `DiggerEXP`. Effects are absolute multipliers, not ratios. Invalid structural evaluations return an infeasible reason; do not use their effect/financial fields as forecasts. Daycare is the digger-only overload `(0, false)`, not the parameterless getter's extra gear/challenge multipliers.
+
+Linear digger bonuses follow native float boundaries; Stat digger ID 2 uses `(1d + (start + Pow(level, 3d) * perLevel)) * purchasedLevelBonus` as double. Native Stat offset is added after cubing and is not a level adjustment. No shared code uses offset getters to forecast another level. Unchanged beard/digger activation and levels preserve materialized native effective getters, including double Stat effects.
+
+`GrossGold`, `GoldActiveGross`, `GoldInactiveGross` are captured current/Gold-on/Gold-off double GPS. Both outcomes are computed read-only in native forward order:
+
+```text
+realBaseGold * bossMulti * barFills * speedGold * goldMulti
+  * bloodGold * beardGold * nguTimeMachine * challenge
+```
+
+The Time Machine challenge returns zero. There is no old/new Gold ratio, no native toggle during capture and no gear-Gold contribution to GPS. `ForwardGrossGold(...)` is the sole ordered formula. Capture checks its current outcome against the untouched native GPS getter with relative `1e-6` tolerance, then retains the exact native current outcome. The desktop Framework CLR can retain an extra Single ULP across a native float-return call (Gold beard/global digger purchased-level multiplier); changed-selection parity checks declare this tolerance rather than narrowing Stat results or inventing precision. Current effective values retain native exact precision.
+
+## Caller Policies
+
+Combat compares original support with deterministic phase support on the same owned goal gear. Each profile includes fixed-level native effects and its own net GPS before schedule comparison. Automatic scheduled Combat uses the same engine and actuator, but can freshly search the remaining budget at eligible boundaries or material GPS/equipment events. It preserves acquired unfinished AT gates, observed pools, OS and deadline. Exact support is pinned within each policy; changed purchased/slot/availability context or foreign edits do not silently resize an acquired policy. Lost restoration references retire old permissions and trigger automatic current-state reconciliation, not a permanent acknowledgement gate. Valid synchronous cleanup remains available; retries are bounded. See [Automatic Reconciliation](automatic-reconciliation.md).
+
+Preset planned support compares at most 64 deduplicated legal beard/digger policies, alternating full portfolio passes with a top-three support beam in gear search. Every trial scores actual modeled production, including route/magic-split effects and Gold-before-digger/blood affordability. Explicit beard priorities fix the filtered/capped selection; defaults preserve the ordered unlocked core prefix and vary only optional slots. Explicit digger weights retain eligibility/ranking/proportions but may use less funding; automatic portfolios include immediate-only, specialist/tilted and 100/50/25/0-percent funding alternatives. Current-support mode stays fixed. This is bounded best-found search, not exhaustive optimization or future support-growth prediction.
+
+Preset Apply remains one-shot with original frozen references and observed immediate results; ordinary beard rotation can change the selection afterward. Combat cleanup's `restored` status likewise records verification at termination, not perpetual ownership. Neither caller forecasts future beard/digger level growth. Forward W bootup and Wish-190 free AT are implemented separately in the Combat engine and are not speculative support growth. See [Mixed-Focus Presets](AUTOMATIC_COMBAT_AND_MIXED_FOCUS.md#mixed-focus-presets).
+
+## Private Main API
+
+All methods below are private members of `Main`, available directly to any other `Main` partial:
+
+```csharp
+static SupportContext CaptureSupportContext();
+static SupportState CaptureSupportState();
+static SupportEvaluation PreflightExactSupport(SupportSelection selection,
+    double budgetFraction, bool enforceBudget, SupportDiggerLevel[] inactiveLevels = null);
+SupportMutation ApplyExactSupport(SupportSelection selection,
+    double budgetFraction, bool enforceBudget, SupportDiggerLevel[] inactiveLevels = null);
+bool SupportMutationStillOwned(SupportMutation receipt);
+```
+
+Use `PreflightExactSupport` before an outer transaction pauses owners, consumes tokens, swaps gear or recalls resources. `ApplyExactSupport` repeats complete preflight immediately before its own first mutation: equipment/digger locks, mid-drag, controller/table/model availability, active lists/flags/uniqueness, unlocks/slots, exact purchased levels, input pod/readiness and candidate affordability. There is no resizing or substitute selection. Native input uses `pod.setID`, exact decimal input text, and `pod.setInputField`. A defensive per-setter `finally` restores the borrowed ID/text only while its objects/context and observed input remain owned. Every level is verified before any activation, followed by a fresh affordability check. Native `activateDigger` is a toggle and is only called on inactive diggers.
+
+The optional fourth argument restores only explicitly supplied inactive digger levels. IDs must be unique, present in capture, disjoint from `selection.Diggers`, and have exact levels in `0..Maximum` inclusive. Any selected or inactive level write requires digger availability and a ready input pod, even when the selection is empty or the requested level is zero. All inactive inputs are validated before the first mutation. Application defensively copies this array and sends selected plus explicit inactive levels through the same extracted native input setter and `WriteSupport` journal before activation. Final verification requires every extra ID to remain inactive at its exact requested level; inactive levels do not count toward slots, drain or funding. Existing three-argument calls retain their semantics. No unrequested inactive level is changed or restored automatically.
+
+Application clears ALL diggers before changing beards, avoiding Gold deactivation's clear/restore intermediates. It verifies the whole active IDs/flags/levels, gross GPS, drain and all named native effects. Support writes are synchronous with no yields. `InvalidateCustomBeardRequirements()` always runs in `finally` after beginning support mutation, without resetting the independent rotation clock. Preflight failures have no support side effects. Preset token/CAS, original baseline/normalization, one-shot behavior, UI JSON and its existing partial-failure contract remain unchanged.
+
+Native clear and final digger refresh call `updateUI` for every pod when menu 44 is visible, replacing draft input with current levels. Therefore the transaction captures ALL affected pod/input references, IDs and draft text BEFORE its first native write, including unborrowed pods. Its authoritative outer `finally` restores still-owned original drafts AFTER every refresh, on success or partial failure; setter-local restoration alone is insufficient. Exact object/controller/save/epoch replacement prevents UI restoration. Each synchronous boundary accepts only its previous expected draft or native-generated before/after level strings for that pod; borrowed input also checks immediately after `setID` and input assignment, before submission. An unexpected ID or new callback draft permanently revokes that pod's UI ownership, stops the transaction and leaves the foreign text untouched. A callback supplying a string identical to an allowed native value cannot be distinguished by this bounded observation guard. Restoration continues for other still-owned pods and does not mask a primary native exception if a UI setter also throws.
+
+## Partial Receipt
+
+`ApplyExactSupport` returns its receipt on success and stores it in private `Main._supportMutation` before the first native write. On throw, the caller can read that same field to adopt a partial state. Only one bounded receipt is retained; preflight rejection leaves the previous receipt unchanged, so compare the field/reference before and after calling if distinguishing preflight failure from an attempted transaction.
+
+`SupportMutation` contains `Before`, `After` (`SupportState`), `Objects` (exact support models/lists/rows/controllers/pods/input references), `Rebirth`, `Elapsed`, `Total`, `Completed`, `Interfered`, `TouchedLevelIds` (at most 12 attempted native level writes, including diggers left inactive), and bounded `PodDrafts` with original/expected text and sticky UI ownership. `Completed` is set only after support verification and is revoked if final UI restoration fails. A throw never claims rollback. `SupportState.Selection`, `.Levels`, `.BeardFlags`, `.DiggerFlags` are defensive data; `.StableKey` covers selection, ALL inactive/current levels and independent native active flags, including a partially completed native flags/list write.
+
+`WriteSupport(clearDiggers: true)` has a strict postcondition, including its exception-observation path: BOTH `After.Selection.Diggers` and `After.DiggerFlags` must be empty. A native refresh callback that reactivates even one digger, or sets only its active flag, marks `Interfered` and makes `SupportMutationStillOwned` false. A clear that empties both and then throws during refresh remains an adoptable owned partial state if the remaining ownership checks pass.
+
+Each native write is observed in `finally`. Changes outside that write's allowed beard/digger/level IDs mark `Interfered`; they cannot be adopted as owned state. `SupportMutationStillOwned(receipt)` requires the same latest receipt reference, no interference, matching exact object references/rebirth/time origin and an exact current state key matching the recorded `After`. A later manual selection edit, active-flag edit, inactive-level edit, superseding transaction or object/epoch replacement returns false. It performs no writes. The outer Combat transaction must keep its own receipt reference, check ownership plus its normal owner/lock/drag guards before cleanup, and recapture legality/funding. It must not blindly restore `Before` or overwrite a manual edit. This helper does not schedule cleanup or automatically restore inactive levels; `Before.Levels` and `TouchedLevelIds` give the outer transaction the exact restoration data. For owned cleanup, pass the original selection plus only originally inactive, touched IDs as the explicit fourth argument to `ApplyExactSupport`; do not copy the native setter into the Combat adapter. The caller is responsible for establishing ownership of every explicit inactive input before applying it.
+
+## Build And Offline Checks
+
+The production manifest includes `Managers\SupportProjection.cs` and `Main.Support.cs`. Verification uses a normal production `Rebuild`, without `BackendIncludes.targets` or other temporary source imports. There is no pending compile-import handoff. The recorded phase-support pass had 1,222 pure shared-support, 315 native preset-adapter and 4,668 compiled Combat assertions; these are historical pass totals, not current aggregate counts. Later mixed, native progression, equipment/recovery and adventure-float coverage is described in the [current guide](AUTOMATIC_COMBAT_AND_MIXED_FOCUS.md) and test READMEs. This documentation pass did not rerun them.
+
+`checks/SharedSupport` source-links only the pure shared module and `DiggerAllocation`. `checks/Presets` and `checks/PresetIntegration/NumericIntegrationChecks.csproj` link the same shared module. Compiled native checks under `checks/PresetIntegration` leave support W/Stat/GPS/effect getters, clear/refresh and exact-input controller methods untouched. `updateUI` executes its original menu/ID guard and exact InputField level-assignment IL slice, omitting unrelated rendering; InputField text storage and fault callbacks are isolated UI leaves. The menu-44 regression proves the native clear/final refresh overwrite effect on borrowed AND nonborrowed pods before checking preservation. This is not a claim of full native rendering coverage. No live game, save or installed assembly is touched.
+
+Native-shape/pod-text checks cover the inspected menu/ID guard, visible menu 44, borrowed/nonborrowed drafts, partial receipts and `Completed` semantics, including revoked completion after final restoration failure. They do not guarantee compatibility with every game version or detect a foreign callback whose text exactly equals an allowed native value. Phase application adopts only its new still-owned partial receipt; cleanup restores original active support plus only originally inactive touched levels, never unowned edits. See [Combat Prep Backend](COMBAT_PREP_BACKEND.md) for profile/replay/cleanup policy, the unchanged [phase-support recording](PHASE_SUPPORT_LIVE_VERIFICATION.md), and [latest automatic/mixed evidence and gaps](AUTOMATIC_COMBAT_AND_MIXED_FOCUS.md#recorded-live-evidence). No current final-game-state claim is made here. The preset adventure-only seven-ULP acceptance rule does not widen this module's declared support tolerance or preset resource/NGU/GPS/drop checks.

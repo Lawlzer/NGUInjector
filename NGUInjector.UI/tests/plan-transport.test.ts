@@ -23,7 +23,8 @@ const source = () => `{
   ]
 }`;
 const plan = () => api.parseJson(source()) as JsonObject;
-const ready = (): NguiState => ({ runtime_dir: 'A:/runtime', marker_enabled: true, connected: true, protocol: {}, settings: {}, runtime: { status: 'running', externalUiEnabled: true, protocolVersion: 3, updatedAt: new Date().toISOString(), supportedCommands: ['readPlan', 'savePlan', 'createPlan'] }, profiles: [], plans: [], logs: [], command_results: [] });
+const savedSettingsResponse = (settings: JsonObject) => api.stringifyJson({ success: true, mode: 'offline', data: { settings, revision: revision('b') } });
+const ready = (): NguiState => ({ runtime_dir: 'A:/runtime', marker_enabled: true, connected: true, protocol: {}, settings: {}, settings_revision: revision('a'), runtime: { status: 'running', externalUiEnabled: true, protocolVersion: 3, updatedAt: new Date().toISOString(), supportedCommands: ['readPlan', 'savePlan', 'createPlan', 'applySettingsPatch'] }, profiles: [], plans: [], logs: [], command_results: [] });
 
 beforeEach((): void => {
   // Returning the mock would register it as a teardown callback in Vitest.
@@ -108,6 +109,24 @@ describe('revision metadata', () => {
 });
 
 describe('native plan string IPC', () => {
+  it('strips retired overrides on read, save, and copy while preserving version and unknown data', async () => {
+    const original = { ...plan(), Version: 17, EnergyNguWeights: [3], MagicNguWeights: null, LoadoutPresets: [{ Id: 'legacy', EnergyNguWeights: [4], MagicNguWeights: [5], AdvancedTrainingWeights: [1, 1, 0, 0, 0] }], Stages: [{ Name: 'First', EnergyNguWeights: [6], MagicNguWeights: [7], Future: new LosslessNumber(first) }] };
+    const before = api.stringifyJson(original);
+    native.mockResolvedValueOnce(before).mockResolvedValueOnce({ success: true }).mockResolvedValueOnce('copy');
+    const loaded = await api.readPlan('A:/runtime', 'plan');
+    await api.savePlan('A:/runtime', 'plan', original);
+    await api.createPlan('A:/runtime', 'copy', original);
+    const saved = api.parseJson((native.mock.calls[1][1] as { planJson: string }).planJson) as JsonObject;
+    const copied = api.parseJson((native.mock.calls[2][1] as { sourceJson: string }).sourceJson) as JsonObject;
+    for (const value of [loaded, saved, copied]) {
+      expect(value.Version).toBe(17);
+      expect(value).not.toHaveProperty('EnergyNguWeights'); expect(value).not.toHaveProperty('MagicNguWeights');
+      expect(value.Stages).toEqual([{ Name: 'First', Future: new LosslessNumber(first) }]);
+      expect(value.LoadoutPresets).toEqual([{ Id: 'legacy', AdvancedTrainingWeights: [1, 1, 0, 0, 0] }]);
+      expect(String(value.Future)).toBe(first);
+    }
+    expect(api.stringifyJson(original)).toBe(before);
+  });
   it('parses normalized read_plan strings without rounding numeric tokens', async () => {
     native.mockResolvedValueOnce(source());
     const value = await api.readPlan('A:/runtime', 'plan');
@@ -165,9 +184,10 @@ describe('native plan string IPC', () => {
     await api.createPlan('A:/runtime', 'new');
     expect(native).toHaveBeenCalledWith('create_plan', { runtimeDir: 'A:/runtime', requestedName: 'new', sourceJson: undefined });
   });
-  it('does not submit lossless wrappers over settings object IPC', async () => {
-    await expect(api.saveSettingsPatch('A:/runtime', { unknown: new LosslessNumber(first) })).rejects.toThrow('Object IPC cannot carry an exact unsafe numeric token');
-    expect(native).not.toHaveBeenCalled();
+  it('sends exact settings numeric tokens and the revision through string IPC', async () => {
+    native.mockResolvedValueOnce(savedSettingsResponse({ _moneyPitThreshold: new LosslessNumber(first) }));
+    await api.saveSettingsPatch('A:/runtime', { _moneyPitThreshold: new LosslessNumber(first) }, revision('a'));
+    expect(native).toHaveBeenCalledExactlyOnceWith('save_settings_patch_json', { runtimeDir: 'A:/runtime', patchJson: `{"_moneyPitThreshold":${first}}`, expectedRevision: revision('a') });
   });
   it('does not submit nested lossless wrappers over action object IPC', async () => {
     await expect(api.enqueueCommand('A:/runtime', 'focusGoal', { unknown: { nested: [new LosslessNumber(second)] } })).rejects.toThrow('Object IPC');
@@ -175,7 +195,111 @@ describe('native plan string IPC', () => {
   });
 });
 
+describe('frontend save regressions: numeric settings IPC', () => {
+  it.each(['autosave', 'inline'])('preserves a valid native large double through %s', async mode => {
+    const settings: JsonObject = { _moneyPitThreshold: 0 };
+    native.mockImplementation(async (command, args) => {
+      if (command !== 'save_settings_patch_json') throw new Error(`Unexpected command: ${command}`);
+      Object.assign(settings, api.parseJson((args as { patchJson: string }).patchJson));
+      return savedSettingsResponse(settings);
+    });
+    const ui = createController({ ...api, getState: async () => ({ ...ready(), settings: { ...settings } }), storeRuntimeDir: () => {} }, async () => true, 'A:/runtime');
+    try {
+      await ui.refresh();
+      if (mode === 'autosave') {
+        ui.editSetting('_moneyPitThreshold', 1e16, 350);
+        await ui.flushAutosave();
+      } else expect(await ui.saveSettingValue('_moneyPitThreshold', 1e16)).toBe(true);
+      expect(native).toHaveBeenCalledExactlyOnceWith('save_settings_patch_json', { runtimeDir: 'A:/runtime', patchJson: api.stringifyJson({ _moneyPitThreshold: 1e16 }), expectedRevision: revision('a') });
+      expect(ui.current().patch).toEqual({});
+      expect(String(ui.current().snapshot!.settings._moneyPitThreshold)).toBe('10000000000000000');
+      expect(ui.current().error).toBe('');
+    } finally { ui.dispose(); }
+  });
+
+  for (const mode of ['autosave', 'inline']) {
+    it.each(['unknown', '_moneyPitThreshold'])(`transports genuine unsafe tokens without rounding for %s through ${mode}`, async key => {
+      const exact = new LosslessNumber(first);
+      native.mockImplementation(async (_command, args) => {
+        expect((args as { patchJson: string }).patchJson).toBe(`{"${key}":${first}}`);
+        if (key === 'unknown') throw new Error('Unknown settings field: unknown');
+        return savedSettingsResponse({ _moneyPitThreshold: exact });
+      });
+      const ui = createController({ ...api, getState: async () => ({ ...ready(), settings: { _moneyPitThreshold: 0 } }), storeRuntimeDir: () => {} }, async () => true, 'A:/runtime');
+      try {
+        await ui.refresh();
+        if (mode === 'autosave') {
+          ui.editSetting(key, exact, 350);
+          await ui.flushAutosave();
+        } else expect(await ui.saveSettingValue(key, exact)).toBe(key !== 'unknown');
+        expect(native).toHaveBeenCalledTimes(1);
+        expect(api.stringifyJson(ui.current().patch)).toBe(key === 'unknown' ? `{"${key}":${first}}` : '{}');
+        expect(ui.current().error).toBe(key === 'unknown' ? 'Unknown settings field: unknown' : '');
+      } finally { ui.dispose(); }
+    });
+  }
+
+  it('keeps a newer native large-double draft numeric across another setting readback', async () => {
+    const settings: JsonObject = { _customIronPillSaveSeconds: 900, _moneyPitThreshold: 0 };
+    let release!: () => void;
+    native.mockImplementation(async (command, args) => {
+      if (command !== 'save_settings_patch_json') throw new Error(`Unexpected command: ${command}`);
+      if (native.mock.calls.length === 1) await new Promise<void>(resolve => { release = resolve; });
+      Object.assign(settings, api.parseJson((args as { patchJson: string }).patchJson));
+      return savedSettingsResponse(settings);
+    });
+    const ui = createController({ ...api, getState: async () => ({ ...ready(), settings: { ...settings } }), storeRuntimeDir: () => {} }, async () => true, 'A:/runtime');
+    try {
+      await ui.refresh();
+      const saving = ui.saveSettingValue('_customIronPillSaveSeconds', 1200);
+      await vi.waitFor(() => expect(native).toHaveBeenCalledTimes(1));
+      ui.setSetting('_moneyPitThreshold', 1e16);
+      release();
+      expect(await saving).toBe(true);
+      expect(ui.current().patch).toEqual({ _moneyPitThreshold: 1e16 });
+      await ui.saveSettings();
+      expect(native).toHaveBeenLastCalledWith('save_settings_patch_json', { runtimeDir: 'A:/runtime', patchJson: api.stringifyJson({ _moneyPitThreshold: 1e16 }), expectedRevision: revision('a') });
+      expect(native).toHaveBeenCalledTimes(2);
+      expect(ui.current().patch).toEqual({});
+      expect(ui.current().error).toBe('');
+    } finally { ui.dispose(); }
+  });
+});
+
 describe('controller and string IPC round trips', () => {
+  it('retains automatic adventure weight through saves, readback, and standard mode switching', async () => {
+    const original = plan();
+    original.Version = 17;
+    let disk = api.stringifyJson(original);
+    const writes: JsonObject[] = [];
+    native.mockImplementation(async (command, args) => {
+      if (command === 'read_plan') return disk;
+      if (command === 'save_plan') {
+        const value = api.parseJson((args as { planJson: string }).planJson) as JsonObject;
+        writes.push(value);
+        disk = api.stringifyJson({ ...value, __externalUiRevision: revision(String(writes.length)) });
+        return { success: true };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    const ui = createController({ ...api, getState: async () => ready(), storeRuntimeDir: () => {} }, async () => true, 'A:/runtime');
+    try {
+      await ui.refresh(); await ui.loadPlan('plan');
+      for (const ExecutionMode of [1, 0, 1]) {
+        const current = ui.current().plan!;
+        ui.setPlan({ ...current, Stages: (current.Stages as JsonObject[]).map((row, index) => index === 0 ? { ...row, ExecutionMode, AdventureDynamicWeight: .125 } : row) });
+        await ui.saveActivePlan();
+        expect(ui.current().error).toBe('');
+        expect(ui.current().planDirty).toBe(false);
+        expect((ui.current().plan!.Stages as JsonObject[])[0]).toEqual({ ...(original.Stages as JsonObject[])[0], ExecutionMode, AdventureDynamicWeight: .125 });
+        expect(ui.current().planBase).toEqual(ui.current().plan);
+      }
+      expect(writes.map(value => (value.Stages as JsonObject[])[0].AdventureDynamicWeight)).toEqual([.125, .125, .125]);
+      expect(writes.map(value => (value.Stages as JsonObject[])[0].ExecutionMode)).toEqual([1, 0, 1]);
+      expect(api.stringifyJson(ui.current().plan)).toContain(`"value":${first}`);
+    } finally { ui.dispose(); }
+  });
+
   it('preserves exact nested stage numbers through reorder and repeated saves while renewing revisions', async () => {
     let disk = source();
     let writes = 0;
@@ -232,9 +356,9 @@ describe('controller and string IPC round trips', () => {
     const edited = api.parseJson(pretty(settings)) as JsonObject;
     edited.known = false;
     ui.applyRawSettings(edited, settings);
-    native.mockResolvedValueOnce({ success: true, mode: 'connected' });
+    native.mockResolvedValueOnce(savedSettingsResponse({ ...settings, known: false }));
     await ui.saveSettings();
-    expect(native).toHaveBeenCalledWith('save_settings_patch', { runtimeDir: 'A:/runtime', patch: { known: false } });
+    expect(native).toHaveBeenCalledWith('save_settings_patch_json', { runtimeDir: 'A:/runtime', patchJson: '{"known":false}', expectedRevision: revision('a') });
     expect(native).toHaveBeenCalledTimes(1);
   });
 });

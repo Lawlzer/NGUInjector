@@ -15,6 +15,12 @@ namespace NGUInjector.CustomPlans
         AdvancedTraining = 7
     }
 
+    internal enum CustomStageExecutionMode
+    {
+        Standard = 0,
+        AutoAugmentsWandoos = 1
+    }
+
     internal enum CustomStageCompletionMode
     {
         TimePercent = 0,
@@ -27,16 +33,25 @@ namespace NGUInjector.CustomPlans
         // Source travels with the model/row, never with its position in an array.
         [NonSerialized] internal JSONObject SourceJson;
         [NonSerialized] internal string RuntimeRevision;
-        public int Version = 16;
+        public int Version = 17;
         public string Name = "default";
+        public string ActivePresetId = string.Empty;
+        public string[] PresetMigrationIssues = new string[0];
 
-        public bool AutoRebirthEnabled;
+        public bool AutoRebirthEnabled = true;
         public bool AutoIronPillEnabled = true;
+        // Unset overrides retain the legacy global settings.
+        public bool? AutoBloodSpellsEnabled;
+        public int? BloodSpaghettiGoalPercent;
+        public int? BloodCounterfeitGoalPercent;
+        public int? IronPillSaveSeconds;
+        public double? IronPillMinWorth;
         public bool TimeTriggerEnabled = true;
         public int TimeTriggerSeconds = 3600;
         public bool NumberTriggerEnabled;
         public double NumberMultiplierTarget = 100.0;
-        public bool NumberClimbEnabled = true;
+        // Retired trigger fields remain serialized for existing plans.
+        public bool NumberClimbEnabled;
         public int NumberClimbMinSeconds = 480;
         public double NumberClimbMultiplierTarget = 100.0;
         public int TriggerMode;
@@ -47,8 +62,6 @@ namespace NGUInjector.CustomPlans
         public CustomPlanStage[] Stages = DefaultNumberClimbStages();
 
         public bool AutoActivateFruits = true;
-        public int[] EnergyNguWeights = {0, 0, 0, 0, 1, 0, 1, 0, 0};
-        public int[] MagicNguWeights = {1, 0, 0, 0, 0, 0, 0};
 
         public int GearGoal;
         public int FightScoreMode;
@@ -57,6 +70,7 @@ namespace NGUInjector.CustomPlans
         {
             new CustomGoalLoadoutPreset {Name = "Default", GearGoal = 0}
         };
+        public CustomLoadoutPreset[] LoadoutPresets = new CustomLoadoutPreset[0];
 
         public bool PrepRequireMaxedFruit;
 
@@ -301,18 +315,23 @@ namespace NGUInjector.CustomPlans
     [Serializable]
     public class CustomPlanStage
     {
+        internal const int MaximumAutomaticDurationSeconds = 86400;
         [NonSerialized] internal JSONObject SourceJson;
         public string Name = "Stage";
+        // @active inherits the plan selection; empty retains legacy inline allocation.
+        public string PresetId = string.Empty;
         public double Percent = 100.0;
         public int DurationSeconds = 0;
         public string DurationUnit = "%";
         public int EnergyFocus;
         public int MagicFocus;
+        public int ExecutionMode = (int) CustomStageExecutionMode.Standard;
         // Empty priorities use the focus preset's default chain.
         public string[] EnergyPriorities;
         public string[] MagicPriorities;
         public int BlackBarLookaheadSeconds = 5;
         public int GearGoal = -1;
+        public double AdventureDynamicWeight = 0d;
         public bool FightOnEntry;
         public int CompletionMode = (int) CustomStageCompletionMode.TimePercent;
         public long TargetAdvancedTrainingPower;

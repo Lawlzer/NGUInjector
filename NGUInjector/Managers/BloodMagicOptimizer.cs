@@ -25,109 +25,6 @@ namespace NGUInjector.Managers
             return OptimizeTarget(ritualIndex, GetAvailableMagicForFullAllocation());
         }
 
-        internal static BloodMagicOptimizerResult OptimizeAndAllocate()
-        {
-            return OptimizeAndAllocate(0);
-        }
-
-        internal static BloodMagicOptimizerResult OptimizeAndAllocate(int settleMilliseconds)
-        {
-            var preview = OptimizeBest();
-            if (!preview.Success)
-                return preview;
-
-            try
-            {
-                var c = Main.Character;
-                c.removeMostMagic();
-                if (settleMilliseconds > 0)
-                    System.Threading.Thread.Sleep(settleMilliseconds);
-
-                var allocation = Math.Max(0, c.magic.idleMagic);
-                if (allocation <= 0)
-                {
-                    return Fail("Blood Magic skipped: no idle magic after clearing allocations.");
-                }
-
-                var result = OptimizeBest(allocation);
-                if (!result.Success)
-                    return result;
-
-                SetInput(allocation);
-                c.bloodMagicController.bloodMagics[result.RitualIndex].add();
-                c.bloodMagicController.updateMenu();
-                result.MagicAllocated = allocation;
-                result.Message = $"Blood Magic ritual {result.RitualIndex}: {allocation:n0} magic, {result.BloodPerSecond:0.###}/s blood, gold {result.GrossGoldPerSecond:0.###}/s - {result.BloodMagicGoldPerSecond:0.###}/s.";
-                return result;
-            }
-            catch (Exception e)
-            {
-                return Fail(Main.LogError("Allocate Blood Magic", e));
-            }
-        }
-
-        internal static BloodMagicOptimizerResult OptimizeAndAllocateTarget(int ritualIndex, int settleMilliseconds)
-        {
-            var preview = OptimizeTarget(ritualIndex);
-            if (!preview.Success)
-                return preview;
-
-            try
-            {
-                var c = Main.Character;
-                c.removeMostMagic();
-                if (settleMilliseconds > 0)
-                    System.Threading.Thread.Sleep(settleMilliseconds);
-
-                var allocation = Math.Max(0, c.magic.idleMagic);
-                if (allocation <= 0)
-                    return Fail("Blood Magic skipped: no idle magic after clearing allocations.");
-
-                var result = OptimizeTarget(ritualIndex, allocation);
-                if (!result.Success)
-                    return result;
-
-                SetInput(allocation);
-                c.bloodMagicController.bloodMagics[result.RitualIndex].add();
-                c.bloodMagicController.updateMenu();
-                result.MagicAllocated = allocation;
-                result.Message = $"Pinned Blood Magic ritual {result.RitualIndex}: {allocation:n0} magic, {result.BloodPerSecond:0.###}/s blood, gold {result.GrossGoldPerSecond:0.###}/s - {result.BloodMagicGoldPerSecond:0.###}/s.";
-                return result;
-            }
-            catch (Exception e)
-            {
-                return Fail(Main.LogError("Allocate pinned Blood Magic", e));
-            }
-        }
-
-        internal static BloodMagicOptimizerResult OptimizeAndAllocateIdleMagic()
-        {
-            try
-            {
-                var c = Main.Character;
-                var allocation = Math.Max(0, c.magic.idleMagic);
-                if (allocation <= 0)
-                {
-                    return Fail("Blood Magic skipped: no idle magic after Wandoos cap.");
-                }
-
-                var result = OptimizeBest(allocation);
-                if (!result.Success)
-                    return result;
-
-                SetInput(allocation);
-                c.bloodMagicController.bloodMagics[result.RitualIndex].add();
-                c.bloodMagicController.updateMenu();
-                result.MagicAllocated = allocation;
-                result.Message = $"Allocated Wandoos overflow to Blood Magic ritual {result.RitualIndex}: {allocation:n0} magic, {result.BloodPerSecond:0.###}/s blood.";
-                return result;
-            }
-            catch (Exception e)
-            {
-                return Fail(Main.LogError("Allocate idle Blood Magic overflow", e));
-            }
-        }
-
         internal static BloodMagicOptimizerResult OptimizeBest(long magicAllocation)
         {
             return OptimizeBest(magicAllocation, Math.Max(0d, Main.Character.grossGoldPerSecond()));
@@ -303,11 +200,5 @@ namespace NGUInjector.Managers
             return new BloodMagicOptimizerResult {Success = false, Message = message, RitualIndex = -1};
         }
 
-        private static void SetInput(long val)
-        {
-            var c = Main.Character;
-            c.energyMagicPanel.energyRequested.text = Math.Max(0, val).ToString();
-            c.energyMagicPanel.validateInput();
-        }
     }
 }

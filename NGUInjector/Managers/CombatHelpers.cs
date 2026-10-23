@@ -8,23 +8,26 @@ namespace NGUInjector.Managers
 {
     internal static class CombatHelpers
     {
-        internal static bool CastCharge()
+        private static bool Current(Main.ExecutionGrant grant) => Main.reference != null
+            && Main.reference.ValidateExecutionGrant(grant, Main.ExecutionDomain.Route | Main.ExecutionDomain.NativeSettings);
+
+        internal static bool CastCharge(Main.ExecutionGrant grant)
         {
-            if (Main.Character.adventureController.chargeMove.button.IsInteractable())
+            if (Current(grant) && Main.Character.adventureController.chargeMove.button.IsInteractable() && Current(grant))
             {
                 Main.Character.adventureController.chargeMove.doMove();
-                return true;
+                return Current(grant);
             }
 
             return false;
         }
 
-        internal static bool CastParry()
+        internal static bool CastParry(Main.ExecutionGrant grant)
         {
-            if (Main.Character.adventureController.parryMove.button.IsInteractable())
+            if (Current(grant) && Main.Character.adventureController.parryMove.button.IsInteractable() && Current(grant))
             {
                 Main.Character.adventureController.parryMove.doMove();
-                return true;
+                return Current(grant);
             }
 
             return false;
@@ -59,23 +62,23 @@ namespace NGUInjector.Managers
             return Main.Character.adventureController.healMove.button.IsInteractable();
         }
 
-        internal static bool CastHeal()
+        internal static bool CastHeal(Main.ExecutionGrant grant)
         {
-            if (Main.Character.adventureController.healMove.button.IsInteractable())
+            if (Current(grant) && Main.Character.adventureController.healMove.button.IsInteractable() && Current(grant))
             {
                 Main.Character.adventureController.healMove.doMove();
-                return true;
+                return Current(grant);
             }
 
             return false;
         }
 
-        internal static bool CastHyperRegen()
+        internal static bool CastHyperRegen(Main.ExecutionGrant grant)
         {
-            if (Main.Character.adventureController.hyperRegenMove.button.IsInteractable())
+            if (Current(grant) && Main.PlayerController.hyperRegenTime <= 0 && Main.Character.adventureController.hyperRegenMove.button.IsInteractable() && Current(grant))
             {
                 Main.Character.adventureController.hyperRegenMove.doMove();
-                return true;
+                return Current(grant);
             }
 
             return false;
@@ -115,34 +118,34 @@ namespace NGUInjector.Managers
             return (float)val / Main.Character.ultimateAttackCooldown();
         }
 
-        internal static bool CastUltimateBuff()
+        internal static bool CastUltimateBuff(Main.ExecutionGrant grant)
         {
-            if (Main.Character.adventureController.ultimateBuffMove.button.IsInteractable())
+            if (Current(grant) && Main.Character.adventureController.ultimateBuffMove.button.IsInteractable() && Current(grant))
             {
                 Main.Character.adventureController.ultimateBuffMove.doMove();
-                return true;
+                return Current(grant);
             }
 
             return false;
         }
 
-        internal static bool CastMegaBuff()
+        internal static bool CastMegaBuff(Main.ExecutionGrant grant)
         {
-            if (Main.Character.adventureController.megaBuffMove.button.IsInteractable())
+            if (Current(grant) && Main.Character.adventureController.megaBuffMove.button.IsInteractable() && Current(grant))
             {
                 Main.Character.adventureController.megaBuffMove.doMove();
-                return true;
+                return Current(grant);
             }
 
             return false;
         }
 
-        internal static bool CastOffensiveBuff()
+        internal static bool CastOffensiveBuff(Main.ExecutionGrant grant)
         {
-            if (Main.Character.adventureController.offenseBuffMove.button.IsInteractable())
+            if (Current(grant) && Main.Character.adventureController.offenseBuffMove.button.IsInteractable() && Current(grant))
             {
                 Main.Character.adventureController.offenseBuffMove.doMove();
-                return true;
+                return Current(grant);
             }
 
             return false;
@@ -153,53 +156,37 @@ namespace NGUInjector.Managers
             return Main.PlayerController.isBlocking;
         }
 
-        internal static bool CastBlock()
+        internal static bool CastBlock(Main.ExecutionGrant grant)
         {
-            if (Main.Character.adventureController.blockMove.button.IsInteractable())
+            if (Current(grant) && Main.Character.adventureController.blockMove.button.IsInteractable() && Current(grant))
             {
                 Main.Character.adventureController.blockMove.doMove();
-                return true;
+                return Current(grant);
             }
 
             return false;
         }
 
-        internal static bool CastDefensiveBuff()
+        internal static bool CastDefensiveBuff(Main.ExecutionGrant grant)
         {
-            if (Main.Character.adventureController.defenseBuffMove.button.IsInteractable())
+            if (Current(grant) && Main.Character.adventureController.defenseBuffMove.button.IsInteractable() && Current(grant))
             {
                 Main.Character.adventureController.defenseBuffMove.doMove();
-                return true;
+                return Current(grant);
             }
 
             return false;
         }
 
-        internal static bool CastParalyze(AI ai, EnemyAI eai)
+        internal static bool CastParalyze(Main.ExecutionGrant grant)
         {
-            if (!Main.Character.adventureController.paralyzeMove.button.IsInteractable())
+            if (!Current(grant) || !Main.Character.adventureController.paralyzeMove.button.IsInteractable() || !Current(grant))
             {
                 return false;
             }
 
-            if (ai == AI.charger && eai.GetPV<int>("chargeCooldown") == 0)
-            {
-                Main.Character.adventureController.paralyzeMove.doMove();
-                return true;
-            }
-
-            if (ai == AI.rapid && eai.GetPV<int>("rapidEffect") < 5)
-            {
-                Main.Character.adventureController.paralyzeMove.doMove();
-                return true;
-            }
-
-            if (ai != AI.rapid && ai != AI.charger)
-            {
-                Main.Character.adventureController.paralyzeMove.doMove();
-                return true;
-            }
-            return false;
+            Main.Character.adventureController.paralyzeMove.doMove();
+            return Current(grant);
         }
 
         internal static bool UltimateAttackReady()
@@ -214,17 +201,17 @@ namespace NGUInjector.Managers
 
         internal static bool ChargeUnlocked()
         {
-            return Main.Character.training.defenseTraining[4] > 0;
+            return Main.Character.training.defenseTraining[3] >= 20000L;
         }
 
         internal static bool ParryUnlocked()
         {
-            return Main.Character.training.attackTraining[3] > 0;
+            return Main.Character.training.attackTraining[2] >= 15000L;
         }
 
         internal static bool UltimateBuffUnlocked()
         {
-            return Main.Character.training.defenseTraining[5] > 0;
+            return Main.Character.training.defenseTraining[4] >= 25000L;
         }
 
         internal static bool UltimateBuffReady()
@@ -234,7 +221,7 @@ namespace NGUInjector.Managers
 
         internal static bool DefensiveBuffUnlocked()
         {
-            return Main.Character.training.defenseTraining[1] > 0;
+            return Main.Character.training.defenseTraining[0] >= 5000L;
         }
 
         internal static bool DefensiveBuffReady()
@@ -263,12 +250,12 @@ namespace NGUInjector.Managers
             return Main.Character.adventureController.ohShitMove.button.IsInteractable();
         }
 
-        internal static bool CastOhShit()
+        internal static bool CastOhShit(Main.ExecutionGrant grant)
         {
-            if (Main.Character.adventureController.ohShitMove.button.IsInteractable())
+            if (Current(grant) && Main.Character.adventureController.ohShitMove.button.IsInteractable() && Current(grant))
             {
                 Main.Character.adventureController.ohShitMove.doMove();
-                return true;
+                return Current(grant);
             }
 
             return false;

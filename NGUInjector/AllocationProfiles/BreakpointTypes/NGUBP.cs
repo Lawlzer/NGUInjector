@@ -1,4 +1,5 @@
 ﻿using System;
+using NGUInjector.Managers;
 
 namespace NGUInjector.AllocationProfiles.BreakpointTypes
 {
@@ -6,6 +7,8 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
     {
         protected override bool Unlocked()
         {
+            var weights = Type == ResourceType.Energy ? Main.Settings.EnergyNguWeights : Main.Settings.MagicNguWeights;
+            if (Index < 0 || Index >= weights.Length || weights[Index] == 0) return false;
             switch (Type)
             {
                 case ResourceType.Magic when Index > 6:
@@ -42,30 +45,6 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 return true;
 
             return target > 0 && level >= target;
-        }
-
-        internal override bool Allocate()
-        {
-            if (Type == ResourceType.Energy)
-                AllocateEnergy();
-            else
-                AllocateMagic();
-
-            return true;
-        }
-
-        private void AllocateMagic()
-        {
-            var alloc = CalculateNGUMagicCap();
-            SetInput(alloc);
-            Character.NGUController.NGUMagic[Index].add();
-        }
-
-        private void AllocateEnergy()
-        {
-            var alloc = CalculateNGUEnergyCap();
-            SetInput(alloc);
-            Character.NGUController.NGU[Index].add();
         }
 
         protected override bool CorrectResourceType()

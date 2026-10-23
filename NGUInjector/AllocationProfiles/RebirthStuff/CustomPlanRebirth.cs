@@ -30,12 +30,17 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
             return RebirthAvailable(false);
         }
 
-        private bool RebirthAvailable(bool updateNumberConfirmation)
+        internal bool PeekTriggersAvailable()
+        {
+            return RebirthAvailable(false, false);
+        }
+
+        private bool RebirthAvailable(bool updateNumberConfirmation, bool requireProtectedWork = true)
         {
             if (!Main.Settings.AutoRebirth || _plan == null || !_plan.AutoRebirthEnabled)
                 return false;
 
-            if (!_plan.TimeTriggerEnabled && !_plan.NumberTriggerEnabled && !_plan.NumberClimbEnabled)
+            if (!_plan.TimeTriggerEnabled && !_plan.NumberTriggerEnabled)
                 return false;
 
             if (!BaseRebirthChecks())
@@ -56,15 +61,10 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
             bool? numberReady = _plan.NumberTriggerEnabled
                 ? (bool?) NumberTargetReached(_plan.NumberMultiplierTarget)
                 : null;
-            bool? numberClimbReady = _plan.NumberClimbEnabled
-                ? (bool?) (seconds >= _plan.NumberClimbMinSeconds && NumberTargetReached(_plan.NumberClimbMultiplierTarget))
-                : null;
-
             var results = new[]
             {
                 timeReady,
-                numberReady,
-                numberClimbReady
+                numberReady
             }.Where(x => x.HasValue).Select(x => x.Value).ToArray();
 
             var triggerReady = _plan.TriggerMode == 1 ? results.All(x => x) : results.Any(x => x);
@@ -75,15 +75,16 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
                 return false;
             }
 
-            var numberBasedReady = numberReady.GetValueOrDefault() || numberClimbReady.GetValueOrDefault();
+            var numberBasedReady = numberReady.GetValueOrDefault();
             if (!numberBasedReady)
             {
                 if (updateNumberConfirmation)
                     ResetNumberConfirmation();
-                return true;
+                return !requireProtectedWork || Managers.CustomStageAllocator.ProtectedWorkComplete(_plan);
             }
 
-            return NumberConfirmationReady(seconds, multiplier, updateNumberConfirmation);
+            var confirmed = NumberConfirmationReady(seconds, multiplier, updateNumberConfirmation);
+            return confirmed && (!requireProtectedWork || Managers.CustomStageAllocator.ProtectedWorkComplete(_plan));
         }
 
         private bool NumberTargetReached(double target)
@@ -134,7 +135,7 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
 
         private string NumberConfirmationKey()
         {
-            return $"{_plan.Name}:{_plan.NumberTriggerEnabled}:{_plan.NumberMultiplierTarget:0.###}:{_plan.NumberClimbEnabled}:{_plan.NumberClimbMinSeconds}:{_plan.NumberClimbMultiplierTarget:0.###}:{_plan.TriggerMode}";
+            return $"{_plan.Name}:{_plan.NumberTriggerEnabled}:{_plan.NumberMultiplierTarget:0.###}:{_plan.TriggerMode}";
         }
 
         private static void StartNumberConfirmation(string key, double seconds, double multiplier, string reason)

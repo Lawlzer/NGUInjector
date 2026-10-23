@@ -39,41 +39,6 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return Character.hacksController.hitTarget(id);
         }
 
-        internal override bool Allocate()
-        {
-            var alloc = MaxAllocation;
-            int bestHack = -1;
-            float bestHackTime = -1f;
-            var time = 0f;
-            for (int i = 0; i < Character.hacks.hacks.Count; i++)
-            {
-                if (!this.Unlocked(i)) {
-                    continue;
-                }
-                if (this.TargetMet(i) && !Main.Settings.HackAdvance)
-                {
-                    continue;
-                }
-                time = this.time(i, alloc) * Character.hacksController.milestoneThreshold(i);
-                if (bestHackTime == -1 || bestHackTime > time)
-                {
-                    bestHack = i;
-                    bestHackTime = time;
-                }
-                Main.LogAllocation($"Time to work: {i} is {time} and target: {this.TargetMet(i)}");
-            }
-            Main.LogAllocation($"Best Time to work: {bestHack} is {bestHackTime} and target: {this.TargetMet(bestHack)} for {alloc}");
-            if (bestHack != -1)
-            {
-                if (Main.Settings.HackAdvance && Character.hacks.hacks[bestHack].target > 0 && (Character.hacks.hacks[bestHack].target - Character.hacks.hacks[bestHack].level) < 20)
-                {
-                    Character.hacksController.setToNextMilestone(bestHack);
-                }                        
-                Character.hacksController.addR3(bestHack, (long)alloc);
-            }
-            return true;
-        }
-
         protected override bool CorrectResourceType()
         {
             return Type == ResourceType.R3;

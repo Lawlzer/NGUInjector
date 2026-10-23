@@ -4,13 +4,21 @@
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <OutputPath>bin\</OutputPath>
     <AssemblyName>BlackBarChecks</AssemblyName>
+    <LangVersion>7.3</LangVersion>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <Reference Include="System.Web.Extensions" />
     <PackageReference Include="Mono.Cecil" Version="0.11.4" />
     <Compile Include="BlackBarChecks.cs" />
+    <Compile Include="NativeSettingsJsonBoundary.cs" />
+    <Compile Include="NativeFightFixture.cs" />
+    <Compile Include="CustomAutoBoostChecks.cs" />
+    <Compile Include="StageSupportChecks.cs" />
+    <Compile Include="ProtectedTimingIntegrationChecks.cs" />
     <Compile Include="IronPillReservationChecks.cs" />
+    <Compile Include="BloodGoalIsolationChecks.cs" />
     <Compile Include="GearOptimizerChecks.cs" />
     <Compile Include="GearSearchChecks.cs" />
     <Compile Include="GearEquipChecks.cs" />

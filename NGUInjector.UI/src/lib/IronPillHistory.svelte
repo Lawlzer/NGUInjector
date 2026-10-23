@@ -34,7 +34,6 @@
       <li class="muted">No automatic casts yet.</li>
     {/each}
   </ol>
-  <details><summary>About this history</summary><p class="muted">Read-only. Latest 10 successful automatic casts; manual casts and failures are excluded.</p></details>
 </section>
 
 <style>

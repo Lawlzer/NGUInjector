@@ -8,13 +8,17 @@ export const commandLabels: Record<string, string> = {
   safeProbe: 'Check game', probeCommands: 'Run diagnostic commands', precacheLoadouts: 'Prepare loadouts',
   resetRebirthPrep: 'Reset fight prep', reloadSettings: 'Reload settings', status: 'Refresh status', unload: 'Disconnect',
   focusGoal: 'Quick', stopFocus: 'Clear quick', previewGear: 'Preview gear', optimizeGear: 'Equip gear',
-  previewAugments: 'Preview augment', allocateAugments: 'Allocate augment'
+  previewAugments: 'Preview augment', allocateAugments: 'Allocate augment',
+  previewCombatPrep: 'Preview combat prep', startCombatPrep: 'Start combat prep', cancelCombatPrep: 'Cancel combat prep',
+  previewLoadoutPreset: 'Preview preset', applyLoadoutPreset: 'Apply preset',
+  startMaxItopodPush: 'Max ITOPOD push', cancelMaxItopodPush: 'Cancel Max ITOPOD push'
 };
 
 export const adventureModes: OptionItem[] = [
   { value: 0, label: 'Optimal ITOPOD' },
   { value: 1, label: 'Farm selected zone' },
-  { value: 2, label: 'Farm boosts dynamically' }
+  { value: 2, label: 'Farm boosts dynamically' },
+  { value: 3, label: 'Max ITOPOD push' }
 ];
 
 export const triggerModes: OptionItem[] = [
@@ -33,7 +37,7 @@ export const stageFocuses: OptionItem[] = [
   { value: 7, label: 'Advanced Training' }
 ];
 
-export const energyNguNames = ['Augments', 'Wandoos', 'Respawn', 'Gold', 'Adventure Alpha', 'Power Alpha', 'Drop Chance', 'Magic NGU', 'PP'];
+export const energyNguNames = ['Augments', 'Wandoos', 'Respawn', 'Gold', 'Adventure Alpha', 'Power', 'Drop Chance', 'Magic NGU', 'PP'];
 export const magicNguNames = ['Yggdrasil', 'EXP', 'Power Beta', 'Number', 'Time Machine', 'Energy NGU', 'Adventure Beta'];
 
 export const gearGoals: OptionItem[] = [
@@ -57,6 +61,13 @@ export const fightScoreModes: OptionItem[] = [
   { value: 0, label: 'sqrt(Power * Toughness) * Move Cooldown' },
   { value: 1, label: 'Power * Toughness * Move Cooldown' },
   { value: 2, label: '(Power + Toughness) * Move Cooldown' }
+];
+
+export const manualCombatLoadouts: OptionItem[] = [
+  { value: -1, label: 'Keep equipped' },
+  { value: 0, label: 'sqrt(Power * Toughness) * Move Speed' },
+  { value: 1, label: 'Power * Toughness * Move Speed' },
+  { value: 2, label: '(Power + Toughness) * Move Speed' }
 ];
 
 export const zones: OptionItem[] = [
@@ -112,3 +123,8 @@ export function optionLabel(options: OptionItem[], value: unknown): string {
   const numeric = typeof value === 'number' ? value : Number(value);
   return options.find((option) => option.value === numeric)?.label ?? String(value ?? '');
 }
+
+export const titanZones = zones.filter(zone => [6, 8, 11, 14, 16, 19, 23, 26, 30, 34, 38, 42].includes(zone.value));
+
+// Game zone IDs, excluding safe zone, titans and ITOPOD. PP always uses ITOPOD separately.
+export const presetZones: OptionItem[] = [{ value: -1, label: 'Auto farming zone' }, ...zones.filter(zone => zone.value >= 0 && zone.value < 1000 && ![6, 8, 11, 14, 16, 19, 23, 26, 30, 34, 38, 42].includes(zone.value))];

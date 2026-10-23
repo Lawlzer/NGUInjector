@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Linq;
+using NGUInjector.Managers;
 
 namespace NGUInjector
 {
@@ -9,6 +11,18 @@ namespace NGUInjector
         private bool _started;
         private string _startupError;
         private FileStream _injectorLease;
+
+        private void QuiesceExecution(string reason)
+        {
+            SuspendProtectedStageProgress();
+            SaveProtectedStageProgress(true);
+            SetExecutionLifecycle(ExecutionLifecycle.Quiescing);
+            _executionRebindReview = null;
+            SetCustomAutomationStatus(reason);
+            PersistLifecycleExecutionEvidence();
+            if (!ServiceLifecycleRetirement())
+                throw new InvalidOperationException("Quiesced: native route/settings retirement is unresolved. Prerequisites and semantic evidence retained; retry after native activity stops.");
+        }
 
         private void FailStartup(Exception error)
         {
@@ -29,6 +43,11 @@ namespace NGUInjector
         {
             if (_unloaded)
                 return;
+            if (ReferenceEquals(reference, this))
+            {
+                QuiesceExecution("Injector quiescing.");
+            }
+            SetExecutionLifecycle(ExecutionLifecycle.Unloaded);
             _unloaded = true;
             _started = false;
             void Cleanup(Action action)
@@ -39,10 +58,15 @@ namespace NGUInjector
 
             try
             {
+                if (ReferenceEquals(reference, this))
+                {
+                    Cleanup(() => SuspendProtectedStageProgress());
+                }
                 Cleanup(() => CancelInvoke());
                 Cleanup(() => StopAllCoroutines());
                 if (ReferenceEquals(reference, this))
                 {
+                    Cleanup(() => SaveProtectedStageProgress(true));
                     if (_injectorLease != null && ExternalUiEnabled)
                         WriteExternalUiRuntimeSnapshot(0);
                     foreach (var resource in new IDisposable[] {
@@ -55,12 +79,16 @@ namespace NGUInjector
                     settingsForm = null;
                     LootWriter = CombatWriter = AllocationWriter = PitSpinWriter = OutputWriter = null;
                     Settings = null;
+                    _presetResourcePresentationCharacter = null;
+                    _presetResourcePresentationPending = false;
+                    _presetResourceOutcome = null;
                     CustomPlanStore = null;
                     Character = null;
                     Controller = null;
                     PlayerController = null;
                     WishManager = null;
                     _profile = null;
+                    _protectedScheduler = null;
                     reference = null;
                 }
             }

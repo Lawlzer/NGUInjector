@@ -83,15 +83,12 @@ namespace NGUInjector.AllocationProfiles
 
                     Main.Log(BuildAllocationString());
 
-                    _currentDiggerBreakpoint = null;
                     _currentEnergyBreakpoint = null;
-                    _currentGearBreakpoint = null;
                     _currentWandoosBreakpoint = null;
                     _currentMagicBreakpoint = null;
                     _currentR3Breakpoint = null;
                     _currentNguBreakpoint = null;
 
-                    this.DoAllocations();
                 }
                 catch (Exception e)
                 {
@@ -109,9 +106,7 @@ namespace NGUInjector.AllocationProfiles
                         }
                     };
 
-                    _currentDiggerBreakpoint = null;
                     _currentEnergyBreakpoint = null;
-                    _currentGearBreakpoint = null;
                     _currentWandoosBreakpoint = null;
                     _currentMagicBreakpoint = null;
                     _currentR3Breakpoint = null;

@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { JsonObject } from './api';
-  import { parsePlanProgress, planProgressDuration, type PlanProgressStage } from './plan-progress';
+  import { object } from './model';
+  import { combatPrepReconciliationReason } from './controller';
+  import { parsePlanProgress, planProgressDuration, stageHistoryDetails, type PlanProgressStage } from './plan-progress';
 
   // data is runtime.planProgress; connected is the fresh heartbeat result.
   export let data: JsonObject;
@@ -8,13 +10,18 @@
   export let onedit: ((stageIndex: number) => void) | undefined = undefined;
 
   $: view = parsePlanProgress(data, connected);
+  $: combatPrep = object(data.combatPrep);
+  $: cleanupPending = connected && combatPrep.schemaVersion === 1 && combatPrep.cleanupPending === true;
+  $: cleanupRecoveryRequired = connected && (data.cleanupRecoveryRequired === true || combatPrep.cleanupRecoveryRequired === true);
+  $: cleanupBlocked = cleanupPending || cleanupRecoveryRequired;
+  $: recoveryReason = combatPrepReconciliationReason(data);
   $: active = view.activeStageIndex === null ? null : view.stages[view.activeStageIndex];
-  $: statusLabel = view.status === 'running' ? 'Running' : view.status === 'paused' ? 'Paused' : view.status === 'interrupted' ? 'Interrupted' : view.status === 'disabled' ? 'Disabled' : 'Waiting';
+  $: statusLabel = cleanupRecoveryRequired ? 'Reconciling' : cleanupPending ? 'Cleanup pending' : view.status === 'running' ? 'Running' : view.status === 'paused' ? 'Paused' : view.status === 'interrupted' ? 'Interrupted' : view.status === 'disabled' ? 'Disabled' : 'Waiting';
   $: percent = view.stageProgress === null ? null : Math.round(view.stageProgress * 100);
-  $: progressText = `${statusLabel}${active ? `: ${active.name}` : ''}; ${percent === null ? 'progress not reported' : `${percent}% complete`}`;
+  $: progressText = cleanupRecoveryRequired ? recoveryReason : cleanupPending ? 'Cleanup pending: combat prep still owns equipment and resources.' : active?.presetBlocker || `${statusLabel}${active ? `: ${active.name}` : ''}; ${percent === null ? 'progress not reported' : `${percent}% complete`}`;
 
   function stageLabel(stage: PlanProgressStage): string {
-    return stage.state === 'current' ? view.status === 'running' ? 'Current' : statusLabel : stage.state === 'completed' ? 'Completed' : stage.state === 'future' ? 'Upcoming' : 'Not active';
+    return stage.state === 'current' ? cleanupBlocked ? statusLabel : view.status === 'running' ? view.scheduleComplete === true ? 'Sustaining' : 'Current' : statusLabel : stage.state === 'completed' ? 'Completed' : stage.state === 'skipped' ? 'Skipped' : stage.state === 'pending' ? 'Pending' : 'Not recorded';
   }
 </script>
 
@@ -23,39 +30,55 @@
     <div class="identity">
       <p class="eyebrow">Plan progression</p>
       <h2>{view.showWaitingPlanProgress ? 'Waiting for plan progress' : view.planName}</h2>
-      {#if !view.showWaitingPlanProgress}
-        <p class="context">{view.schedulerMode === 'sequential' ? 'Sequential' : 'Time schedule'}{view.cycle !== null && view.cycle > 0 ? ` / Repeat ${view.cycle}` : ''}{view.repeating ? ` / Repeat from ${view.loopStartIndex! + 1}` : ''}</p>
+      {#if !view.showWaitingPlanProgress && (view.cycle !== null && view.cycle > 0 || view.repeating)}
+        <p class="context">{view.cycle !== null && view.cycle > 0 ? `Repeat ${view.cycle}` : ''}{view.repeating ? `${view.cycle !== null && view.cycle > 0 ? ' / ' : ''}Repeat from ${view.loopStartIndex! + 1}` : ''}</p>
       {/if}
     </div>
-    <span class="status" class:running={view.status === 'running' && !view.showWaitingPlanProgress}>{statusLabel}</span>
+    <span class="status" class:running={view.status === 'running' && !view.showWaitingPlanProgress && !cleanupBlocked}>{!cleanupBlocked && view.status === 'running' && view.scheduleComplete === true ? active ? 'Sustaining' : 'Schedule complete' : statusLabel}</span>
   </header>
 
+  {#if cleanupRecoveryRequired}
+    <p class="reason" role="status">{recoveryReason}</p>
+  {/if}
+  {#if cleanupPending}<p class="reason" role="status">Cleanup pending: combat prep still owns equipment and resources.</p>{/if}
   {#if view.showWaitingPlanProgress}
     <p class="reason" role="status">{view.reason}</p>
   {:else}
-    {#if view.reason}<p class="reason" role="status">{view.reason}</p>{/if}
+    {#if !cleanupRecoveryRequired && view.status !== 'running' && view.reason}<p class="reason" role="status">{view.reason}</p>{/if}
+    {#if !cleanupBlocked && view.status === 'running' && data.bloodGoalsPrioritized === true && data.bloodReservedForIronPill !== true}
+      <p class="reason" role="status" title="Spaghetti / Counterfeit Gold goals; energy and stage gear unchanged">Blood goal catch-up</p>
+    {/if}
     <ol class="stages" style={`--stage-count: ${view.stages.length}`} aria-label="Active runtime plan stages">
       {#each view.stages as stage (stage.index)}
-        <li class:completed={stage.state === 'completed'} class:current={stage.state === 'current' && view.status === 'running'} class:held={stage.state === 'current' && view.status !== 'running'} class:loop-start={stage.loopStart} aria-current={stage.state === 'current' ? 'step' : undefined}>
+        <li class:completed={stage.state === 'completed'} class:current={stage.state === 'current' && view.status === 'running' && !cleanupBlocked} class:held={stage.state === 'current' && (view.status !== 'running' || cleanupBlocked)} class:loop-start={stage.loopStart} aria-current={stage.state === 'current' ? 'step' : undefined}>
           <div class="rail" aria-hidden="true"><span class="fill" style:width={`${stage.state === 'completed' ? 100 : stage.state === 'current' ? percent ?? 0 : 0}%`}></span><span class="point">{stage.index + 1}</span></div>
           <div class="stage-copy">
-            <p class="stage-state">{stageLabel(stage)}{stage.loopStart ? ' / Loop start' : ''}</p>
+            <div class="stage-meta">
+              <p class="stage-state">{stageLabel(stage)}{stage.loopStart ? ' / Loop start' : ''}</p>
+               {#if stage.timingKind}<span class="timing-badge">{stage.automatic ? 'Total elapsed budget' : stage.timingKind === 'fixed' ? 'Fixed duration' : stage.timingKind === 'flexible' ? 'Flexible share' : 'AT targets'}</span>{/if}
+            </div>
             {#if onedit}
-              <button type="button" class="stage-name" aria-label={`Edit stage ${stage.index + 1}: ${stage.name}`} on:click={() => onedit?.(stage.index)}>{stage.name}</button>
-            {:else}<h3 class="stage-name">{stage.name}</h3>{/if}
-            <p class="duration">{stage.completionMode === 'AT targets' ? 'AT targets' : planProgressDuration(stage.durationSeconds)}</p>
-            <p class="allocation"><abbr title="Energy">E</abbr> <span>{stage.energy}</span></p>
-            <p class="allocation"><abbr title="Magic">M</abbr> <span>{stage.magic}</span></p>
-            <p class="gear">Gear: {stage.gear}</p>
+              <button type="button" class="stage-name" aria-label={`Edit stage ${stage.index + 1}: ${stage.name}`} title={stageHistoryDetails(stage)} aria-describedby={`runtime-history-${stage.index}`} on:click={() => onedit?.(stage.index)}>{stage.name}</button>
+            {:else}<h3 class="stage-name" title={stageHistoryDetails(stage)}>{stage.name}</h3>{/if}
+            {#if stage.completionMode !== 'AT targets'}<p class="duration" title={stage.timingKind === 'flexible' ? `Assigned estimate${stage.flexWeight !== null ? ` / weight ${stage.flexWeight}` : ''}` : undefined}>{planProgressDuration(stage.durationSeconds)}{stage.timingKind === 'flexible' ? ' est.' : ''}{#if stage.timingKind === 'fixed' && stage.configuredDurationSeconds !== null && stage.configuredDurationSeconds !== stage.durationSeconds}{` / configured ${planProgressDuration(stage.configuredDurationSeconds)}`}{/if}</p>{/if}
+            {#if stage.energy === 'Global weighted preset' && stage.magic === stage.energy && stage.gear === stage.energy}
+              <p class="allocation">Energy, magic &amp; gear: preset settings</p>
+            {:else}
+              <p class="allocation"><abbr title="Energy">E</abbr> <span>{stage.energy}</span></p>
+              <p class="allocation"><abbr title="Magic">M</abbr> <span>{stage.magic}</span></p>
+              <p class="gear">Gear: {stage.gear}</p>
+            {/if}
             {#if stage.targets}<p class="targets">AT: {stage.targets}</p>{/if}
+            <details class="history"><summary>Runtime history</summary><p id={`runtime-history-${stage.index}`}>{stageHistoryDetails(stage)}</p></details>
           </div>
         </li>
       {/each}
     </ol>
     {#if active}
       <div class="current-summary">
-        <p><strong>{statusLabel === 'Running' ? 'Current' : statusLabel}: {active.index + 1}. {active.name}</strong><span>{percent === null ? 'Progress not reported' : `${percent}%`}{view.stageElapsedSeconds !== null ? ` / ${planProgressDuration(view.stageElapsedSeconds)} in stage` : ''}</span></p>
+         <p><strong>{statusLabel === 'Running' ? view.scheduleComplete === true ? 'Sustaining' : 'Current' : statusLabel}: {active.index + 1}. {active.name}</strong>{#if percent !== null || view.stageElapsedSeconds !== null}<span>{percent !== null ? `${percent}%` : ''}{percent !== null && view.stageElapsedSeconds !== null ? ' / ' : ''}{view.stageElapsedSeconds !== null ? `${planProgressDuration(view.stageElapsedSeconds)} ${active.automatic ? 'elapsed budget used' : active.timingKind === 'fixed' ? 'credited in stage' : active.timingKind === 'flexible' ? 'wall time in stage' : 'in stage'}` : ''}</span>{/if}</p>
         <div class="stage-progress" role="progressbar" aria-label={`Stage ${active.index + 1} progress`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={percent ?? undefined} aria-valuetext={progressText}><span style:width={`${percent ?? 0}%`}></span></div>
+        {#if !cleanupBlocked && active.presetBlocker}<p class="reason" role="status">{active.presetBlocker}</p>{/if}
       </div>
     {/if}
     {#if view.elapsedSeconds !== null}<footer>{planProgressDuration(view.elapsedSeconds)} into this rebirth</footer>{/if}
@@ -86,15 +109,19 @@
   .current .stage-copy { background: #242a31; border-left-color: var(--accent, #d5dbe3); }
   .held .stage-copy { border-left-color: #87919e; border-left-style: dashed; }
   .loop-start .rail::before { position: absolute; top: -.5rem; bottom: -.5rem; left: 0; border-left: 1px dashed #a6afb9; content: ''; }
-  .stage-state { margin: 0 0 .35rem; color: #a6afb9; font-size: .65rem; line-height: 1.4; }
+  .stage-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .4rem; margin-bottom: .35rem; }
+  .stage-state { margin: 0; color: #a6afb9; font-size: .65rem; line-height: 1.4; }
   .current .stage-state { color: #e4e7ed; }
   .stage-name { display: block; width: 100%; margin: 0; padding: 0; border: 0; border-radius: 0; color: #e4e7ed; background: transparent; font: 600 .8rem/1.4 "Segoe UI", system-ui, sans-serif; text-align: left; }
   button.stage-name { cursor: pointer; text-decoration: underline dotted #87919e; text-underline-offset: .2em; }
   button.stage-name:hover { color: white; background: #323941; }
   .duration { margin: .35rem 0; color: #c5cdd6; font-size: .72rem; line-height: 1.45; }
+  .timing-badge { display: inline-block; padding: .15rem .35rem; border: 1px solid #65707d; border-radius: 3px; color: #c5cdd6; font-size: .65rem; }
   .allocation { display: flex; gap: .35rem; margin: .2rem 0; color: #b9c3cf; font-size: .74rem; line-height: 1.45; }
   abbr { flex: 0 0 .7rem; color: #e4e7ed; font-family: Consolas, monospace; text-decoration: none; }
   .gear, .targets { margin: .3rem 0 0; color: #a6afb9; font-size: .7rem; line-height: 1.45; }
+  .history { margin-top: .4rem; font-size: .72rem; color: var(--muted, #a6afb9); }
+  .history p { white-space: pre-line; line-height: 1.6; }
   .current-summary { margin-top: .7rem; padding-top: .7rem; border-top: 1px solid var(--line, #363c44); }
   .current-summary p { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .3rem .7rem; margin: 0 0 .45rem; font-size: .78rem; }
   .current-summary p span { color: #a6afb9; }

@@ -36,10 +36,13 @@ namespace NGUInjector
             Assert(weights.Length == (energy ? 9 : 7), "integration uses actual lane weight lengths");
             var c = new FocusCharacter();
             Main.Character = c;
+            Main.Settings = new FocusSettings();
+            if (energy) Main.Settings.EnergyNguWeights = weights.ToArray();
+            else Main.Settings.MagicNguWeights = weights.ToArray();
             if (energy) c.idleEnergy = available;
             else c.magic.idleMagic = available;
             setup?.Invoke(c);
-            BlackBarAllocator.AllocatePriorities(priorities, energy, 5, weights);
+            ApplyPriorities(priorities, energy, 5);
             var spent = energy ? c.NGU.skills.Sum(skill => skill.energy) + c.machine.speedEnergy + c.wandoos98.wandoosEnergy
                 : c.NGU.magicSkills.Sum(skill => skill.magic) + c.machine.goldMultiMagic + c.wandoos98.wandoosMagic;
             Assert(spent + (energy ? c.idleEnergy : c.magic.idleMagic) == available, "priority integration conserves the managed resource");
@@ -81,7 +84,7 @@ namespace NGUInjector
 
             var c = Allocate(1001, EnergyWeights, new[] {"NGU"});
             Assert(c.NGU.skills[4].energy == 501 && c.NGU.skills[6].energy == 500 && c.idleEnergy == 0, "equal weights split an odd energy budget with stable remainder");
-            var runtime = BlackBarAllocator.GetNguRuntime(EnergyWeights, MagicWeights);
+            var runtime = BlackBarAllocator.GetNguRuntime();
             Assert(runtime["strategy"].Value == "weighted-ngu-buffered-cap" && runtime["energyTargets"].Count == 9 && runtime["magicTargets"].Count == 7,
                 "runtime reports weighted strategy and every actual lane row");
             Assert(runtime["energyTargets"][4]["bufferedCap"].Value == "252001" && runtime["energyTargets"][6]["bufferedCap"].Value == "252001"
@@ -90,10 +93,10 @@ namespace NGUInjector
             Assert(runtime["energyTargets"][0]["weight"].AsInt == 0 && runtime["energyTargets"][4]["weight"].AsInt == 1
                 && runtime["energyWeights"][6].AsInt == 1 && runtime["magicWeights"][0].AsInt == 1, "runtime exposes configured arrays and per-row weights including exclusions");
             BlackBarAllocator.ResetExcessIdle();
-            Assert(BlackBarAllocator.GetNguRuntime(EnergyWeights, MagicWeights)["energyWeightsApplied"].AsBool,
+            Assert(BlackBarAllocator.GetNguRuntime()["energyWeightsApplied"].AsBool,
                 "idle-warning resets between scheduled passes do not invalidate successfully applied NGU weights");
             BlackBarAllocator.ClearNguAppliedWeights(true);
-            Assert(!BlackBarAllocator.GetNguRuntime(EnergyWeights, MagicWeights)["energyWeightsApplied"].AsBool,
+            Assert(!BlackBarAllocator.GetNguRuntime()["energyWeightsApplied"].AsBool,
                 "actual resource recall explicitly invalidates the managed lane's applied weights");
             var uneven = EnergyWeights.ToArray();
             uneven[4] = 2;
@@ -112,7 +115,10 @@ namespace NGUInjector
                 c = Allocate(1000, new int[energy ? 9 : 7], new[] {"NGU", "TM"}, x => x.buttons.brokenTimeMachine.interactable = true, energy);
                 Assert((energy ? c.machine.speedEnergy : c.machine.goldMultiMagic) == 1000, "all-zero lane weights leave the pool for downstream priorities");
                 c = Allocate(1000, new int[energy ? 9 : 7], new[] {"NGU", "NGU-0"}, energy: energy);
-                Assert((energy ? c.NGU.skills[0].energy : c.NGU.magicSkills[0].magic) == 1000, "zero-weight rows are excluded before visited so later explicit NGU-n still works");
+                Assert((energy ? c.NGU.skills[0].energy : c.NGU.magicSkills[0].magic) == 0
+                    && (energy ? c.idleEnergy : c.magic.idleMagic) == 1000, "explicit NGU-n cannot bypass an all-zero global lane");
+                c = Allocate(1000, new int[energy ? 9 : 7], new[] {"NGU-0", "TM"}, x => x.buttons.brokenTimeMachine.interactable = true, energy);
+                Assert((energy ? c.machine.speedEnergy : c.machine.goldMultiMagic) == 1000, "excluded explicit NGU-n permits downstream work");
             }
 
             c = Allocate(2000000, EnergyWeights, new[] {"WAN", "NGU", "TM"}, x => { x.buttons.wandoos.interactable = true; x.buttons.brokenTimeMachine.interactable = true; });
@@ -127,7 +133,7 @@ namespace NGUInjector
             c = Allocate(1000, EnergyWeights, new[] {"NGU", "NGU-4", "NGU"});
             Assert(c.NGU.skills[4].energy == 500 && c.NGU.skills[6].energy == 500, "later explicit and duplicate generic tokens cannot allocate a positive-weight target twice");
             c = Allocate(300000, EnergyWeights, new[] {"NGU", "NGU-0"}, x => x.NGU.skills[6].target = -1);
-            Assert(c.NGU.skills[4].energy == 252001 && c.NGU.skills[0].energy == 47999, "a zero-weight row remains explicitly eligible after a nonempty generic group");
+            Assert(c.NGU.skills[4].energy == 252001 && c.NGU.skills[0].energy == 0 && c.idleEnergy == 47999, "zero global exclusion also holds after a nonempty generic group");
             c = Allocate(1000, EnergyWeights, new[] {"NGU", "TM"}, x => { x.buttons.ngu.interactable = false; x.buttons.brokenTimeMachine.interactable = true; });
             Assert(c.NGU.skills.Sum(skill => skill.energy) == 0 && c.machine.speedEnergy == 1000, "locked NGUs leave the budget for downstream priorities");
             c = Allocate(700, MagicWeights, new[] {"NGU"}, energy: false);
@@ -141,22 +147,37 @@ namespace NGUInjector
             {
                 c = new FocusCharacter();
                 Main.Character = c;
+                Main.Settings = new FocusSettings();
                 c.idleEnergy = 1000;
                 c.magic.idleMagic = 700;
                 c.NGUController.NGU[4].ThrowOnUpdate = c.NGUController.NGUMagic[0].ThrowOnUpdate = true;
                 var failed = false;
                 try
                 {
-                    BlackBarAllocator.AllocatePriorities(new[] {explicitTarget ? energy ? "NGU-4" : "NGU-0" : "NGU"}, energy, 5, energy ? EnergyWeights : MagicWeights);
+                    var outcome = ApplyPriorities(new[] {explicitTarget ? energy ? "NGU-4" : "NGU-0" : "NGU"}, energy, 5);
+                    Assert(outcome.Disposition == MutationDisposition.ModelAppliedRenderFailed,
+                        "controller failure injection reaches rendering after a complete verified model commit");
                 }
                 catch (InvalidOperationException error) { failed = error.Message == "NGU UI unavailable"; }
-                Assert(failed, "controller failure injection reaches the actual NGU update boundary");
+                Assert(!failed, "render failure does not repeat or reject committed resource accounting");
                 Assert(c.NGU.skills.Sum(skill => skill.energy) + c.idleEnergy == 1000 && c.NGU.magicSkills.Sum(skill => skill.magic) + c.magic.idleMagic == 700,
                     "weighted and singleton transfers conserve both pools even when a controller throws");
                 Assert(energy ? c.NGU.skills[4].energy == (explicitTarget ? 1000 : 500) : c.NGU.magicSkills[0].magic == 700,
                     "resource transfer is committed before a failing UI refresh");
             }
-            return _assertions;
+            return _assertions + PairSharingChecks.Run();
+        }
+
+        internal static ResourceMutationResult ApplyPriorities(string[] priorities, bool energy, int lookahead)
+        {
+            var owner = Main.reference = new Main();
+            var plan = BlackBarAllocator.CalculatePriorities(priorities, energy, lookahead);
+            var outcome = owner.ReconcileStageResourceSetup(new ResourceSetupIntent { Owner = "priority-check",
+                Desired = plan.Desired, Energy = energy, Magic = !energy,
+                Authorized = () => ReferenceEquals(owner, Main.reference) });
+            if (!outcome.Verified) throw new ResourceMutationException(outcome);
+            BlackBarAllocator.ObserveApplied(plan);
+            return outcome;
         }
     }
 }

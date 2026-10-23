@@ -26,7 +26,16 @@ namespace NGUInjector
             var cloudLoadRequested = ConsumeStartupCloudLoadRequest();
             if (cloudLoadRequested)
             {
-                yield return StartCoroutine(TryStartupCloudLoadRoutine());
+                QuiesceExecution("Loading cloud save.");
+                SetExecutionLifecycle(ExecutionLifecycle.LoadingSave);
+                _protectedTimingLoadingSave = true;
+                try { yield return StartCoroutine(TryStartupCloudLoadRoutine()); }
+                finally
+                {
+                    ResetCustomAutomationRuntime();
+                    _protectedTimingLoadingSave = false;
+                    if (!_unloaded) SetExecutionLifecycle(ExecutionLifecycle.Running);
+                }
             }
 
             RunStartupProbeIfRequested();
@@ -264,12 +273,15 @@ namespace NGUInjector
                 lines.Add($"Auto boost enabled: {Settings.CustomAutoBoostEnabled}");
                 lines.Add($"Auto boost cube ratio: {Settings.CustomAutoBoostCubePowerRatio}:1 Power:Toughness");
                 lines.Add($"Auto Money Pit enabled: {Settings.CustomAutoMoneyPitEnabled}");
-                lines.Add($"Auto blood spells enabled: {Settings.CustomAutoBloodSpellsEnabled}");
-                lines.Add($"Blood Spaghetti goal: {Settings.CustomBloodSpaghettiGoalPercent}%");
-                lines.Add($"Counterfeit Gold goal: {Settings.CustomBloodCounterfeitGoalPercent}%");
+                var bloodPlan = Settings.UseCustomRebirthPlan ? LoadRuntimeCustomPlan() : null;
+                lines.Add($"Blood Magic settings source: {(bloodPlan == null ? "global / Quick" : Settings.CustomPlanFile)}");
+                lines.Add($"Auto blood spells enabled: {EffectiveCustomAutoBloodSpellsEnabled(bloodPlan)}");
+                lines.Add($"Blood Spaghetti goal: {EffectiveCustomBloodSpaghettiGoalPercent(bloodPlan)}%");
+                lines.Add($"Counterfeit Gold goal: {EffectiveCustomBloodCounterfeitGoalPercent(bloodPlan)}%");
+                lines.Add($"Iron Pill saving target: {EffectiveCustomIronPillSaveSeconds(bloodPlan)}s or worth {EffectiveCustomIronPillMinWorth(bloodPlan)}");
                 lines.Add($"Augments + Blood estimate: {Settings.CustomAugmentsBloodEstimateSeconds}s");
-                lines.Add($"Energy NGU weights (indices 0..8): {string.Join(",", plan.EnergyNguWeights)}");
-                lines.Add($"Magic NGU weights (indices 0..6): {string.Join(",", plan.MagicNguWeights)}");
+                lines.Add($"Global energy NGU weights (indices 0..8): {string.Join(",", Settings.EnergyNguWeights)}");
+                lines.Add($"Global magic NGU weights (indices 0..6): {string.Join(",", Settings.MagicNguWeights)}");
                 lines.Add($"NUMBER rebirth confirmation delay: {CustomPlanRebirth.NumberTriggerConfirmSeconds:0}s");
                 lines.Add($"Pre-rebirth prep: always on; only maxed Fruit of Power alpha: {plan.PrepRequireMaxedFruit}");
             });
@@ -402,6 +414,7 @@ namespace NGUInjector
 
         private void RunProbeCommand(List<string> lines, string command)
         {
+            if (_executionLifecycle != ExecutionLifecycle.Running) throw new InvalidOperationException("Execution is quiesced.");
             var parts = command.Split(new[] {' '}, 2, StringSplitOptions.RemoveEmptyEntries);
             var verb = parts[0].Trim().ToLowerInvariant();
             var arg = parts.Length > 1 ? parts[1].Trim() : string.Empty;
@@ -434,10 +447,10 @@ namespace NGUInjector
                     return;
                 case "fight":
                 case "fight-prep":
-                    lines.Add(RunManualFightPrep());
+                    lines.Add(RunManualPreparationIngress(false));
                     return;
                 case "rebirth":
-                    lines.Add(RunManualRebirth());
+                    lines.Add(RunManualPreparationIngress(true));
                     return;
                 case "fruit-alpha":
                     lines.Add(YggdrasilManager.ConsumeFruitOfPowerAlpha(false)
@@ -445,14 +458,18 @@ namespace NGUInjector
                         : "Fruit of Power alpha was not ready or unavailable.");
                     return;
                 case "fu-manchu":
-                    lines.Add(BeardManager.EnableFuManchu(true) ? "Enabled Fu Manchu." : "Fu Manchu unavailable.");
+                    var currentSupport = CaptureSupportState().Selection;
+                    ApplyProbeSupportSelection(new[] { ProbeFuManchuBeardId }, currentSupport.Diggers);
+                    lines.Add("Selected Fu Manchu.");
                     return;
                 case "stat-digger":
-                    DiggerManager.EquipDiggers(new[] {StatDiggerId});
+                    var supportContext = CaptureSupportContext();
+                    var statDigger = supportContext.Diggers.Single(x => x.Id == DiggerStat);
+                    ApplyProbeSupportSelection(supportContext.CurrentBeards, new[] { new SupportDiggerLevel(DiggerStat, statDigger.Maximum) });
                     lines.Add("Equipped stat digger.");
                     return;
                 case "clear-diggers":
-                    DiggerManager.ClearDiggers();
+                    ApplyProbeSupportSelection(CaptureSupportState().Selection.Beards, new SupportDiggerLevel[0]);
                     lines.Add("Cleared active diggers.");
                     return;
                 case "boss-push":
@@ -464,10 +481,10 @@ namespace NGUInjector
                     lines.Add("Stopped boss push.");
                     return;
                 case "money-pit":
-                    lines.Add(MoneyPitManager.CheckMoneyPit());
+                    lines.Add(RequestMoneyPit());
                     return;
                 case "daily-spin":
-                    lines.Add(MoneyPitManager.DoDailySpin());
+                    lines.Add(RequestDailySpin());
                     return;
                 default:
                     lines.Add($"Unknown probe command '{verb}'. Use 'help' for supported commands.");
@@ -478,7 +495,7 @@ namespace NGUInjector
         private void ProbeOptimize(List<string> lines, string goalText, bool equip)
         {
             ParseProbeOptimizeArgs(goalText, out var goal, out var fightScoreMode);
-            var result = equip ? GearOptimizer.OptimizeAndEquip(goal, fightScoreMode) : GearOptimizer.Optimize(goal, fightScoreMode);
+            var result = equip ? ApplyManualGearSelectionIngress(goal, fightScoreMode) : GearOptimizer.Optimize(goal, fightScoreMode);
             lines.Add($"Goal: {GoalLabel((int) goal)}");
             if (goal == GearOptimizationGoal.Fight)
                 lines.Add($"Fight scoring: {FightScoreModeLabel(fightScoreMode)}");
@@ -571,6 +588,14 @@ namespace NGUInjector
                 lines.Add($"Fu Manchu active: {beards.beards[ProbeFuManchuBeardId].active}");
             }
             lines.Add($"Active beard slots: {beards.activeBeards.Count}/{allBeards.capBeards()}");
+            lines.Add($"Active beard IDs: {string.Join(",", beards.activeBeards.Select(id => id.ToString()).ToArray())}");
+            var trollCompletions = Character.challenges?.trollChallenge?.curCompletions ?? 0;
+            lines.Add($"Gold/GPS beard unlocked: {trollCompletions >= 7} (normal Troll completions: {trollCompletions}/7)");
+            if (reference != null)
+            {
+                lines.Add($"Beard rotation requirements: {reference._customBeardRequirements ?? "not applied"}");
+                lines.Add($"Last minute beard rotation (UTC): {reference._customLastBeardRotation:o}");
+            }
         }
 
         private static void AddAugmentPreviewProbe(List<string> lines)
@@ -607,17 +632,16 @@ namespace NGUInjector
             if (diggers == null)
                 return;
 
-            lines.Add($"Stat digger ID: {StatDiggerId}");
-            lines.Add($"Stat digger index valid: {StatDiggerId < diggers.Count}");
-            if (StatDiggerId < diggers.Count)
+            lines.Add($"Stat digger ID: {DiggerStat}");
+            lines.Add($"Stat digger index valid: {DiggerStat < diggers.Count}");
+            if (DiggerStat < diggers.Count)
             {
-                lines.Add($"Stat digger max level: {diggers[StatDiggerId].maxLevel}");
-                lines.Add($"Stat digger current level: {diggers[StatDiggerId].curLevel}");
-                lines.Add($"Stat digger active: {diggers[StatDiggerId].active}");
-                lines.Add($"Stat digger upgrade cost: {Character.allDiggers.upgradeCost(StatDiggerId):0}");
+                lines.Add($"Stat digger max level: {diggers[DiggerStat].maxLevel}");
+                lines.Add($"Stat digger current level: {diggers[DiggerStat].curLevel}");
+                lines.Add($"Stat digger active: {diggers[DiggerStat].active}");
+                lines.Add($"Stat digger upgrade cost: {Character.allDiggers.upgradeCost(DiggerStat):0}");
             }
             lines.Add($"Active digger slots: {Character.diggers.activeDiggers.Count}/{Character.allDiggers.maxDiggerSlots()}");
-            lines.Add($"Digger swapping available: {DiggerManager.CanSwap()}");
         }
 
         private static void AddBossProbe(List<string> lines)
@@ -755,6 +779,9 @@ namespace NGUInjector
 
             if (mode == 2)
                 return "Farm boosts";
+
+            if (mode == 3)
+                return "Max ITOPOD push";
 
             return "Optimal ITOPOD";
         }

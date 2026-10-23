@@ -1,9 +1,8 @@
 <script lang="ts">
   import type { JsonObject, JsonValue } from './api';
-  import { INT_MAX, object, pretty } from './model';
+  import { INT_MAX, object } from './model';
 
   export let data: JsonObject;
-  export let activePlanName: string;
   export let connected: boolean;
 
   type Target = { index: number; name: string; weight: number | null; allocated: string | null; cap: string | null; below: boolean };
@@ -42,7 +41,6 @@
 </script>
 
 <section aria-label="NGU allocation">
-  <span class="context">Active plan: <strong>{activePlanName.trim() || 'unavailable'}</strong>. Read-only allocation telemetry.</span>
   {#if !available}
     <p class="context" role="status">{unavailableReason}</p>
   {:else}
@@ -50,34 +48,30 @@
       <div class="allocation-row">
         <span class="resource">{resource}</span>
         <div>
-          <p class="context">{applied === true ? 'Selected weights applied.' : applied === false ? 'Selected weights not applied; actual allocations may reflect previous weights or other priorities.' : 'Weight application unknown.'}</p>
+          {#if applied !== true}
+            <p class="context" role="status" title="Actual allocations may reflect previous weights or other priorities.">{applied === false ? 'Weights not applied' : 'Weight application unknown'}</p>
+          {/if}
           <ul aria-label={`${resource} NGU targets`}>
             {#each rows as target}
               <li title={`${target.name}: allocated ${target.allocated ?? 'unknown'}; buffered cap ${target.cap ?? 'unknown'}`}>
-                {target.name} <span class="context">weight {target.weight ?? 'unknown'}{#if applied !== true}{' / last applied weight '}{appliedWeight(appliedWeights, target.index)}{/if}</span>
-                <strong>{amount(target.allocated)}</strong>
-                {#if runtime.strategy === 'weighted-ngu-buffered-cap' && runtime.capBasis === 'last-allocation-pass' && target.below}<span class="context">below buffered cap</span>{/if}
+                {target.name} <span class="context" title="Selected / last applied weight">w {target.weight ?? 'unknown'}{#if applied !== true}{' / applied '}{appliedWeight(appliedWeights, target.index)}{/if}</span>
+                <strong title={runtime.strategy === 'weighted-ngu-buffered-cap' && runtime.capBasis === 'last-allocation-pass' && target.below ? 'Below buffered cap at last update.' : undefined}>{amount(target.allocated)}</strong>
               </li>
-            {:else}<li class="context">No selected or allocated targets reported.</li>{/each}
+            {:else}<li class="context">No targets reported.</li>{/each}
           </ul>
         </div>
       </div>
     {/each}
-    <details><summary>Allocation details</summary><pre>{pretty(runtime)}</pre></details>
   {/if}
 </section>
 
 <style>
   section { min-width: 0; display: grid; gap: .45rem; }
   .context { color: var(--muted, #a6afb9); font-size: .78rem; overflow-wrap: anywhere; }
-  .context strong { color: var(--accent, #d5dbe3); font-weight: 600; }
   p { margin: 0 0 .25rem; }
-  .allocation-row { display: grid; grid-template-columns: 4rem minmax(0, 1fr); gap: .5rem; align-items: baseline; }
+  .allocation-row { display: grid; grid-template-columns: 3.5rem minmax(0, 1fr); gap: .5rem; align-items: baseline; }
   .resource { font: .68rem Consolas, monospace; letter-spacing: .06em; color: var(--muted, #a6afb9); }
-  ul { display: flex; flex-wrap: wrap; gap: .25rem 1rem; list-style: none; padding: 0; margin: 0; }
-  li { font-size: .8rem; overflow-wrap: anywhere; min-width: 0; }
+  ul { display: flex; flex-wrap: wrap; gap: .3rem; list-style: none; padding: 0; margin: 0; }
+  li { font-size: .8rem; overflow-wrap: anywhere; min-width: 0; padding: .25rem .45rem; border: 1px solid var(--line); border-radius: 4px; }
   li strong { font-variant-numeric: tabular-nums; }
-  details { margin: 0; }
-  summary { font-size: .75rem; color: var(--muted, #a6afb9); padding: .15rem 0; }
-  pre { margin-top: .35rem; max-height: 16rem; font-size: .72rem; overflow-wrap: anywhere; white-space: pre-wrap; }
 </style>

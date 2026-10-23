@@ -15,19 +15,20 @@ namespace NGUInjector.Managers
         private static readonly Dictionary<string, long> NguBufferedCaps = new Dictionary<string, long>();
         private static int[] AppliedEnergyNguWeights;
         private static int[] AppliedMagicNguWeights;
-        private static readonly string[] EnergyNguNames = {"Augments", "Wandoos", "Respawn", "Gold", "Adventure Alpha", "Power Alpha", "Drop Chance", "Magic NGU", "PP"};
+        private static readonly string[] EnergyNguNames = {"Augments", "Wandoos", "Respawn", "Gold", "Adventure Alpha", "Power", "Drop Chance", "Magic NGU", "PP"};
         private static readonly string[] MagicNguNames = {"Yggdrasil", "EXP", "Power Beta", "Number", "Time Machine", "Energy NGU", "Adventure Beta"};
 
-        internal static JSONObject GetNguRuntime(int[] energyWeights, int[] magicWeights)
+        internal static JSONObject GetNguRuntime()
         {
             var root = new JSONObject();
             root["strategy"] = "weighted-ngu-buffered-cap";
             root["capBasis"] = "last-allocation-pass";
-            root["reason"] = "Positive NGU weights divide each resource proportionally up to buffered caps, redistributing capped shares. Zero excludes a target; outer priorities and explicit NGU-n targets remain ordered.";
+            root["reason"] = "Misc global NGU weights are authoritative. Positive weights share up to buffered caps; zero excludes targets even from explicit NGU-n priorities. Outer priorities remain ordered.";
+            root["globalNguWeightsVersion"] = 1;
             root["available"] = Main.Character?.NGU != null;
             foreach (var energy in new[] {true, false})
             {
-                var weights = energy ? energyWeights : magicWeights;
+                var weights = energy ? Main.Settings.EnergyNguWeights : Main.Settings.MagicNguWeights;
                 var applied = energy ? AppliedEnergyNguWeights : AppliedMagicNguWeights;
                 var lane = energy ? "energy" : "magic";
                 var configuredJson = new JSONArray();
@@ -70,146 +71,129 @@ namespace NGUInjector.Managers
             else AppliedMagicNguWeights = null;
         }
 
+        internal sealed class PriorityResourcePlan
+        {
+            internal Dictionary<ResourceTarget, long[]> Desired;
+            internal readonly Dictionary<int, long> NguCaps = new Dictionary<int, long>();
+            internal bool Energy;
+            internal int[] Weights;
+            internal long Remaining;
+            internal string Message;
+        }
+
+        internal static PriorityResourcePlan[] CalculateCombatPrepFallbacks(Dictionary<ResourceTarget, long[]> desired, long energyBudget, long magicBudget, bool allowTimeMachine)
+        {
+            var c = Main.Character;
+            var plans = new List<PriorityResourcePlan>();
+            foreach (var energy in new[] { true, false })
+            {
+                var weights = energy ? Main.Settings.EnergyNguWeights : Main.Settings.MagicNguWeights;
+                var budget = Math.Max(0, energy ? energyBudget : magicBudget);
+                var plan = new PriorityResourcePlan { Energy = energy, Weights = c.buttons.ngu.interactable ? weights.ToArray() : null };
+                plans.Add(plan);
+                if (c.buttons.ngu.interactable)
+                {
+                    var caps = Enumerable.Range(0, weights.Length).Select(i => energy ? EnergyNguCapDelta(i, 0, true) : MagicNguCapDelta(i, 0, true)).ToArray();
+                    for (var i = 0; i < caps.Length; i++) plan.NguCaps[i] = caps[i];
+                    var shares = ShareCappedBudget(caps, budget, weights);
+                    var target = energy ? ResourceTarget.EnergyNgu : ResourceTarget.MagicNgu;
+                    for (var i = 0; i < shares.Length; i++)
+                    {
+                        desired[target][i] = shares[i];
+                        budget -= shares[i];
+                    }
+                }
+                plan.Remaining = budget;
+                if (!allowTimeMachine || budget <= 0 || !c.buttons.brokenTimeMachine.interactable || c.challenges.timeMachineChallenge.inChallenge) continue;
+                var cap = energy ? TimeMachineEnergyCapDelta(0, DefaultLookaheadSeconds, true) : TimeMachineMagicCapDelta(0, DefaultLookaheadSeconds, true);
+                var amount = Math.Min(budget, Math.Max(0, cap));
+                desired[energy ? ResourceTarget.TimeMachineEnergy : ResourceTarget.TimeMachineMagic][0] = amount;
+                plan.Remaining -= amount;
+            }
+            return plans.ToArray();
+        }
+
         internal static bool IsValidPriority(string token, bool energy)
         {
-            token = (token ?? string.Empty).Trim().ToUpperInvariant();
-            if (token == "WAN" || token == "TM" || token == "NGU")
-                return true;
-            if (token == "AUG" || token == "AT")
-                return energy;
-            if (token == "RIT")
-                return !energy;
-            var parts = token.Split('-');
-            if (parts.Length != 2 || !int.TryParse(parts[1], out var index) || index < 0)
-                return false;
-            if (parts[1] != index.ToString(System.Globalization.CultureInfo.InvariantCulture))
-                return false;
-            return parts[0] == "NGU" && index < (energy ? 9 : 7)
-                   || energy && parts[0] == "AUG" && index < 14
-                   || energy && parts[0] == "AT" && index < 5
-                   || !energy && parts[0] == "RIT" && index < 8;
+            return ActivityPolicy.Current.IsValidPriority(token, energy);
         }
 
         internal static string[] DefaultPriorities(CustomStageFocus focus, bool energy)
         {
-            switch (focus)
-            {
-                case CustomStageFocus.TimeMachine:
-                    return energy ? new[] {"TM", "NGU", "WAN", "AT"} : new[] {"TM", "RIT", "NGU", "WAN"};
-                case CustomStageFocus.Augments:
-                    return energy ? new[] {"AUG", "NGU", "WAN", "TM"} : new[] {"RIT", "NGU", "WAN", "TM"};
-                case CustomStageFocus.BloodMagic:
-                    return energy ? new string[0] : new[] {"RIT", "NGU", "WAN", "TM"};
-                case CustomStageFocus.Wandoos:
-                    return energy ? new[] {"WAN", "NGU", "TM", "AT"} : new[] {"WAN", "RIT", "NGU", "TM"};
-                case CustomStageFocus.EnergyNgu:
-                    return energy ? new[] {"NGU", "WAN", "TM", "AT"} : new string[0];
-                case CustomStageFocus.MagicNgu:
-                    return energy ? new string[0] : new[] {"NGU", "RIT", "WAN", "TM"};
-                case CustomStageFocus.AdvancedTraining:
-                    return energy ? new[] {"AT", "NGU", "WAN", "TM"} : new[] {"RIT", "NGU", "WAN", "TM"};
-                default:
-                    return new string[0];
-            }
+            return ActivityPolicy.Current.DefaultPriorities((int) focus, energy);
         }
 
-        // Callers recall once before this pass, so growing high priorities can reclaim lower allocations.
-        internal static string AllocatePriorities(string[] priorities, bool energy, int lookaheadSeconds, int[] nguWeights,
-            Func<long, double, int> selectRitual = null)
+        internal static PriorityResourcePlan CalculatePriorities(string[] priorities, bool energy, int lookaheadSeconds,
+            Func<long, double, int> selectRitual = null, Func<long, AugmentOptimizerResult> selectAugment = null,
+            long[] atTargets = null)
         {
-            var c = Main.Character;
-            var idle = energy ? c.idleEnergy : c.magic.idleMagic;
-            if (energy) AppliedEnergyNguWeights = null;
-            else AppliedMagicNguWeights = null;
+            var nguWeights = energy ? Main.Settings.EnergyNguWeights : Main.Settings.MagicNguWeights;
+            var plan = new PriorityResourcePlan { Energy = energy, Weights = nguWeights.ToArray(),
+                Desired = ResourceWriter.EmptyDesiredMap(energy, !energy), Remaining = Main.reference?.ExecutionResourceBudget(energy,
+                    ResourceWriter.Reclaimable(energy)) ?? ResourceWriter.Reclaimable(energy) };
             var messages = new List<string>();
-            foreach (var key in NguBufferedCaps.Keys.Where(key => key.StartsWith(energy ? "E" : "M")).ToArray())
-                NguBufferedCaps.Remove(key);
-            AllocateInOrder(ResolveAllocations(priorities, energy, lookaheadSeconds, nguWeights, messages, selectRitual), idle);
-            if (energy) AppliedEnergyNguWeights = nguWeights.ToArray();
-            else AppliedMagicNguWeights = nguWeights.ToArray();
-            var remaining = energy ? c.idleEnergy : c.magic.idleMagic;
-            if (energy)
-                ExcessIdleEnergy = remaining > 0 && messages.Count > 0 ? remaining : -1;
-            else
-                ExcessIdleMagic = remaining > 0 && messages.Count > 0 ? remaining : -1;
-            if (remaining > 0 && messages.Count > 0)
-                messages.Add($"configured priorities capped, complete, or unavailable; {remaining:n0} left idle");
-            return messages.Count == 0 ? null : $"{(energy ? "Energy" : "Magic")} priority allocation (weighted NGU groups, ordered buffered caps): " + string.Join("; ", messages.ToArray());
+            ResolveAllocations(plan, priorities, lookaheadSeconds, messages, selectRitual, selectAugment, atTargets);
+            if (plan.Remaining > 0 && messages.Count > 0)
+                messages.Add($"configured priorities capped, complete, or unavailable; {plan.Remaining:n0} left idle");
+            plan.Message = messages.Count == 0 ? null : $"{(energy ? "Energy" : "Magic")} priority allocation (weighted NGU groups, equal AT/augment pairs, ordered buffered caps): " + string.Join("; ", messages.ToArray());
+            return plan;
         }
 
-        private static long AllocateInOrder(IEnumerable<KeyValuePair<long, Action<long>>> targets, long available)
+        internal static void ObserveApplied(PriorityResourcePlan plan)
         {
-            var remaining = Math.Max(0, available);
-            using (var iterator = targets.GetEnumerator())
-            {
-                while (remaining > 0 && iterator.MoveNext())
-                {
-                    var target = iterator.Current;
-                    var amount = Math.Min(remaining, Math.Max(0, target.Key));
-                    if (amount > 0)
-                        target.Value(amount);
-                    remaining -= amount;
-                }
-            }
-            return Math.Max(0, available) - remaining;
+            var prefix = plan.Energy ? "E" : "M";
+            foreach (var key in NguBufferedCaps.Keys.Where(key => key.StartsWith(prefix)).ToArray()) NguBufferedCaps.Remove(key);
+            foreach (var cap in plan.NguCaps) NguBufferedCaps[prefix + cap.Key] = cap.Value;
+            if (plan.Energy) { AppliedEnergyNguWeights = plan.Weights; ExcessIdleEnergy = plan.Remaining > 0 ? plan.Remaining : -1; }
+            else { AppliedMagicNguWeights = plan.Weights; ExcessIdleMagic = plan.Remaining > 0 ? plan.Remaining : -1; }
         }
 
         internal static long[] ShareCappedBudget(long[] caps, long available, int[] weights)
         {
-            var amounts = new long[caps.Length];
-            var active = Enumerable.Range(0, caps.Length).Where(i => caps[i] > 0 && weights[i] > 0).ToList();
-            var remaining = Math.Max(0, available);
-            while (remaining > 0 && active.Count > 0)
-            {
-                var totalWeight = active.Sum(i => (long) weights[i]);
-                var fractions = new decimal[caps.Length];
-                var shares = new long[caps.Length];
-                foreach (var i in active)
-                {
-                    // long * Int32 fits decimal exactly. Subtract the exact remainder before division
-                    // so decimal rounding cannot turn a near-integer quotient into an extra resource.
-                    var scaled = (decimal) remaining * weights[i];
-                    fractions[i] = scaled % totalWeight;
-                    shares[i] = (long) ((scaled - fractions[i]) / totalWeight);
-                }
-                var capped = active.Where(i => caps[i] <= shares[i]).ToArray();
-                if (capped.Length > 0)
-                {
-                    // Remove capped members before redividing, without summing overflowing cap totals.
-                    foreach (var i in capped)
-                    {
-                        amounts[i] = caps[i];
-                        remaining -= caps[i];
-                        active.Remove(i);
-                    }
-                    continue;
-                }
-
-                foreach (var i in active)
-                {
-                    amounts[i] = shares[i];
-                    remaining -= shares[i];
-                }
-                foreach (var i in active.OrderByDescending(i => fractions[i]).ThenBy(i => i).Take((int) remaining))
-                    amounts[i]++;
-                break;
-            }
-            return amounts;
+            return ResourceAllocation.ShareCapped(caps, available, weights);
         }
 
-        private static IEnumerable<KeyValuePair<long, Action<long>>> ResolveAllocations(string[] priorities, bool energy,
-            int lookaheadSeconds, int[] nguWeights, List<string> messages, Func<long, double, int> selectRitual)
+        internal static long[] ShareAugmentBudget(int[] indexes, long available, int lookaheadSeconds)
+        { return ShareAugmentBudget(indexes, available, lookaheadSeconds, true); }
+
+        private static long[] ShareAugmentBudget(int[] indexes, long available, int lookaheadSeconds, bool absolute)
         {
             var c = Main.Character;
+            var caps = indexes.Select(i => AugmentCapDelta(i, Math.Max(3, lookaheadSeconds), absolute)).ToArray();
+            var requiredGold = 0d;
+            for (var i = 0; i < indexes.Length; i++)
+            {
+                if (caps[i] <= 0) continue;
+                var id = indexes[i];
+                var data = c.augments.augs[id / 2];
+                var bar = c.augmentsController.augments[id / 2];
+                if ((id % 2 == 0 ? data.augProgress : data.upgradeProgress) <= 0)
+                    requiredGold += Math.Max(0d, id % 2 == 0 ? bar.getAugCost() : bar.getUpgradeCost());
+            }
+            if (requiredGold > c.realGold) return new long[indexes.Length];
+            return ShareCappedBudget(caps, available, Enumerable.Repeat(1, indexes.Length).ToArray());
+        }
+
+        private static void ResolveAllocations(PriorityResourcePlan plan, string[] priorities,
+            int lookaheadSeconds, List<string> messages, Func<long, double, int> selectRitual,
+            Func<long, AugmentOptimizerResult> selectAugment, long[] atTargets)
+        {
+            var c = Main.Character;
+            var energy = plan.Energy; var nguWeights = plan.Weights;
+            Action<ResourceTarget, int, long> fund = (target, id, amount) => {
+                amount = Math.Min(plan.Remaining, Math.Max(0, amount));
+                plan.Desired[target][id] = checked(plan.Desired[target][id] + amount);
+                plan.Remaining -= amount;
+            };
             var lookahead = Math.Max(3, lookaheadSeconds);
             var queue = new Queue<string>(priorities ?? new string[0]);
             var visited = new HashSet<string>();
             var goldBudget = energy ? 0d : Math.Max(0d, c.grossGoldPerSecond());
             while (queue.Count > 0)
             {
-                var idle = energy ? c.idleEnergy : c.magic.idleMagic;
+                var idle = plan.Remaining;
                 if (idle <= 0)
-                    yield break;
+                    break;
                 var token = (queue.Dequeue() ?? string.Empty).Trim().ToUpperInvariant();
                 if (!IsValidPriority(token, energy) || !visited.Add(token))
                     continue;
@@ -224,10 +208,9 @@ namespace NGUInjector.Managers
                         continue;
                     var indexes = Enumerable.Range(0, nguWeights.Length)
                         .Where(i => nguWeights[i] > 0 && visited.Add("NGU-" + i)).ToArray();
-                    var caps = indexes.Select(i => energy ? EnergyNguCapDelta(i, lookahead) : MagicNguCapDelta(i, lookahead)).ToArray();
+                    var caps = indexes.Select(i => energy ? EnergyNguCapDelta(i, lookahead, true) : MagicNguCapDelta(i, lookahead, true)).ToArray();
                     for (var i = 0; i < indexes.Length; i++)
-                        NguBufferedCaps[(energy ? "E" : "M") + indexes[i]] = AddResource(
-                            energy ? c.NGU.skills[indexes[i]].energy : c.NGU.magicSkills[indexes[i]].magic, caps[i]);
+                        plan.NguCaps[indexes[i]] = caps[i];
                     var shares = ShareCappedBudget(caps, idle, indexes.Select(i => nguWeights[i]).ToArray());
                     for (var i = 0; i < indexes.Length; i++)
                     {
@@ -238,14 +221,8 @@ namespace NGUInjector.Managers
                             messages.Add($"NGU-{target} capped or complete");
                             continue;
                         }
-                        yield return new KeyValuePair<long, Action<long>>(shares[i], amount =>
-                        {
-                            if (energy)
-                                AddEnergyNgu(target, amount);
-                            else
-                                AddMagicNgu(target, amount);
-                            messages.Add($"NGU-{target} {amount:n0} (shared{(amount < groupCap ? "; below buffered cap" : string.Empty)})");
-                        });
+                        fund(energy ? ResourceTarget.EnergyNgu : ResourceTarget.MagicNgu, target, shares[i]);
+                        messages.Add($"NGU-{target} {shares[i]:n0} (shared{(shares[i] < groupCap ? "; below buffered cap" : string.Empty)})");
                     }
                     continue;
                 }
@@ -253,7 +230,8 @@ namespace NGUInjector.Managers
                     expansion = new[] {"AT-1", "AT-0"};
                 else if (token == "AUG")
                 {
-                    var aug = AugmentOptimizer.OptimizeBest(DefaultFocusEstimate(), true);
+                    var aug = selectAugment != null ? selectAugment(idle)
+                        : AugmentOptimizer.OptimizeForActualBudget(DefaultFocusEstimate(), idle, lookahead);
                     if (aug.Success)
                         expansion = aug.UsesUpgrade ? new[] {"AUG-" + aug.AugmentIndex * 2, "AUG-" + (aug.AugmentIndex * 2 + 1)} : new[] {"AUG-" + aug.AugmentIndex * 2};
                     else
@@ -274,46 +252,82 @@ namespace NGUInjector.Managers
                     continue;
                 }
 
+                // Adjacent related bars are one priority, not competing sequential sinks.
+                var partner = kind == "AUG" ? index ^ 1
+                    : kind == "AT" && index < 2 ? 1 - index
+                    : kind == "AT" && index >= 3 ? 7 - index : -1;
+                var partnerToken = kind + "-" + partner;
+                if (energy && partner >= 0 && (kind == "AUG" || kind == "AT") && queue.Count > 0
+                    && string.Equals((queue.Peek() ?? string.Empty).Trim(), partnerToken, StringComparison.OrdinalIgnoreCase)
+                    && !visited.Contains(partnerToken))
+                {
+                    queue.Dequeue();
+                    visited.Add(partnerToken);
+                    if (kind == "AUG" ? !c.buttons.augmentation.interactable || c.challenges.noAugsChallenge.inChallenge
+                        : !c.buttons.advancedTraining.interactable)
+                        continue;
+
+                    var indexes = new[] {index, partner};
+                    var caps = indexes.Select(i => kind == "AUG" ? AugmentCapDelta(i, lookahead, true) : AdvancedTrainingCapDelta(i, lookahead, true, atTargets)).ToArray();
+                    var shares = kind == "AUG" ? ShareAugmentBudget(indexes, idle, lookahead, true)
+                        : ShareCappedBudget(caps, idle, new[] {1, 1});
+                    for (var i = 0; i < indexes.Length; i++)
+                    {
+                        var target = indexes[i];
+                        var cap = caps[i];
+                        if (cap <= 0)
+                        {
+                            messages.Add($"{kind}-{target} capped or complete");
+                            continue;
+                        }
+                        fund(kind == "AUG" ? target % 2 == 0 ? ResourceTarget.Augment : ResourceTarget.AugmentUpgrade : ResourceTarget.AdvancedTraining,
+                            kind == "AUG" ? target / 2 : target, shares[i]);
+                        messages.Add($"{kind}-{target} {shares[i]:n0} (shared{(shares[i] < cap ? "; below buffered cap" : string.Empty)})");
+                    }
+                    continue;
+                }
+
                 long needed;
-                Action<int, long> add;
+                ResourceTarget destination;
                 switch (kind)
                 {
                     case "WAN":
                         if (!c.buttons.wandoos.interactable || c.wandoos98.disabled)
                             continue;
-                        needed = energy ? WandoosEnergyCapDelta(0) : WandoosMagicCapDelta(0);
-                        add = energy ? (Action<int, long>)AddWandoosEnergy : AddWandoosMagic;
+                        needed = energy ? WandoosEnergyCapDelta(0, true) : WandoosMagicCapDelta(0, true);
+                        destination = energy ? ResourceTarget.WandoosEnergy : ResourceTarget.WandoosMagic;
                         break;
                     case "TM":
                         if (!c.buttons.brokenTimeMachine.interactable || c.challenges.timeMachineChallenge.inChallenge)
                             continue;
-                        needed = energy ? TimeMachineEnergyCapDelta(0, lookahead) : TimeMachineMagicCapDelta(0, lookahead);
-                        add = energy ? (Action<int, long>)AddTimeMachineEnergy : AddTimeMachineMagic;
+                        needed = energy ? TimeMachineEnergyCapDelta(0, lookahead, true) : TimeMachineMagicCapDelta(0, lookahead, true);
+                        destination = energy ? ResourceTarget.TimeMachineEnergy : ResourceTarget.TimeMachineMagic;
                         break;
                     case "NGU":
-                        if (!c.buttons.ngu.interactable)
+                        if (!c.buttons.ngu.interactable || index >= nguWeights.Length || nguWeights[index] <= 0)
                             continue;
-                        needed = energy ? EnergyNguCapDelta(index, lookahead) : MagicNguCapDelta(index, lookahead);
-                        NguBufferedCaps[(energy ? "E" : "M") + index] = AddResource(energy ? c.NGU.skills[index].energy : c.NGU.magicSkills[index].magic, needed);
-                        add = energy ? (Action<int, long>)AddEnergyNgu : AddMagicNgu;
+                        needed = energy ? EnergyNguCapDelta(index, lookahead, true) : MagicNguCapDelta(index, lookahead, true);
+                        plan.NguCaps[index] = needed;
+                        destination = energy ? ResourceTarget.EnergyNgu : ResourceTarget.MagicNgu;
                         break;
                     case "AUG":
                         if (!c.buttons.augmentation.interactable || c.challenges.noAugsChallenge.inChallenge)
                             continue;
-                        needed = AugmentCapDelta(index, lookahead);
-                        add = AddAugmentEnergy;
+                        needed = AugmentCapDelta(index, lookahead, true);
+                        destination = index % 2 == 0 ? ResourceTarget.Augment : ResourceTarget.AugmentUpgrade;
+                        index /= 2;
                         break;
                     case "AT":
                         if (!c.buttons.advancedTraining.interactable)
                             continue;
-                        needed = AdvancedTrainingCapDelta(index, lookahead);
-                        add = AddAdvancedTrainingEnergy;
+                        needed = AdvancedTrainingCapDelta(index, lookahead, true, atTargets);
+                        destination = ResourceTarget.AdvancedTraining;
                         break;
                     case "RIT":
                         // Check gold sustainability at the actual remaining allocation, not total capacity.
                         if (!c.buttons.bloodMagic.interactable)
                             continue;
-                        needed = BloodRitualCapDelta(index);
+                        needed = BloodRitualCapDelta(index, true);
                         if (needed > 0)
                         {
                             var ritual = BloodMagicOptimizer.OptimizeTarget(index, Math.Min(idle, needed), goldBudget);
@@ -321,7 +335,7 @@ namespace NGUInjector.Managers
                                 continue;
                             goldBudget = Math.Max(0d, goldBudget - ritual.BloodMagicGoldPerSecond);
                         }
-                        add = AddBloodRitualMagic;
+                        destination = ResourceTarget.BloodRitual;
                         break;
                     default:
                         continue;
@@ -331,18 +345,9 @@ namespace NGUInjector.Managers
                     messages.Add($"{token} capped or complete");
                     continue;
                 }
-                yield return new KeyValuePair<long, Action<long>>(needed, amount =>
-                {
-                    add(index, amount);
-                    if (kind != "NGU")
-                    {
-                        if (energy)
-                            c.idleEnergy -= amount;
-                        else
-                            c.magic.idleMagic -= amount;
-                    }
-                    messages.Add($"{token} {amount:n0}{(amount < needed ? $" (below buffered cap: need {needed:n0}, resource shortage; later priorities wait)" : string.Empty)}");
-                });
+                var funded = Math.Min(idle, needed);
+                fund(destination, index, funded);
+                messages.Add($"{token} {funded:n0}{(funded < needed ? $" (below buffered cap: need {needed:n0}, resource shortage; later priorities wait)" : string.Empty)}");
             }
         }
 
@@ -363,7 +368,7 @@ namespace NGUInjector.Managers
             return target < 0 || target > 0 && MagicNguLevel(id) >= target;
         }
 
-        private static long TimeMachineEnergyCapDelta(int id, int lookaheadSeconds)
+        private static long TimeMachineEnergyCapDelta(int id, int lookaheadSeconds, bool absolute = false)
         {
             var c = Main.Character;
             if (c.machine.speedTarget == -1 || c.machine.speedTarget > 0 && c.machine.levelSpeed >= c.machine.speedTarget)
@@ -381,10 +386,10 @@ namespace NGUInjector.Managers
             if (c.settings.rebirthDifficulty >= difficulty.sadistic)
                 cap *= c.timeMachineController.sadisticDivider();
 
-            return CapDelta(cap * 1.000002d, c.machine.speedEnergy);
+            return CapDelta(cap * 1.000002d, absolute ? 0 : c.machine.speedEnergy);
         }
 
-        private static long TimeMachineMagicCapDelta(int id, int lookaheadSeconds)
+        private static long TimeMachineMagicCapDelta(int id, int lookaheadSeconds, bool absolute = false)
         {
             var c = Main.Character;
             if (c.machine.multiTarget == -1 || c.machine.multiTarget > 0 && c.machine.levelGoldMulti >= c.machine.multiTarget)
@@ -402,24 +407,24 @@ namespace NGUInjector.Managers
             if (c.settings.rebirthDifficulty >= difficulty.sadistic)
                 cap *= c.timeMachineController.sadisticDivider();
 
-            return CapDelta(cap * 1.000002d, c.machine.goldMultiMagic);
+            return CapDelta(cap * 1.000002d, absolute ? 0 : c.machine.goldMultiMagic);
         }
 
-        private static long WandoosEnergyCapDelta(int id)
+        private static long WandoosEnergyCapDelta(int id, bool absolute = false)
         {
             var c = Main.Character;
             var speed = (double)c.totalWandoosEnergySpeed();
-            return speed <= 0 ? 0 : CapDelta(c.wandoos98Controller.baseEnergyTime() / speed * 1.000002d, c.wandoos98.wandoosEnergy);
+            return speed <= 0 ? 0 : CapDelta(c.wandoos98Controller.baseEnergyTime() / speed * 1.000002d, absolute ? 0 : c.wandoos98.wandoosEnergy);
         }
 
-        private static long WandoosMagicCapDelta(int id)
+        private static long WandoosMagicCapDelta(int id, bool absolute = false)
         {
             var c = Main.Character;
             var speed = (double)c.totalWandoosMagicSpeed();
-            return speed <= 0 ? 0 : CapDelta(c.wandoos98Controller.baseMagicTime() / speed * 1.000002d, c.wandoos98.wandoosMagic);
+            return speed <= 0 ? 0 : CapDelta(c.wandoos98Controller.baseMagicTime() / speed * 1.000002d, absolute ? 0 : c.wandoos98.wandoosMagic);
         }
 
-        private static long AugmentCapDelta(int id, int lookaheadSeconds)
+        private static long AugmentCapDelta(int id, int lookaheadSeconds, bool absolute = false)
         {
             var c = Main.Character;
             var augIndex = id / 2;
@@ -434,7 +439,7 @@ namespace NGUInjector.Managers
 
                 var level = ProjectedNextLevel(c.augments.augs[augIndex].augLevel, c.augments.augs[augIndex].augmentTarget, lookaheadSeconds);
                 var formula = AugmentCapFormula(augIndex, level, false);
-                return CapDelta(formula * 1.000002d, c.augments.augs[augIndex].augEnergy);
+                return CapDelta(formula * 1.000002d, absolute ? 0 : c.augments.augs[augIndex].augEnergy);
             }
 
             if (aug.upgradeLocked() || aug.hitUpgradeTarget() || c.augments.augs[augIndex].upgradeProgress <= 0 && c.realGold < aug.getUpgradeCost())
@@ -442,7 +447,7 @@ namespace NGUInjector.Managers
 
             var upgradeLevel = ProjectedNextLevel(c.augments.augs[augIndex].upgradeLevel, c.augments.augs[augIndex].upgradeTarget, lookaheadSeconds);
             var upgradeFormula = AugmentCapFormula(augIndex, upgradeLevel, true);
-            return CapDelta(upgradeFormula * 1.000002d, c.augments.augs[augIndex].upgradeEnergy);
+            return CapDelta(upgradeFormula * 1.000002d, absolute ? 0 : c.augments.augs[augIndex].upgradeEnergy);
         }
 
         private static double AugmentCapFormula(int augIndex, double level, bool upgrade)
@@ -488,7 +493,7 @@ namespace NGUInjector.Managers
             return formula;
         }
 
-        private static long BloodRitualCapDelta(int id)
+        private static long BloodRitualCapDelta(int id, bool absolute = false)
         {
             var c = Main.Character;
             if (!c.buttons.bloodMagic.interactable || id < 0 || id >= c.bloodMagic.ritual.Count || id >= c.bloodMagicController.ritualsUnlocked())
@@ -507,7 +512,7 @@ namespace NGUInjector.Managers
             if (divisor <= 0d || power <= 0d || speedBonus <= 0d)
                 return 0;
 
-            return CapDelta(divisor / (power * speedBonus) * 1.000002d, ritual.magic);
+            return CapDelta(divisor / (power * speedBonus) * 1.000002d, absolute ? 0 : ritual.magic);
         }
 
         private static double BloodRitualSpeedDivider(int id)
@@ -522,7 +527,7 @@ namespace NGUInjector.Managers
             return 0d;
         }
 
-        private static long EnergyNguCapDelta(int id, int lookaheadSeconds)
+        private static long EnergyNguCapDelta(int id, int lookaheadSeconds, bool absolute = false)
         {
             var c = Main.Character;
             if (EnergyNguTargetReached(id))
@@ -547,10 +552,10 @@ namespace NGUInjector.Managers
 
             var projectedLevel = ProjectedNextLevel(EnergyNguLevel(id), EnergyNguTarget(id), lookaheadSeconds);
             var formula = c.NGUController.energySpeedDivider(id) * projectedLevel / divisor;
-            return CapDelta(formula * 1.000002d, c.NGU.skills[id].energy);
+            return CapDelta(formula * 1.000002d, absolute ? 0 : c.NGU.skills[id].energy);
         }
 
-        private static long MagicNguCapDelta(int id, int lookaheadSeconds)
+        private static long MagicNguCapDelta(int id, int lookaheadSeconds, bool absolute = false)
         {
             var c = Main.Character;
             if (MagicNguTargetReached(id))
@@ -575,13 +580,14 @@ namespace NGUInjector.Managers
 
             var projectedLevel = ProjectedNextLevel(MagicNguLevel(id), MagicNguTarget(id), lookaheadSeconds);
             var formula = c.NGUController.magicSpeedDivider(id) * projectedLevel / divisor;
-            return CapDelta(formula * 1.000002d, c.NGU.magicSkills[id].magic);
+            return CapDelta(formula * 1.000002d, absolute ? 0 : c.NGU.magicSkills[id].magic);
         }
 
-        private static long AdvancedTrainingCapDelta(int id, int lookaheadSeconds)
+        private static long AdvancedTrainingCapDelta(int id, int lookaheadSeconds, bool absolute = false, long[] targets = null)
         {
             var c = Main.Character;
-            if (id < 0 || id >= c.advancedTraining.energy.Length || AdvancedTrainingTargetReached(id))
+            var target = targets != null && id >= 0 && id < targets.Length ? targets[id] : id >= 0 && id < c.advancedTraining.levelTarget.Length ? c.advancedTraining.levelTarget[id] : -1;
+            if (id < 0 || id >= c.advancedTraining.energy.Length || target < 0 || target > 0 && c.advancedTraining.level[id] >= target)
                 return 0;
             if (c.wishes.wishes[190].level >= 1)
                 return 0;
@@ -591,9 +597,9 @@ namespace NGUInjector.Managers
             if (power <= 0d || speed <= 0d)
                 return 0;
 
-            var projectedLevel = ProjectedNextLevel(c.advancedTraining.level[id], c.advancedTraining.levelTarget[id], lookaheadSeconds);
+            var projectedLevel = ProjectedNextLevel(c.advancedTraining.level[id], target, lookaheadSeconds);
             var cap = 50d * AdvancedTrainingBaseTime(id) * projectedLevel * Math.Sqrt(power) / (speed * power);
-            return CapDelta(cap * 1.000002d, c.advancedTraining.energy[id]);
+            return CapDelta(cap * 1.000002d, absolute ? 0 : c.advancedTraining.energy[id]);
         }
 
         private static bool AdvancedTrainingTargetReached(int id)
@@ -702,87 +708,5 @@ namespace NGUInjector.Managers
             return current + amount;
         }
 
-        private static void AddTimeMachineEnergy(int id, long amount)
-        {
-            Main.Character.machine.speedEnergy = AddResource(Main.Character.machine.speedEnergy, amount);
-            Main.Character.timeMachineController.updateSpeedText();
-        }
-
-        private static void AddTimeMachineMagic(int id, long amount)
-        {
-            Main.Character.machine.goldMultiMagic = AddResource(Main.Character.machine.goldMultiMagic, amount);
-            Main.Character.timeMachineController.updateGoldMultiText();
-        }
-
-        private static void AddWandoosEnergy(int id, long amount)
-        {
-            Main.Character.wandoos98.wandoosEnergy = AddResource(Main.Character.wandoos98.wandoosEnergy, amount);
-            Main.Character.wandoos98Controller.updateText();
-        }
-
-        private static void AddWandoosMagic(int id, long amount)
-        {
-            Main.Character.wandoos98.wandoosMagic = AddResource(Main.Character.wandoos98.wandoosMagic, amount);
-            Main.Character.wandoos98Controller.updateText();
-        }
-
-        private static void AddAugmentEnergy(int id, long amount)
-        {
-            var augIndex = id / 2;
-            if (id % 2 == 0)
-            {
-                Main.Character.augments.augs[augIndex].augEnergy = AddResource(Main.Character.augments.augs[augIndex].augEnergy, amount);
-                Main.Character.augmentsController.augments[augIndex].updateAugTexts();
-                return;
-            }
-
-            Main.Character.augments.augs[augIndex].upgradeEnergy = AddResource(Main.Character.augments.augs[augIndex].upgradeEnergy, amount);
-            Main.Character.augmentsController.augments[augIndex].updateUpgradeTexts();
-        }
-
-        private static void AddBloodRitualMagic(int id, long amount)
-        {
-            Main.Character.bloodMagic.ritual[id].magic = AddResource(Main.Character.bloodMagic.ritual[id].magic, amount);
-            Main.Character.bloodMagicController.bloodMagics[id].updateBloodMagicText();
-        }
-
-        private static void AddEnergyNgu(int id, long amount)
-        {
-            Main.Character.NGU.skills[id].energy = AddResource(Main.Character.NGU.skills[id].energy, amount);
-            // Commit both sides of the transfer before a controller/UI refresh can throw.
-            Main.Character.idleEnergy -= amount;
-            Main.Character.NGUController.NGU[id].updateText();
-        }
-
-        private static void AddMagicNgu(int id, long amount)
-        {
-            Main.Character.NGU.magicSkills[id].magic = AddResource(Main.Character.NGU.magicSkills[id].magic, amount);
-            Main.Character.magic.idleMagic -= amount;
-            Main.Character.NGUController.NGUMagic[id].updateText();
-        }
-
-        private static void AddAdvancedTrainingEnergy(int id, long amount)
-        {
-            Main.Character.advancedTraining.energy[id] = AddResource(Main.Character.advancedTraining.energy[id], amount);
-            AdvancedTrainingController(id).updateText();
-        }
-
-        private static AdvancedTrainingController AdvancedTrainingController(int id)
-        {
-            var c = Main.Character;
-            switch (id)
-            {
-                case 0:
-                    return c.advancedTrainingController.defense;
-                case 1:
-                    return c.advancedTrainingController.attack;
-                case 2:
-                    return c.advancedTrainingController.block;
-                case 3:
-                    return c.advancedTrainingController.wandoosEnergy;
-                default:
-                    return c.advancedTrainingController.wandoosMagic;
-            }
-        }
     }
 }

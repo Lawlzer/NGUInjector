@@ -94,27 +94,38 @@ namespace NGUInjector
             return (T)type?.GetValue(ai);
         }
 
+        public static bool IsFullyBoosted(this Equipment eq)
+        {
+            // Physical completion is independent of boost policy, with no cross-stat cancellation.
+            return eq != null
+                   && (eq.capAttack == 0f || (decimal)eq.curAttack >= CalcCap(eq.capAttack, eq.level))
+                   && (eq.capDefense == 0f || (decimal)eq.curDefense >= CalcCap(eq.capDefense, eq.level))
+                   && (eq.spec1Type == specType.None || (decimal)eq.spec1Cur >= CalcCap(eq.spec1Cap, eq.level))
+                   && (eq.spec2Type == specType.None || (decimal)eq.spec2Cur >= CalcCap(eq.spec2Cap, eq.level))
+                   && (eq.spec3Type == specType.None || (decimal)eq.spec3Cur >= CalcCap(eq.spec3Cap, eq.level));
+        }
+
         public static BoostsNeeded GetNeededBoosts(this Equipment eq)
         {
             var n = new BoostsNeeded();
 
             if (eq.capAttack != 0.0)
-                n.Power += CalcCap(eq.capAttack, eq.level) - (decimal)eq.curAttack;
+                n.Power += Math.Max(0m, CalcCap(eq.capAttack, eq.level) - (decimal)eq.curAttack);
 
             if (eq.capDefense != 0.0)
-                n.Toughness += CalcCap(eq.capDefense, eq.level) - (decimal)eq.curDefense;
+                n.Toughness += Math.Max(0m, CalcCap(eq.capDefense, eq.level) - (decimal)eq.curDefense);
 
             if (Settings.SpecialBoostBlacklist.Contains(eq.id))
                 return n;
 
             if (eq.spec1Type != specType.None)
-                n.Special += CalcCap(eq.spec1Cap, eq.level) - (decimal)eq.spec1Cur;
+                n.Special += Math.Max(0m, CalcCap(eq.spec1Cap, eq.level) - (decimal)eq.spec1Cur);
 
             if (eq.spec2Type != specType.None)
-                n.Special += CalcCap(eq.spec2Cap, eq.level) - (decimal)eq.spec2Cur;
+                n.Special += Math.Max(0m, CalcCap(eq.spec2Cap, eq.level) - (decimal)eq.spec2Cur);
 
             if (eq.spec3Type != specType.None)
-                n.Special += CalcCap(eq.spec3Cap, eq.level) - (decimal)eq.spec3Cur;
+                n.Special += Math.Max(0m, CalcCap(eq.spec3Cap, eq.level) - (decimal)eq.spec3Cur);
 
             return n;
         }
@@ -200,48 +211,6 @@ namespace NGUInjector
         private static decimal CalcCap(float cap, float level)
         {
             return (decimal)Mathf.Floor(cap * (float)(1.0 + level / 100.0));
-        }
-
-        internal static void DoAllocations(this CustomAllocation allocation)
-        {
-            if (!LegacyAutomationEnabled || !Settings.GlobalEnabled)
-                return;
-
-            if (allocation.IsAllocationRunning)
-                return;
-            try
-            {
-                var originalInput = Main.Character.energyMagicPanel.energyMagicInput;
-
-                allocation.IsAllocationRunning = true;
-
-                if (Settings.ManageNGUDiff)
-                    allocation.SwapNGUDiff();
-                if (Settings.ManageGear)
-                    allocation.EquipGear();
-                if (Settings.ManageEnergy)
-                    allocation.AllocateEnergy();
-                if (Settings.ManageMagic)
-                    allocation.AllocateMagic();
-                if (Settings.ManageR3)
-                    allocation.AllocateR3();
-
-                if (Settings.ManageDiggers && Main.Character.buttons.diggers.interactable)
-                {
-                    allocation.EquipDiggers();
-                    DiggerManager.RecapDiggers();
-                }
-
-                if (Settings.ManageWandoos && Main.Character.buttons.wandoos.interactable)
-                    allocation.SwapOS();
-
-                Main.Character.energyMagicPanel.energyRequested.text = originalInput.ToString();
-                Main.Character.energyMagicPanel.validateInput();
-            }
-            finally
-            {
-                allocation.IsAllocationRunning = false;
-            }
         }
 
         //Function from https://www.dotnetperls.com/pretty-date

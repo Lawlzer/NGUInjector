@@ -1,57 +1,56 @@
 <script lang="ts">
+  import { onDestroy, tick } from 'svelte';
   import { ask } from '@tauri-apps/plugin-dialog';
-  import type { JsonObject, JsonValue } from './api';
-  import { object, pretty, validatePlan, INT_MAX } from './model';
-  import { fightScoreModes, gearGoals, triggerModes } from './options';
+  import type { JsonObject, JsonValue, PlanStageAction } from './api';
+  import { object, validatePlan, INT_MAX } from './model';
+  import RebirthConditions from './RebirthConditions.svelte';
   import StageEditor from './StageEditor.svelte';
-  import { formatTime, parseDurationText, scheduleTiming } from './stage-duration';
-  import { applyStagePreset, stageLabel } from './stage-presets';
+  import { fixedSeconds, formatTime, parseDurationText, scheduleTiming } from './stage-duration';
+  import { stageLabel, weightedStage } from './stage-presets';
+  import { globalPresetRows, presetSupportsAtTargets } from './presets';
 
   export let plan: JsonObject;
+  export let presetLibrary: JsonObject | null = null;
   export let name: string;
   export let dirty: boolean;
   export let progress: JsonObject = {};
   export let connected = false;
   export let disabled = false;
+  export let stageActionReason = 'Manual stage controls are unavailable.';
+  export let onstageaction: ((action: PlanStageAction, stageIndex: number, expectedEntry: string) => Promise<void>) | undefined = undefined;
   export let activePlanName = '';
   export let namespace = '';
   export let onchange: (plan: JsonObject) => void;
   export let ondirty: (dirty: boolean) => void = () => {};
   let actionError = '';
   let scheduleDraft: string | null = null;
+  let scheduleError = '';
+  let scheduleReady = false;
+  let scheduleTimer: ReturnType<typeof setTimeout> | undefined;
   let scheduleScope = '';
   let stageDraftDirty = false;
-
-  const toggles = [
-    ['AutoRebirthEnabled', 'Auto-rebirth for this plan'], ['TimeTriggerEnabled', 'Time trigger'],
-    ['NumberTriggerEnabled', 'NUMBER trigger'], ['NumberClimbEnabled', 'NUMBER climb'],
-    ['AutoActivateFruits', 'Auto-activate fruits'],
-    ['PrepRequireMaxedFruit', 'Require maxed prep fruit']
-  ];
-  const numbers = [
-    { key: 'TimeTriggerSeconds', label: 'Rebirth after (s)', min: 0, step: '1' },
-    { key: 'NumberMultiplierTarget', label: 'NUMBER target multiplier', min: 0, step: 'any' },
-    { key: 'NumberClimbMinSeconds', label: 'Climb minimum (s)', min: 0, step: '1' },
-    { key: 'NumberClimbMultiplierTarget', label: 'Climb target multiplier', min: 1, step: 'any' }
-  ];
-  const selects = [
-    { key: 'TriggerMode', label: 'Rebirth when', options: triggerModes }
-  ];
+  let rebirthDraftDirty = false;
   $: rows = Array.isArray(plan.Stages) ? plan.Stages.map(object) : [];
-  $: if (scheduleScope !== `${namespace}/${name}/${String(plan.Name ?? name)}`) {
-    scheduleScope = `${namespace}/${name}/${String(plan.Name ?? name)}`;
-    scheduleDraft = null;
+  $: if (scheduleScope !== JSON.stringify([namespace, name, plan.Name ?? name])) {
+    scheduleScope = JSON.stringify([namespace, name, plan.Name ?? name]);
+    cancelSchedule();
     actionError = '';
   }
-  $: presets = Array.isArray(plan.GoalPresets) && plan.GoalPresets.length ? plan.GoalPresets.map(object) : [{ Name: 'Default', GearGoal: plan.GearGoal ?? 0 }];
-  $: presetIndex = Number(plan.ActiveGoalPresetIndex ?? 0);
+  $: if (scheduleReady && !disabled) saveSchedule();
   $: validation = planError(plan);
-  $: usesTimeShares = rows.some(row => row.CompletionMode !== 1 && (Number(plan.Version) < 15 || Number(row.DurationSeconds ?? 0) === 0));
-  $: localDraftDirty = stageDraftDirty || scheduleDraft !== null;
+  $: budget = readBudget(plan);
+  $: localDraftDirty = stageDraftDirty || rebirthDraftDirty || scheduleDraft !== null;
   $: ondirty(localDraftDirty);
+  onDestroy(() => clearTimeout(scheduleTimer));
 
   function planError(value: JsonObject): string {
     try { validatePlan(value); return ''; } catch (err) { return String((err as Error).message); }
+  }
+  function readBudget(value: JsonObject) {
+    try {
+      const timing = scheduleTiming(value);
+      return { ...timing, fixedTotal: (value.Stages as JsonObject[]).reduce((sum, row) => sum + (row.CompletionMode === 1 ? 0 : fixedSeconds(row)), 0) };
+    } catch { return null; }
   }
   const value = (event: Event) => (event.currentTarget as HTMLInputElement).value;
   function numericInput(event: Event): JsonValue {
@@ -59,150 +58,105 @@
     return text.trim() && Number.isFinite(Number(text)) ? Number(text) : text;
   }
   function set(key: string, value: JsonValue): void { onchange({ ...plan, [key]: value }); }
-  function selectPreset(index: number): void {
-    onchange({ ...plan, GoalPresets: presets, ActiveGoalPresetIndex: index, GearGoal: presets[index].GearGoal });
+  function scheduleSeconds(text: string): number {
+    if (/\.\s*(?:%|s|m|min|h)?$/i.test(text)) throw new Error('Finish the decimal value before saving.');
+    const { amount, unit } = parseDurationText(text, 'min');
+    const rawSeconds = amount * (unit === 'h' ? 3600 : unit === 'min' ? 60 : 1);
+    const seconds = Math.round(rawSeconds);
+    if (unit === '%' || !Number.isInteger(seconds) || Math.abs(seconds - rawSeconds) > Math.max(1, Math.abs(rawSeconds)) * Number.EPSILON * 8 || seconds < 0 || seconds > INT_MAX) throw new Error('Time budget must be a non-negative whole-second time, such as 0s, 30m, or 2h.');
+    scheduleTiming({ ...plan, StageDurationSeconds: seconds });
+    return seconds;
   }
-  function editPreset(index: number, key: string, value: JsonValue): void {
-    const next = presets.map((preset, i) => i === index ? { ...preset, [key]: value } : preset);
-    onchange({ ...plan, GoalPresets: next, GearGoal: next[presetIndex]?.GearGoal ?? plan.GearGoal });
+  function cancelSchedule(): void {
+    clearTimeout(scheduleTimer);
+    scheduleReady = false;
+    scheduleDraft = null;
+    scheduleError = '';
   }
-  function removePreset(index: number): void {
-    if (presets.length <= 1) return;
-    const next = presets.filter((_, i) => i !== index);
-    const active = index < presetIndex ? presetIndex - 1 : Math.min(presetIndex, next.length - 1);
-    onchange({ ...plan, GoalPresets: next, ActiveGoalPresetIndex: active, GearGoal: next[active].GearGoal });
-  }
-  function duration(seconds: JsonValue | undefined): string {
-    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return 'Unknown';
-    const total = Math.floor(seconds);
-    return `${Math.floor(total / 3600)}h ${Math.floor(total % 3600 / 60)}m ${total % 60}s`;
+  function changeSchedule(text: string): void {
+    if (disabled) return;
+    clearTimeout(scheduleTimer);
+    scheduleReady = false;
+    scheduleDraft = text;
+    scheduleError = '';
+    try {
+      scheduleSeconds(text);
+      const scope = scheduleScope;
+      scheduleTimer = setTimeout(() => { if (scope === scheduleScope) scheduleReady = true; }, 350);
+    } catch (err) { scheduleError = (err as Error).message; }
   }
   function saveSchedule(): void {
     if (scheduleDraft === null) return;
+    clearTimeout(scheduleTimer);
+    if (disabled) { scheduleReady = true; return; }
+    scheduleReady = false;
     try {
-      const { amount, unit } = parseDurationText(scheduleDraft, 'min');
-      const seconds = amount * (unit === 'h' ? 3600 : unit === 'min' ? 60 : 1);
-      if (unit === '%' || !Number.isInteger(seconds) || seconds < 1 || seconds > INT_MAX) throw new Error('Schedule length must be a positive whole-second time, such as 30m or 2h.');
-      scheduleTiming({ ...plan, StageDurationSeconds: seconds });
+      const seconds = scheduleSeconds(scheduleDraft);
       set('StageDurationSeconds', seconds);
-      scheduleDraft = null;
-      actionError = '';
-    } catch (err) { actionError = (err as Error).message; }
+      cancelSchedule();
+    } catch (err) { scheduleError = (err as Error).message; }
   }
-  function scheduleLength(value: JsonObject): string {
-    try { return formatTime(scheduleTiming(value).total); } catch { return 'Check durations'; }
+  async function blurSchedule(event: FocusEvent): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement, scope = scheduleScope;
+    await tick();
+    if (input.isConnected && document.activeElement !== input && scope === scheduleScope) saveSchedule();
   }
   async function useTemplate(advancedTraining: boolean): Promise<void> {
     const before = plan;
     actionError = '';
     try {
+      if (!globalPresetRows(presetLibrary).some(row => row.Id === plan.ActivePresetId)) throw new Error('Choose an active saved global preset in Misc > Gear settings before applying a weighted template.');
       if (!await ask('Replace all stages? Current stage settings will be replaced and saved automatically.', { title: 'Replace stages', kind: 'warning' })) return;
       if (plan !== before || disabled) return;
-      const common = { DurationSeconds: 0, DurationUnit: '%', CompletionMode: 0, TargetAdvancedTrainingPower: '0', TargetAdvancedTrainingToughness: '0', BlackBarLookaheadSeconds: 5 };
+      const training = advancedTraining ? globalPresetRows(presetLibrary).find(presetSupportsAtTargets) : undefined;
+      if (advancedTraining && !training) throw new Error('Add and save a global preset with Advanced Training weight and positive toughness/power ratios before applying this template.');
+      const common = weightedStage();
       const next = advancedTraining ? [
-        applyStagePreset({ ...common, Percent: 100, CompletionMode: 1, TargetAdvancedTrainingPower: '6000', TargetAdvancedTrainingToughness: '6000' }, 6),
-        applyStagePreset({ ...common, Percent: 100 }, 3)
+        weightedStage({ ...common, Name: String(training!.Name), PresetId: String(training!.Id), Percent: 100, CompletionMode: 1, TargetAdvancedTrainingPower: '6000', TargetAdvancedTrainingToughness: '6000' }),
+        weightedStage({ ...common, Percent: 100 })
       ] : [
-        [0, 300], [1, 180], [0, 180], [1, 60], [2, 180], [0, 300], [1, 300], [2, 300]
-      ].map(([preset, seconds]) => applyStagePreset({ ...common, Percent: seconds / 18, DurationSeconds: Number(plan.Version) >= 15 ? seconds : 0, DurationUnit: Number(plan.Version) >= 15 ? 'min' : '%' }, preset));
+        300, 180, 180, 60, 180, 300, 300, 300
+      ].map(seconds => weightedStage({ ...common, Percent: seconds / 18, DurationSeconds: seconds, DurationUnit: 'min' }));
       const template = { ...plan, Stages: next, StageSchedulerEnabled: true, StageDurationSeconds: advancedTraining ? plan.StageDurationSeconds ?? 3600 : 1800, StageLoopStartIndex: advancedTraining ? -1 : 5 };
-      if (advancedTraining && Number(plan.Version) >= 15) {
-        const sustain = next[1];
-        template.Stages = [next[0], { ...sustain, DurationSeconds: Number(template.StageDurationSeconds), DurationUnit: 'min' }];
+      if (advancedTraining && scheduleTiming(template).total === 0) {
+        throw new Error('AT Adventure to NGU requires a positive time budget. Enable a positive time trigger or set a positive fallback time budget before applying this template.');
       }
-      scheduleDraft = null;
+      cancelSchedule();
       onchange(template);
     } catch (err) { actionError = (err as Error).message; }
   }
 </script>
 
 <div class="plan-main" inert={disabled}>
-  <article class="card">
-    <div class="card-header"><div><p class="eyebrow">Editing plan</p><h2>{name}{dirty ? ' *' : ''}</h2></div></div>
-    {#if activePlanName}<p class="muted">Active plan: {activePlanName}. {activePlanName === name ? 'Editing this active plan.' : `Edits apply to ${name}, not automatically to the active plan.`}</p>{/if}
+  <RebirthConditions {plan} {disabled} {onchange} namespace={`${namespace}/${name}`} ondirty={dirty => rebirthDraftDirty = dirty} />
+  <article class="card schedule-card">
+    {#if activePlanName && activePlanName !== name}<p class="muted">Editing {name}; {activePlanName} is active.</p>{/if}
     {#if validation}<p class="notice error" role="alert">{validation}</p>{/if}
     {#if actionError}<p class="notice error" role="alert">{actionError}</p>{/if}
-    <div class="stages-heading">
-      <h3>Stages</h3>
-      <p class="muted">Select a section of the bar to edit it.</p>
-    </div>
-    <StageEditor {plan} {name} {progress} {connected} dirty={dirty || localDraftDirty} {disabled} {onchange} ondirty={dirty => stageDraftDirty = dirty} namespace={`${namespace}/${name}/${String(plan.Name ?? name)}`} />
+    {#if budget}
+      {#if budget.fixedTotal > budget.total}<p class="notice" role="status">Fixed stages exceed budget by {formatTime(budget.fixedTotal - budget.total)}. Increase the budget or shorten fixed stages.</p>{:else if budget.remaining === 0 && rows.some(row => row.CompletionMode !== 1 && !fixedSeconds(row))}<p class="notice" role="status">No time for flexible stages. Increase the budget or shorten fixed stages.</p>{/if}
+    {/if}
+    <StageEditor {plan} {presetLibrary} {name} {progress} {connected} dirty={dirty || localDraftDirty} {disabled} {stageActionReason} {onstageaction} {onchange} ondirty={dirty => stageDraftDirty = dirty} namespace={`${namespace}/${name}/${String(plan.Name ?? name)}`} />
+    <label class="toggle-row compact" title="Activate affordable fruits during plan or adventure automation when this plan's rebirth time or schedule is at least 1 hour."><input type="checkbox" aria-label="Activate fruits" checked={plan.AutoActivateFruits === true} on:change={event => set('AutoActivateFruits', (event.currentTarget as HTMLInputElement).checked)} /><span><strong>Activate fruits</strong><small>For rebirths of at least 1 hour</small></span></label>
     <details class="schedule-settings"><summary>Schedule &amp; templates</summary>
       <div class="form-grid three">
         <label class="toggle-row compact"><input type="checkbox" checked={plan.StageSchedulerEnabled === true} on:change={event => set('StageSchedulerEnabled', (event.currentTarget as HTMLInputElement).checked)} /><span><strong>Enable stages</strong></span></label>
-        {#if usesTimeShares}<label>Schedule length<input aria-label="Schedule length" value={scheduleDraft ?? formatTime(Number(plan.StageDurationSeconds ?? 1800))} on:input={event => scheduleDraft = value(event)} on:blur={saveSchedule} on:keydown={event => { if (event.key === 'Enter') saveSchedule(); if (event.key === 'Escape') { scheduleDraft = null; actionError = ''; } }} /></label>{:else}<div class="dashboard-field"><span>Total time</span><strong>{scheduleLength(plan)}</strong></div>{/if}
-        <label>Repeat from<select value={plan.StageLoopStartIndex ?? -1} on:change={event => set('StageLoopStartIndex', numericInput(event))}><option value={-1}>Do not repeat</option>{#each rows as row, index}<option value={index}>{index + 1}: {stageLabel(row)}</option>{/each}</select></label>
+        <label title="Used when no positive rebirth time trigger is enabled.">Fallback time budget<input aria-label="Fallback time budget" value={scheduleDraft ?? formatTime(Number(plan.StageDurationSeconds ?? 1800))} aria-invalid={!!scheduleError} aria-describedby={scheduleError ? 'schedule-duration-error' : undefined} on:input={event => changeSchedule(value(event))} on:blur={blurSchedule} on:keydown={event => { if (event.key === 'Enter') { event.preventDefault(); saveSchedule(); } if (event.key === 'Escape') { event.preventDefault(); cancelSchedule(); } }} />{#if scheduleError}<small id="schedule-duration-error" class="notice error" role="alert">{scheduleError}</small>{/if}</label>
+        <label title="Follows this stage when reordered.">Repeat from<select value={plan.StageLoopStartIndex ?? -1} on:change={event => set('StageLoopStartIndex', numericInput(event))}><option value={-1}>Do not repeat</option>{#each rows as row, index}<option value={index}>{index + 1}: {stageLabel(row)}</option>{/each}</select></label>
       </div>
-      <h3 class="templates-heading">Templates and timing</h3>
-      <div class="button-row"><button type="button" class="ghost" on:click={() => useTemplate(true)}>AT Adventure 6k/6k to NGU</button><button type="button" class="ghost" on:click={() => useTemplate(false)}>30m NUMBER cycle</button></div>
-      <p class="muted">Time uses exact stage lengths, such as 25m or 2h. Percent splits the schedule length. Existing mixed plans split only the time left after fixed stages. AT targets are untimed.</p>
-      <p class="muted">Without AT targets, timing follows the rebirth clock. With AT targets, stages run in sequence from plan activation. Without a repeat, the last stage stays active; rebirth triggers are separate.</p>
-      <p class="muted">Repeat follows its stage when moved. Removing that stage repeats from its successor, or stops repeating if there is none.</p>
-      {#if Number(plan.Version) < 15}<p class="muted">Fixed durations require a version 15 plan. Connect and reload to migrate; this plan still uses weighted % shares.</p>{/if}
+      <h3 class="templates-heading">Templates</h3>
+      <p class="muted">Templates use the active preset. AT targets also require a saved preset with Advanced Training weight and power/toughness ratios enabled.</p>
+      <div class="button-row"><button type="button" class="ghost" on:click={() => useTemplate(true)}>AT targets 6k/6k then active preset</button><button type="button" class="ghost" on:click={() => useTemplate(false)}>30m weighted cycle</button></div>
     </details>
   </article>
-
-  <details class="card settings-card">
-    <summary>Gear settings</summary>
-    <div class="settings-body">
-      <h3>Gear</h3>
-      <div class="form-grid two">
-        <label>Fight scoring<select value={plan.FightScoreMode ?? 0} on:change={event => set('FightScoreMode', numericInput(event))}>{#each fightScoreModes as option}<option value={option.value}>{option.label}</option>{/each}</select></label>
-      </div>
-      <label>Active preset<select value={presetIndex} on:change={event => selectPreset(Number(value(event)))}>{#each presets as preset, index}<option value={index}>{String(preset.Name ?? `Preset ${index + 1}`)}</option>{/each}</select></label>
-      {#each presets as preset, index}
-        <div class="form-grid two">
-          <label>Preset {index + 1} name<input value={String(preset.Name ?? '')} on:input={event => editPreset(index, 'Name', value(event))} /></label>
-          <label>Gear goal<select value={preset.GearGoal ?? 0} on:change={event => editPreset(index, 'GearGoal', numericInput(event))}>{#each gearGoals as option}<option value={option.value}>{option.label}</option>{/each}</select></label>
-        </div>
-        <button type="button" class="danger" aria-label={`Remove preset ${index + 1}`} disabled={presets.length <= 1} on:click={() => removePreset(index)}>Remove preset</button>
-      {/each}
-      <button type="button" class="ghost" on:click={() => set('GoalPresets', [...presets, { Name: `Goal ${presets.length + 1}`, GearGoal: 0 }])}>Add preset</button>
-    </div>
-  </details>
-
-  <details class="card settings-card">
-    <summary>Rebirth settings</summary>
-    <div class="settings-body">
-      <h3>Rebirth</h3>
-      <div class="form-grid three">
-        {#each toggles as [key, label]}
-          <label class="toggle-row compact"><input type="checkbox" checked={plan[key] === true} on:change={event => set(key, (event.currentTarget as HTMLInputElement).checked)} /><span><strong>{label}</strong></span></label>
-        {/each}
-        {#each numbers as field}
-          <label>{field.label}<input type="number" min={field.min} max={field.step === '1' ? INT_MAX : undefined} step={field.step} value={String(plan[field.key] ?? '')} on:input={event => set(field.key, numericInput(event))} /></label>
-        {/each}
-        {#each selects as field}
-          <label>{field.label}<select value={plan[field.key] ?? 0} on:change={event => set(field.key, numericInput(event))}>{#each field.options as option}<option value={option.value}>{option.label}</option>{/each}</select></label>
-        {/each}
-      </div>
-    </div>
-  </details>
-
-  <details class="card settings-card"><summary>Rebirth history</summary><div class="settings-body history-list"><h3>Rebirth history</h3>
-    {#each (Array.isArray(plan.RebirthHistory) ? plan.RebirthHistory : []) as entry}
-      {@const record = object(entry)}
-      <article>
-        <h4>{String(record.TimestampLocal || 'Unknown time')} (local)</h4>
-        <p>{String(record.Reason || 'Rebirth')} / {duration(record.RebirthSeconds)} / Boss {String(record.BossId ?? '?')}</p>
-        <p class="muted">NUMBER {String(record.NumberBefore ?? '?')} to {String(record.NumberAfter ?? '?')} / {String(record.NumberMultiplier ?? '?')}x</p>
-        <details><summary>Details</summary><pre>{pretty(entry)}</pre></details>
-      </article>
-    {:else}<p class="muted">No rebirths yet.</p>{/each}
-  </div></details>
 </div>
 
 <style>
-  .stages-heading { margin-top: 1.2rem; }
-  .stages-heading p { margin-top: .25rem; }
-  .schedule-settings { margin-top: 1.2rem; padding-top: .6rem; border-top: 1px solid var(--line); }
-  .templates-heading { margin-top: 1.2rem; }
-  .settings-card { margin-top: 0; padding: 0; }
-  .settings-card > summary { padding: .85rem 1.3rem; }
-  .settings-body { padding: 0 1.3rem 1.3rem; }
-  .settings-body > :global(h3) { margin-bottom: .8rem; }
+  .plan-main { align-items: start; }
+  .schedule-card { grid-column: 1 / -1; }
+  .schedule-settings { margin-top: .75rem; padding-top: .4rem; border-top: 1px solid var(--line); }
+  .templates-heading { margin-top: .8rem; }
   @media (max-width: 740px) {
-    .settings-card > summary { padding: .85rem 1rem; }
-    .settings-body { padding: 0 1rem 1rem; }
+    .plan-main { grid-template-columns: minmax(0, 1fr); }
   }
 </style>

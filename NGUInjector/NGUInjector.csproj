@@ -91,10 +91,8 @@
     <Compile Include="AllocationProfiles\BreakpointTypes\WishBP.cs" />
     <Compile Include="AllocationProfiles\BreakpointModels.cs" />
     <Compile Include="AllocationProfiles\CustomAllocation.Breakpoints.cs" />
-    <Compile Include="AllocationProfiles\CustomAllocation.Equipment.cs" />
     <Compile Include="AllocationProfiles\CustomAllocation.Loading.cs" />
     <Compile Include="AllocationProfiles\CustomAllocation.Rebirth.cs" />
-    <Compile Include="AllocationProfiles\CustomAllocation.ResourceAllocation.cs" />
     <Compile Include="AllocationProfiles\CustomAllocation.Switching.cs" />
     <Compile Include="AllocationProfiles\CustomAllocation.cs" />
     <Compile Include="AllocationProfiles\AllocationProfile.cs" />
@@ -109,11 +107,29 @@
     <Compile Include="Consts.cs" />
     <Compile Include="CustomPlans\CustomPlan.cs" />
     <Compile Include="CustomPlans\CustomPlanStore.cs" />
+    <Compile Include="CustomPlans\PresetLibraryStore.cs" />
+    <Compile Include="CustomPlans\PresetDefinitions.cs" />
+    <Compile Include="CustomPlans\LoadoutPreset.cs" />
     <Compile Include="Managers\ZoneStatHelper.cs" />
     <Compile Include="Managers\ZoneHelpers.cs" />
     <Compile Include="Managers\CombatHelpers.cs" />
     <Compile Include="Managers\CombatManager.cs" />
+    <Compile Include="Managers\CombatPrepPlanner.cs" />
+    <Compile Include="Main.AutoCombatPrep.cs" />
+    <Compile Include="Main.CombatPrepAdventure.cs" />
+    <Compile Include="Managers\ActivityPolicy.cs" />
+    <Compile Include="Managers\DiggerAllocation.cs" />
+    <Compile Include="Managers\ResourceAllocation.cs" />
+    <Compile Include="Managers\ResourceWriter.cs" />
+    <Compile Include="Managers\ResourceProjection.cs" />
+    <Compile Include="Managers\ResourceProjectionCapture.cs" />
+    <Compile Include="Main.CombatPrep.cs" />
+    <Compile Include="Main.CombatPrepCapture.cs" />
+    <Compile Include="Main.CombatPrepAdventureSelection.cs" />
+    <Compile Include="Main.Support.cs" />
+    <Compile Include="Managers\SupportProjection.cs" />
     <Compile Include="Managers\DiggerManager.cs" />
+    <Compile Include="Managers\ExpPurchasePlanner.cs" />
     <Compile Include="Extensions.cs" />
     <Compile Include="Managers\AugmentOptimizer.cs" />
     <Compile Include="Managers\BeardManager.cs" />
@@ -123,7 +139,18 @@
     <Compile Include="Managers\IronPillAutomation.cs" />
     <Compile Include="Managers\BoostFarmHelper.cs" />
     <Compile Include="Managers\CustomStageAllocator.cs" />
+    <Compile Include="Managers\ProtectedStageScheduler.cs" />
+    <Compile Include="Main.ProtectedTiming.cs" />
     <Compile Include="Managers\GearOptimizer.cs" />
+    <Compile Include="Managers\GearOptimizer.Presets.cs" />
+    <Compile Include="Managers\GearOptimizer.RouteSelection.cs" />
+    <Compile Include="Managers\LoadoutPresetPlanner.cs" />
+    <Compile Include="Managers\LoadoutPresetPlanner.Priorities.cs" />
+    <Compile Include="Managers\LoadoutPresetExecution.cs" />
+    <Compile Include="Managers\ResourceLanePriority.cs" />
+    <Compile Include="Main.LoadoutPresets.cs" />
+    <Compile Include="Main.GlobalPresets.cs" />
+    <Compile Include="Main.PresetActivities.cs" />
     <Compile Include="Managers\InventoryManager.cs" />
     <Compile Include="Loader.cs" />
     <Compile Include="JsonFiles.cs" />
@@ -131,9 +158,40 @@
     <Compile Include="Main.AutomationLoop.cs" />
     <Compile Include="Main.BossPush.cs" />
     <Compile Include="Main.CombatRouting.cs" />
+    <Compile Include="Main.ManualAdventureOverlay.cs" />
     <Compile Include="Main.CustomAdventure.cs" />
+    <Compile Include="Main.MaxItopodPush.cs" />
+    <Compile Include="Main.ManualTitan.cs" />
     <Compile Include="Main.CustomAutomation.cs" />
+    <Compile Include="Main.Execution.cs" />
+    <Compile Include="Main.TitanAutomation.cs" />
+    <Compile Include="Main.FruitBloodActions.cs" />
+    <Compile Include="Main.ExecutionLifecycle.cs" />
+    <Compile Include="Main.ExecutionPersistence.cs" />
+    <Compile Include="Main.ExecutionStore.cs" />
+    <Compile Include="Main.ExecutionIngress.cs" />
+    <Compile Include="Main.ExecutionTelemetry.cs" />
+    <Compile Include="Main.SaveSafety.cs" />
+    <Compile Include="SaveSafetyCatalog.cs" />
+    <Compile Include="FiniteActionLedger.cs" />
+    <Compile Include="Main.FiniteActions.cs" />
+    <Compile Include="Main.ActionSetup.cs" />
+    <Compile Include="Main.PurchaseActions.cs" />
+    <Compile Include="Main.PitActions.cs" />
+    <Compile Include="Main.FruitActions.cs" />
+    <Compile Include="Main.BloodActions.cs" />
+    <Compile Include="Main.BloodActionWindows.cs" />
+    <Compile Include="Main.RebirthActions.cs" />
+    <Compile Include="Main.InventoryActions.cs" />
+    <Compile Include="Main.AugmentActions.cs" />
+    <Compile Include="Main.ResourceCoordination.cs" />
+    <Compile Include="Main.PresetSupportExecution.cs" />
+    <Compile Include="Main.CustomBeards.cs" />
+    <Compile Include="Main.CustomBloodGoals.cs" />
     <Compile Include="Main.CustomFocus.cs" />
+    <Compile Include="Main.CustomExp.cs" />
+    <Compile Include="Main.CustomSetup.cs" />
+    <Compile Include="Main.InlineStageSetup.cs" />
     <Compile Include="Main.CustomProbe.cs" />
     <Compile Include="Main.CustomPrep.cs" />
     <Compile Include="Main.ExternalUi.cs" />
@@ -143,10 +201,12 @@
     <Compile Include="Main.Telemetry.cs" />
     <Compile Include="Main.cs" />
     <Compile Include="Managers\MoneyPitManager.cs" />
+    <Compile Include="Managers\MoneyPitLoadout.cs" />
     <Compile Include="Managers\WishManager.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Managers\QuestManager.cs" />
     <Compile Include="SavedSettings.cs" />
+    <Compile Include="AdventureRule.cs" />
     <Compile Include="SettingsForm.Custom.cs">
       <DependentUpon>SettingsForm.cs</DependentUpon>
     </Compile>
@@ -168,6 +228,12 @@
     <None Include="inject.bat" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Data\ActivityPolicies.json">
+      <LogicalName>NGUInjector.ActivityPolicies.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Data\PresetDefinitions.json">
+      <LogicalName>NGUInjector.PresetDefinitions.json</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="SettingsForm.dje.resx">
       <DependentUpon>SettingsForm.cs</DependentUpon>
     </EmbeddedResource>
@@ -175,8 +241,21 @@
       <DependentUpon>SettingsForm.cs</DependentUpon>
     </EmbeddedResource>
   </ItemGroup>
-  <ItemGroup />
+  <ItemGroup>
+    <PackageReference Include="System.Formats.Nrbf" Version="10.0.13" />
+    <PackageReference Include="System.ValueTuple" Version="4.6.2" GeneratePathProperty="true" />
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <Target Name="EmbedSaveSafetyDependencies" BeforeTargets="AssignTargetPaths" DependsOnTargets="ResolveReferences">
+    <ItemGroup>
+      <EmbeddedResource Include="@(ReferenceCopyLocalPaths)">
+        <LogicalName>NGUInjector.Dependencies.%(Filename)%(Extension)</LogicalName>
+      </EmbeddedResource>
+      <EmbeddedResource Include="$(PkgSystem_ValueTuple)\lib\net47\System.ValueTuple.dll">
+        <LogicalName>NGUInjector.Dependencies.System.ValueTuple.dll</LogicalName>
+      </EmbeddedResource>
+    </ItemGroup>
+  </Target>
   <Target Name="ValidateNGUManagedPath" BeforeTargets="ResolveAssemblyReferences">
     <Error Condition="'$(ManagedPath)' == '' or !Exists('$(ManagedPath)\Assembly-CSharp.dll')" Text="NGU Idle managed assemblies not found. Set /p:GameFolder=&quot;...\NGU IDLE&quot; or NGU_IDLE_DIR." />
   </Target>
@@ -187,6 +266,7 @@
     <RemoveDir Directories="$(DistDir)" />
     <MakeDir Directories="$(DistDir)injector" />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(DistDir)injector" />
+    <Copy SourceFiles="@(ReferenceCopyLocalPaths)" DestinationFolder="$(DistDir)injector" />
     <Copy SourceFiles="$(ProjectDir)inject\SharpMonoInjector.dll;$(ProjectDir)inject\smi.exe" DestinationFolder="$(DistDir)injector" />
     <Copy SourceFiles="$(ProjectDir)inject.bat" DestinationFolder="$(DistDir)" />
     <ItemGroup>

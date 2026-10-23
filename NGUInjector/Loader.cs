@@ -13,6 +13,7 @@ namespace NGUInjector
         private static GameObject _load;
         public static void Init()
         {
+            SaveSafetyDependencies.Register();
             TraceStartup("Loader.Init entered.");
             try
             {
@@ -57,21 +58,16 @@ namespace NGUInjector
         private static void _Unload()
         {
             var load = _load;
+            var instance = Main.reference;
+            if (instance == null && load != null)
+                instance = load.GetComponent<Main>();
+            // A pending gear recovery can refuse unload; retain its component and timers.
+            instance?.Unload();
             _load = null;
-            try
+            if (load != null)
             {
-                var instance = Main.reference;
-                if (instance == null && load != null)
-                    instance = load.GetComponent<Main>();
-                instance?.Unload();
-            }
-            finally
-            {
-                if (load != null)
-                {
-                    load.SetActive(false);
-                    Object.Destroy(load);
-                }
+                load.SetActive(false);
+                Object.Destroy(load);
             }
         }
     }

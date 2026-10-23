@@ -1,5 +1,41 @@
 # Custom Automation Plan
 
+## Current Stage Timing Contract
+
+Plan schema **17** uses one universal scheduler: fixed applied-time stages, weighted flexible stages, and mandatory Advanced Training (AT) target stages. Earlier product/UI notes below retain unrelated WinForms history, not an alternate scheduling implementation. The production coordinator is `NGUInjector/Main.ProtectedTiming.cs`; its pure internal engine remains `Managers/ProtectedStageScheduler.cs`. The retained names do not imply a user-facing protected mode. There is no opt-in flag, legacy scheduler, or timing fallback.
+
+The desktop editor has one **Finish stage by** selector per stage: **Fixed duration**, **Flexible share**, or **AT targets**. It has neither a **Protect fixed stages** checkbox nor a bulk **Stage timing** conversion control. Stored row kinds are determined by `CompletionMode == 1` for AT; otherwise positive `DurationSeconds` means fixed and zero means flexible, using raw positive `Percent` as its relative weight. `DurationUnit` is display metadata, not a reinterpretation of fixed seconds.
+
+- Fixed stages receive their full duration of actually applied training, except for the narrow resync rule below. Selection alone is not application. Credit starts after successful stage allocation and coordinator application commit, with requested resource lanes managed, primary work available, and stage ownership valid. Completed targets may be eligible without a positive resource transfer.
+- Pending setup, locks, boss fights, focus overrides, pauses, offline time, clock rollback, and observation gaps over 15 seconds grant no fixed credit. Continuous credit uses the smaller of rebirth-clock and monotonic-heartbeat deltas. The next row cannot inherit the previous row's credit or receipt.
+- A fixed stage longer than 15 seconds may resync with at most 15 seconds unearned only at its expected boundary, with fresh positive credit in a continuous applied interval. This is not an up-front duration discount. Stages of 15 seconds or less earn their full applied duration; an unstarted or restored-unarmed stage cannot finish merely because wall time passed.
+- Flexible rows use raw weights such as `35`, `50`, and `15`, shown as normalized shares of the flexible pool. Editing a weight changes only that row; weights need not sum to 100, and a sole positive weight gets 100%.
+- The horizon is a positive `TimeTriggerSeconds` when `TimeTriggerEnabled`, otherwise saved `StageDurationSeconds >= 0`. Fixed edits never expand it, and fixed-only plans do not replace it with their fixed sum. Runtime flexible time comes from `max(0, horizon - elapsed rebirth time - all remaining fixed work)`, reserving every unfinished fixed row, including a later fixed tail. Active assignments persist until an entry/timing update; later flex absorbs lateness.
+- AT duration is unknown and untimed. Actual AT levels must satisfy its targets. Time spent waiting consumes the flexible pool without reducing fixed reservations; fixed work may overrun the horizon and unfunded flex is skipped, without entry actions.
+- Every automatic time, NUMBER, and NUMBER-climb trigger, under both Any and All, waits for all fixed work and mandatory AT targets unless explicitly waived by a manual stage skip. Flexible work itself is not a mandatory gate. Loops finish their current mandatory pass, but cannot start another after the horizon or when triggers are ready. A delayed rebirth holds the last selected allocation. Manual rebirth remains an explicit override.
+
+For `NGU flexible -> Augments 15m -> Wandoos 15m` with a 24h target, NGU normally ends at 23:30. A late return never backfills missed fixed training: the fixed tail still earns its time, delaying automatic rebirth past 24h when necessary.
+
+### Persistence And Runtime
+
+Backend load/read normalization returns canonical version 17 without rewriting source bytes. Existing fixed seconds, valid raw weights, AT targets, and saved budgets are retained; current fixed defaults/templates keep their original seconds rather than scaling them to the horizon. Existing saved built-in rows are not silently converted to a new timing shape. The obsolete `ProtectedStageTiming` field is ignored and dropped from canonical output/saves whether true, false, or absent. It is not a behavior choice and its removal does not reset progress.
+
+Progress remains in atomic `stage-progress-<plan hash>.json` sidecars, separate from plan revisions. The outer coordinator/save-epoch wrapper retains version **1**; its nested scheduler core now accepts **version 2 only**, requiring applied/elapsed/visit history, skip state, and last-override fields. There is no legacy core reader. Version-1 core checkpoints are rejected and may cause a one-time uncredited restart of mandatory work, rather than inventing missing history. Valid version-2 progress restores earned work, cumulative history, entry identity, and fight-entry deduplication unarmed, with no offline fixed credit. Epoch/configuration checks include the rebirth counter, approximate run origin, rollback, and checkpoint structure; invalid/mismatched state restarts mandatory work uncredited. The game supplies no immutable save UUID, so indistinguishable branched saves remain a limitation. There is no timing mode-flip reset path. Non-structural duration/weight/cosmetic edits preserve earned work and same-kind positional identity; changed saves require reapplication. Structural kind/order changes, AT targets, plan identity, and repeat-boundary changes can invalidate positional execution. Automatic rebirth fails closed on checkpoint persistence failure even if in-memory work is complete.
+
+Runtime still advertises `stageTimingVersion: 1` and `planVersion: 17`, with `stageOverridesV1: true` for manual actions. Plan progress always uses `schedulerMode: "stages"`; each row reports `timingKind: "fixed"`, `"flexible"`, or `"target"`, configured seconds/weights, and assigned duration. Root `protectedWorkComplete` retains its established name and reports the shared durable mandatory-work gate, including explicit manual skip waivers, not a mode. `protectedSecondsRemaining`, `scheduleComplete`, and `timingReason` explain progress. Telemetry/snapshot reads do not initialize, advance, allocate, commit applications, or rewrite checkpoints. Editor attribution matches configured timing, not dynamic flex assignments.
+
+### Manual Actions And History
+
+- **Skip current stage** waives that row's remaining work and selects the next funded row, or finishes while holding the last allocation. **Restart current stage** clears earned/completed/skipped progress for that row and the later suffix of the current pass. **Set as current stage** is an explicit button in the chosen stage's settings, not the segment click/tap action. Forward Set marks unfinished earlier rows skipped; backward Set reopens the chosen row and suffix. Restart/backward Set preserve cumulative history while resetting current-pass obligations.
+- Manual stage actions submit immediately without confirmation popups. Tooltips explain that skipping bypasses required work and can allow automatic rebirth sooner. Manual controls are unavailable offline/stale, on unsupported or mismatched telemetry, for an inactive/paused/disabled plan, while settings/timing/JSON drafts are dirty, or while another action is pending. Focus, prep/manual-rebirth, and boss-fight conflicts block execution. Session, saved revision, and entry identity are validated before submission and at the backend boundary; unrelated drafts are never auto-saved to enable navigation.
+- `setPlanStage` requires exactly `args: { name, expectedRevision, expectedEntry, action, stageIndex }`. `action` is `"skip"`, `"set"`, or `"restart"`; `stageIndex` is **zero-based**, with Skip/Restart limited to the current row. `expectedEntry` comes from `planProgress.stageEntry`, and `expectedRevision` is the saved plan's revision. The command durably checkpoints the override before success; next-stage allocation happens on the next eligible automation pass and needs its own application commit. Persistence failure rolls back the change/history with no deferred override. Terminal skip invalidates stale entry tokens without creating a visit or another entry fight; intentional Restart/Set is a new entry.
+- Hover/keyboard focus on each stage and touch-opened settings show **Actual applied** (`appliedSeconds`), **Elapsed selected (including offline)** (`elapsedSeconds`), `visits`, and reported `state`: `current`, `completed`, `skipped`, or `pending`. Applied seconds require continuous successful application and verified ownership for all row kinds, including held final allocations. Elapsed selected seconds are wall/rebirth time, including offline gaps, not training. Cumulative history survives manual restart/backward Set and loops within a valid execution history; missing history is unrecorded, never inferred from position or completion state.
+- The core's `LastOverride` is human-readable with **one-based** stage numbers, exported as `lastStageOverride`; `lastStageOverrideAt` is its rebirth-clock timestamp. Manual skips remain distinct from earned completion, so an earlier row is never assumed trained merely because execution moved past it.
+
+### Offline Verification
+
+`checks/ProtectedTiming` source-links the pure engine, including history and version-2-only core restore; `ProtectedApplicationChecks` exercises real allocator receipts with a stub coordinator. Compiled `ProtectedTimingIntegrationChecks` uses the full production coordinator/allocation/application-commit pipeline, sidecar store, and automatic-rebirth policy against data-only game boundaries. It verifies actual next-stage allocation for 10s/4s, 10s/2s, loop re-entry, mixed fixed/flex/fixed/AT, and manual transitions, plus failed/locked/unmanaged freezes and stable entry actions. Manual coverage includes durable cumulative history/restore, restart/backward resets, forward skip waivers, argument/revision/entry/ownership guards, checkpoint rollback with no deferred action, and terminal skip without another entry fight. Telemetry stays read-only; all trigger combinations and persistence failures retain their durable gate checks. Selecting the next stage alone is not sufficient proof of a successful transition. ExternalUi checks cover canonical load/save/copy, removed-flag cleanup without checkpoint deletion, and unchanged fixed seconds/budgets. See `checks/README.md` for commands and boundaries; totals belong to test output, not a hardcoded future count. These checks do not touch a live game/save or establish successful Unity equipment/combat behavior.
+
 ## User Notes, Direct
 
 Create a new page, "custom", with new/cleaner/better UI/UX compared to everything else, but no colors. Keep it clean/focused, just better.
@@ -142,10 +178,11 @@ Trigger behavior:
 - if multiple are enabled, user chooses `Any` or `All`
 - `Any`: rebirth when any selected condition is met
 - `All`: rebirth only when all selected conditions are met
+- All automatic trigger combinations also require the universal scheduler's durable fixed/AT completion gate when stages are enabled; trigger readiness alone cannot skip mandatory work.
 
 ### Phases
 
-A phase is a time window inside a plan.
+A phase is an ordered stage inside a plan. Times below illustrate nominal boundaries, not wall-clock catch-up or permission to skip unapplied fixed work.
 
 Example:
 
@@ -195,12 +232,12 @@ Implemented v1:
 
 Implemented v2:
 
-- custom plans have a percent-based stage scheduler
-- stage lines use `Name | Percent | EnergyFocus | MagicFocus | GearGoal`
+- custom plans now use the universal version-17 fixed/flexible/AT scheduler described above
+- stages persist structured fields for name, timing, resource focuses, gear, and priorities; the desktop editor exposes per-stage finish rules rather than raw timing lines
 - supported stage focuses: `None`, `TimeMachine`, `Augments`, `Wandoos`, `BloodMagic`
-- stage percentages are translated into absolute seconds using the plan's stage duration
-- default NUMBER-climb stages are now 30 minutes total: `0-5m` Time Machine, `5-8m` Augments + Blood, `8-11m` Time Machine, `11-12m` Augments + Blood, `12-15m` Wandoos, then `15-20m` Time Machine, `20-25m` Augments + Blood, `25-30m` Wandoos
-- after 30 minutes, the scheduler repeats the final 15-minute fallback block: `5m` Time Machine, `5m` Augments + Blood, `5m` Wandoos
+- flexible weights divide only the horizon left after all unfinished fixed work; they are not absolute percentages of the full schedule
+- the NUMBER cycle template retains its original fixed durations: `5m` Time Machine, `3m` Augments + Blood, `3m` Time Machine, `1m` Augments + Blood, `3m` Wandoos, then `5m` Time Machine, `5m` Augments + Blood, `5m` Wandoos (30 minutes of fixed work)
+- its repeat boundary is the final `5m/5m/5m` block; another cycle is admitted only before the horizon and while rebirth triggers are not ready, with current mandatory work always completed
 - the `Augments` stage uses energy for the augment optimizer and magic for the Blood Magic optimizer
 - Blood Magic optimizer allocates 100% magic to the unlocked ritual with best blood/sec while keeping gross gold/sec minus that ritual's projected blood-magic cost/sec strictly positive
 - auto-rebirth has a NUMBER-climb trigger: rebirth when NUMBER is at least `100x` after at least `8m`
@@ -240,7 +277,7 @@ Implemented v3:
 - Custom plan stages, Custom auto-rebirth, Custom Adventure Goal, and Custom Auto Boost now run from their own Custom toggles; the old main/global automation toggle only gates legacy automation
 - Custom stage ticks no longer auto-pre-cache every planned generated loadout; manual `Pre-cache planned loadouts` still exists, while active stages optimize/cache only the current goal to avoid startup freezes
 - Gold generated gear uses a single-stat fast path instead of the general accessory combination search, preventing Custom Adventure gold-push from pegging the UI thread at startup
-- Custom rebirth stages are now edited as vertical step cards instead of hidden raw text. Schema version `14` adds per-step completion modes; the first non-time mode supports `Advanced Training P/T` targets such as `6k/6k`, then advances to the next step in real time.
+- Schema version `14` introduced per-step completion modes and Advanced Training P/T targets such as `6k/6k`. Current version `17` uses the bar-first desktop editor and the universal per-stage finish rules above; AT always waits for actual targets rather than a timed share.
 
 ### Diagnostics / Probe
 
@@ -479,6 +516,17 @@ Implemented v1 note:
 - Digger IDs used by Focus Goals: drop `0`, Wandoos `1`, stat `2`, adventure `3`, energy NGU `4`, magic NGU `5`, energy beard `6`, magic beard `7`, PP `8`, daycare `9`, blood `10`, EXP `11`.
 - Base always-on focus diggers are drop, adventure, energy beard, magic beard, PP, and daycare; focus-specific diggers compete by weight if slots are capped.
 
+Scheduled stages, one-click focuses, manual adventure, and fight/rebirth prep now share the goal setup policy in `Main.CustomSetup.cs`. The same stage/focus input selects resource intent, gear goal, ordered beards, and weighted diggers. Explicit stage gear goals (including `-1` to keep gear) remain independent from resource support.
+
+- Apply beards and diggers when entering a stage, including loop re-entry; retry unavailable setup after locks release.
+- Refresh diggers once per minute during a stage or active focus, recalculating active levels from current gross GPS and purchased max levels. Do not repeat gear swaps or beard selection on this refresh.
+- Gold-spending max-level upgrades remain restricted to rebirth/Money Pit preparation; the minute pass does not purchase upgrades.
+- Baseline weights: drop/adventure `20` each; energy beard/magic beard/PP/daycare `15` each. Primary energy NGU, magic NGU, and Blood Magic support each use `50`; Wandoos/stat use `100`. Requests are deduplicated across both lanes.
+- Stage support follows the first valid explicit priority in each lane, or the focus's primary default when priorities are empty. Merely appearing as a fallback does not request an extra digger.
+- Fight focus and manual/automatic fight/rebirth preparation share Fight gear, Fu Manchu first in beard priority, and stat plus baseline weighted diggers. Restore stage setup only after the boss push and actual boss fight/nuke finish; rebirth prep retains ownership until rebirth.
+- Active manual adventure owns equipment while stages continue resource allocation; paused/locked-target manual routing does not suppress stage setup. Choosing a one-click focus pauses manual adventure as well as the plan.
+- Total requested drain remains capped to `75%` of gross GPS; locked/unpurchased diggers and limited active slots still constrain the result. Weighted-equip logs list diggers that actually activated, not merely requested IDs.
+
 ### 6. Goal-Based Presets v1
 
 Start with generated goal-based loadouts because they are the most useful Custom-page behavior.
@@ -499,13 +547,13 @@ Implemented v1 note:
 
 Black-bar priority allocation:
 
-- Stage presets and sustained Focus Goals use `Managers/BlackBarAllocator.cs` with buffered caps. Version 16 plans use `EnergyNguWeights` (9 whole-number weights) and `MagicNguWeights` (7). Positive weights divide resources proportionally; zero excludes a target from generic `NGU`. Capped shares redistribute, while the outer priority chain and explicit `NGU-n` singleton tokens remain ordered. All-zero weights skip the group and allow downstream priorities.
+- Stage presets and sustained Focus Goals use `Managers/BlackBarAllocator.cs` with buffered caps. Misc global settings own `_energyNguWeights` (9 whole-number weights) and `_magicNguWeights` (7); plans and presets have no overrides. Positive weights divide resources proportionally; zero excludes a target from all NGU allocation. Capped shares redistribute, while the outer priority chain and positive explicit `NGU-n` singleton tokens remain ordered. All-zero weights skip the group and allow downstream priorities.
 - `EnergyPriorities` and `MagicPriorities` are ordered string arrays on each stage. Blank/missing arrays use that focus preset's default chain. Explicit orders override the focus; changing the focus does not discard them.
 - Example energy order: `WAN, NGU-4, TM` funds Wandoos, then energy Adventure NGU, then Time Machine. If an earlier priority cannot reach its buffered cap, it receives all remaining resource and lower priorities get none. In `WAN, NGU, TM`, the NGU priority shares its budget by weights before spilling to Time Machine. Adventure Alpha and Drop Chance weights 1:1 yield 500/500 from 1000 when neither is capped; 2:1 yields 667/333. Integer remainders use largest fractional shares with ascending-index ties, including migrated plans.
 - Wandoos and Blood Magic have flat resource caps. NGUs, augment/upgrade bars, Time Machine, and Advanced Training have level-dependent caps. Their projected requirement includes 50 possible levels per second plus a tick guard, stops at positive level targets, and always rounds resource requirements up.
 - `BlackBarLookaheadSeconds` defaults to 5, with a minimum of 3, covering the two-second resource-refresh cadence. Iron Pill prep uses 12 seconds because it only refreshes on the ten-second automation routine. Sustained focus rebalances on that two-second cadence even with no idle resource, so growing primary caps reclaim allocations from downstream priorities.
 - Caps use actual power/speed/difficulty bonuses, not hard-cap-clipped estimates or NGU's partial-cap modifier. Resource shortages do not pretend an unreachable cap is black-barred.
-- Common tokens: `WAN`, `TM`, and `NGU` (the positive-weight group). Energy also supports `NGU-0..8`, `AUG` (pinned best pair), `AUG-0..13` (alternating augment/upgrade), `AT` (power/toughness), and `AT-0..4`. Magic also supports `NGU-0..6`, `RIT` (pinned best sustainable ritual), and `RIT-0..7`. Explicit NGU tokens work even when their generic weight is zero.
+- Common tokens: `WAN`, `TM`, and `NGU` (the positive-weight group). Energy also supports `NGU-0..8`, `AUG` (pinned best pair), `AUG-0..13` (alternating augment/upgrade), `AT` (power/toughness), and `AT-0..4`. Magic also supports `NGU-0..6`, `RIT` (pinned best sustainable ritual), and `RIT-0..7`. Explicit NGU tokens cannot bypass a zero global weight.
 - The Energy NGU preset uses both resources (`EnergyFocus=5`, `MagicFocus=6`) with energy-focused gear (`GearGoal=2`); All NGU differs by using balanced NGU gear. New plans default to energy Adventure Alpha/Drop Chance weights 1:1 and magic Yggdrasil weight 1, with all others zero. Old PAWGs/AdventureDrop fields migrate to equivalent weights, preserving their old magic targets; only an intentional edit changes an existing plan to Yggdrasil. Applying a stage preset retains weights and explicit priority overrides.
 - Edit all 16 weights in the desktop controller's Misc page for the plan selected in AFK Rebirthing; the card identifies the editing and active plans separately. The dashboard is read-only telemetry for the active plan, and its Misc shortcut preserves the selected plan without loading or saving. Runtime uses `strategy=weighted-ngu-buffered-cap`, configured arrays, applied lane snapshots/flags, and exact allocation/cap decimal strings. Pending or blocked settings are not reported as successfully applied. Legacy plan reads normalize without writing; saves remove `NguGoal` and retain unknown fields/history/CAS revisions. Missing or malformed plans fail closed rather than executing or saving defaults. Weighted saves/copies require a version-16 injector; rollback requires compatible plans as well as the older DLL.
 - Locked, completed, disabled, and currently unaffordable targets are skipped. Blood rituals are selected after higher priorities allocate, and multiple rituals share a cumulative gold-income budget.

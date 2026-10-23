@@ -1,17 +1,21 @@
 import { expect, test, type Page } from '@playwright/test';
-import { stagePresets } from '../src/lib/stage-presets';
+import { globalPresets, presetLibrary } from './fixtures/global-presets';
+import type { JsonObject } from '../src/lib/api';
+import { setPriorities } from './fixtures/priority-picker';
 
 const source = {
-  Name: 'stages', Version: 15, __externalUiRevision: 'a'.repeat(64),
+  Name: 'stages', Version: 17, __externalUiRevision: 'a'.repeat(64),
+  ActivePresetId: 'global_3',
   StageDurationSeconds: 1200, StageLoopStartIndex: 1,
   Stages: [
-    { Name: 'Opener', Percent: .2, EnergyFocus: 1, MagicFocus: 1, GearGoal: 5, EnergyPriorities: ['TM'], MagicPriorities: ['RIT'], Future: 'A' },
+    { Name: 'Opener', Percent: .2, DurationSeconds: 240, EnergyFocus: 1, MagicFocus: 1, GearGoal: 5, EnergyPriorities: ['TM'], MagicPriorities: ['RIT'], Future: 'A' },
     { Name: 'Training', Percent: .3, EnergyFocus: 7, MagicFocus: 4, GearGoal: 11, CompletionMode: 1, TargetAdvancedTrainingPower: '9223372036854775806', TargetAdvancedTrainingToughness: '6000', Future: 'B' },
-    { Name: 'Sustain', Percent: .8, EnergyFocus: 5, MagicFocus: 6, GearGoal: 2, Future: 'C' }
+    { Name: 'Sustain', Percent: .8, DurationSeconds: 960, EnergyFocus: 5, MagicFocus: 6, GearGoal: 2, Future: 'C' }
   ], Future: 'keep'
 };
 const diagnostics = new WeakMap<Page, string[]>();
-type SavedPlan = Omit<typeof source, 'Stages'> & { Stages: ((typeof source.Stages)[number] & { DurationSeconds?: number; FightOnEntry?: boolean; BlackBarLookaheadSeconds?: number })[] };
+type SavedPlan = Omit<typeof source, 'Stages'> & { TimeTriggerEnabled?: boolean; TimeTriggerSeconds?: number; Stages: ((typeof source.Stages)[number] & { PresetId?: string; ExecutionMode?: number; AdventureDynamicWeight?: number; DurationSeconds?: number; FightOnEntry?: boolean; BlackBarLookaheadSeconds?: number })[] };
+type TimingFixtureWindow = Window & { __stageLive: (props: Record<string, unknown>) => void; __stageActions: unknown[]; __stageNativeCalls: string[]; __stageEdits: number; __stageDraftDirty: boolean; __stageDestroy: () => void };
 test.afterEach(async ({ page }) => { expect(diagnostics.get(page) ?? []).toEqual([]); });
 
 async function mount(page: Page, plan: SavedPlan = source, cloneEdits = false): Promise<void> {
@@ -20,15 +24,15 @@ async function mount(page: Page, plan: SavedPlan = source, cloneEdits = false): 
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => {
     // Chromium can deny Vite's dev-only loopback socket in this isolated fixture.
-    if (message.text().startsWith('WebSocket connection to \'ws://127.0.0.1:1420/') || message.text().startsWith('[vite] failed to connect to websocket.')) return;
+    if (/^WebSocket connection to 'ws:\/\/127\.0\.0\.1:\d+\//.test(message.text()) || message.text().startsWith('[vite] failed to connect to websocket.')) return;
     if (message.type() === 'warning' || message.type() === 'error') errors.push(message.text());
   });
-  await page.route('http://127.0.0.1:1420/', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><link rel="stylesheet" href="/src/styles.css"></head><body><main id="fixture" style="padding:8px"></main></body></html>' }));
+  await page.route(/http:\/\/127\.0\.0\.1:\d+\/$/, route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><link rel="stylesheet" href="/src/styles.css"></head><body><main id="fixture" style="padding:8px"></main></body></html>' }));
   await page.goto('/');
   const main = await (await page.request.get('/src/main.ts')).text();
   const runtimePath = main.match(/import\s*\{\s*mount\s*\}\s*from\s*["']([^"']+)["']/)?.[1];
   if (!runtimePath) throw new Error('Missing Svelte runtime');
-  await page.evaluate(async ({ source, runtimePath, cloneEdits }) => {
+  await page.evaluate(async ({ source, runtimePath, cloneEdits, presetLibrary }) => {
     const legacyPath = runtimePath.replace(/svelte\.js(?=\?|$)/, 'svelte_legacy.js');
     const { createClassComponent } = await import(legacyPath);
     const componentPath = '/src/lib/PlanEditor.svelte';
@@ -38,31 +42,52 @@ async function mount(page: Page, plan: SavedPlan = source, cloneEdits = false): 
     const state = window as unknown as { __stagePlan: string; __stageEdits: number; __stageNamespace: (name: string) => void; __stageName: (name: string) => void; __replaceStages: () => void; __stageReadback: (mode?: string) => void };
     state.__stagePlan = source;
     state.__stageEdits = 0;
+    const gearPath = '/src/lib/PlanGear.svelte';
+    const { default: Gear } = await import(gearPath);
+    let gear: { $set: (props: Record<string, unknown>) => void };
     const component = createClassComponent({ component: Component, target: document.getElementById('fixture'), props: {
-      plan: parseJson(source), name: 'stages', namespace: 'folder-a', dirty: false,
+      plan: parseJson(source), presetLibrary, name: 'stages', namespace: 'folder-a', dirty: false,
+      ondirty: (dirty: boolean) => { (window as unknown as TimingFixtureWindow).__stageDraftDirty = dirty; },
       onchange: (next: unknown) => {
         state.__stagePlan = stringifyJson(next);
         state.__stageEdits++;
         component.$set({ plan: cloneEdits ? parseJson(state.__stagePlan) : next, dirty: true });
+        gear.$set({ plan: cloneEdits ? parseJson(state.__stagePlan) : next });
+      }
+    } });
+    const timingState = window as unknown as TimingFixtureWindow;
+    timingState.__stageActions = [];
+    timingState.__stageLive = props => component.$set({ ...props, onstageaction: async (...args: unknown[]) => { timingState.__stageActions.push(args); } });
+    gear = createClassComponent({ component: Gear, target: document.getElementById('fixture'), props: {
+      plan: parseJson(source), presetLibrary,
+      onchange: (next: unknown) => {
+        state.__stagePlan = stringifyJson(next);
+        state.__stageEdits++;
+        const plan = cloneEdits ? parseJson(state.__stagePlan) : next;
+        component.$set({ plan, dirty: true });
+        gear.$set({ plan });
       }
     } });
     state.__stageNamespace = (namespace: string) => component.$set({ namespace });
+    timingState.__stageDestroy = () => { component.$destroy(); gear.$destroy(); };
     state.__stageName = (name: string) => component.$set({ name });
     state.__replaceStages = () => component.$set({ plan: parseJson(source) });
     state.__stageReadback = (mode?: string) => {
       const next = parseJson(state.__stagePlan);
       next.__externalUiRevision = 'b'.repeat(64);
-      if (mode !== 'clone') next.Stages = next.Stages.map((row: Record<string, unknown>) => ({ CompletionMode: 0, DurationSeconds: 0, DurationUnit: '%', FightOnEntry: false, TargetAdvancedTrainingPower: '0', TargetAdvancedTrainingToughness: '0', EnergyPriorities: [], MagicPriorities: [], BlackBarLookaheadSeconds: 5, ...row }));
+      if (mode !== 'clone') next.Stages = next.Stages.map((row: Record<string, unknown>) => ({ CompletionMode: 0, AdventureDynamicWeight: 0, DurationSeconds: 0, DurationUnit: '%', FightOnEntry: false, TargetAdvancedTrainingPower: '0', TargetAdvancedTrainingToughness: '0', EnergyPriorities: [], MagicPriorities: [], BlackBarLookaheadSeconds: 5, ...row }));
       if (mode === 'targets') for (const row of next.Stages) {
         for (const key of ['TargetAdvancedTrainingPower', 'TargetAdvancedTrainingToughness']) row[key] = BigInt(row[key]).toString();
       }
       if (mode === 'reorder') next.Stages.reverse();
       if (mode === 'ambiguous') next.Stages[1] = { ...next.Stages[0] };
+      if (mode === 'remove') next.Stages.splice(0, 1);
       if (mode === 'name') next.Name = 'other-plan';
       state.__stagePlan = stringifyJson(next);
       component.$set({ plan: next, dirty: false });
+      gear.$set({ plan: next });
     };
-  }, { source: JSON.stringify(plan).replace('"Future":"keep"', '"Future":9007199254740993'), runtimePath, cloneEdits });
+  }, { source: JSON.stringify(plan).replace('"Future":"keep"', '"Future":9007199254740993'), runtimePath, cloneEdits, presetLibrary });
   await expect(page.getByRole('list', { name: 'Plan stages' }).locator('.bar-segment')).toHaveCount(plan.Stages.length);
 }
 
@@ -72,6 +97,11 @@ async function saved(page: Page): Promise<SavedPlan> {
 
 async function readback(page: Page, mode?: string): Promise<void> {
   await page.evaluate(mode => (window as unknown as { __stageReadback: (mode?: string) => void }).__stageReadback(mode), mode);
+}
+
+async function pauseDurationClock(page: Page): Promise<void> {
+  await page.clock.install({ time: new Date('2026-10-19T12:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-10-19T12:00:01Z'));
 }
 
 async function selectStage(page: Page, index: number) {
@@ -106,6 +136,14 @@ async function dragStage(page: Page, from: number, to: number): Promise<void> {
 async function openSchedule(page: Page): Promise<void> {
   const details = page.locator('details.schedule-settings');
   if (await details.getAttribute('open') === null) await details.getByText('Schedule & templates', { exact: true }).click();
+}
+
+async function expectStageEstimates(page: Page, durations: string[], shares: string[] = []): Promise<void> {
+  await expect(page.locator('dl[aria-label="Schedule budget"], .schedule-budget')).toHaveCount(0);
+  const bar = page.getByRole('list', { name: 'Plan stages', exact: true });
+  await expect(bar.locator('.segment-duration')).toHaveText(durations);
+  await expect(bar.locator('.segment-share')).toHaveText(shares);
+  for (const label of await bar.locator('.segment-duration, .segment-share').all()) await expect(label).toBeVisible();
 }
 
 async function expectDurations(page: Page, values: string[]): Promise<void> {
@@ -143,6 +181,510 @@ async function chooseTemplate(page: Page, label: string, answer: 'Yes' | 'No'): 
   }]);
 }
 
+test('default timing converts only the selected stage without growing the budget or offering a mode switch', async ({ page }) => {
+  await mount(page, { ...source, Stages: source.Stages.map(row => ({ ...row, DurationSeconds: 0 })) });
+  await expect(page.getByRole('checkbox', { name: 'Protect fixed stages', exact: true })).toHaveCount(0);
+  const before = await saved(page);
+  await expectStageEstimates(page, ['4m flexible', 'AT targets', '16m flexible'], ['20% of remaining', '80% of remaining']);
+  await expect(page.getByRole('combobox', { name: 'Stage timing', exact: true })).toHaveCount(0);
+  const panel = await selectStage(page, 0);
+  const completion = panel.getByRole('combobox', { name: /^Finish stage by/ });
+  await expect(completion.locator('option')).toHaveText(['Time', '% of remaining', 'Advanced training targets']);
+  await expect(completion).toHaveValue('flexible');
+  await completion.selectOption('fixed');
+  expect((await saved(page)).Stages.slice(1)).toEqual(before.Stages.slice(1));
+  const duration = panel.getByRole('textbox', { name: 'Duration', exact: true });
+  await expect(duration).toHaveValue('4m');
+  await duration.fill('25m');
+  await duration.press('Enter');
+  expect((await saved(page)).StageDurationSeconds).toBe(1200);
+  await expectStageEstimates(page, ['25m fixed', 'AT targets', '0s flexible'], ['100% of remaining']);
+  await expect(page.locator('.schedule-card').getByRole('status')).toHaveText('Fixed stages exceed budget by 5m. Increase the budget or shorten fixed stages.');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await completion.selectOption('flexible');
+  expect((await saved(page)).Stages[0].DurationSeconds).toBe(0);
+  await expect(panel.getByRole('textbox', { name: 'Flexible weight', exact: true })).toHaveValue('0.2');
+  expect((await saved(page)).Stages.slice(1)).toEqual(before.Stages.slice(1));
+  await completion.selectOption('target');
+  await expect(panel.getByRole('textbox', { name: 'AT power target', exact: true })).toBeVisible();
+  expect((await saved(page)).Stages[0]).toMatchObject({ CompletionMode: 1, DurationSeconds: 0, EnergyFocus: 7, MagicFocus: 4, GearGoal: 11 });
+  expect((await saved(page)).StageDurationSeconds).toBe(1200);
+});
+
+test('automatic stage mode preserves saved standard fields through editing and backend readback', async ({ page }) => {
+  await mount(page);
+  const before = await saved(page);
+  const panel = await selectStage(page, 0);
+  await expect(panel.getByRole('combobox', { name: 'Stage mode', exact: true })).toHaveValue('0');
+  await panel.getByRole('combobox', { name: 'Stage mode', exact: true }).selectOption('1');
+  await expect(panel.getByRole('heading', { name: 'Augments + Wandoos (automatic, includes AT)', exact: true })).toBeVisible();
+  for (const control of ['Focus preset', 'Energy focus', 'Magic focus']) await expect(panel.getByRole('combobox', { name: control, exact: true })).toHaveCount(0);
+  for (const control of ['Energy priorities', 'Magic priorities']) await expect(panel.getByRole('group', { name: control, exact: true })).toHaveCount(0);
+  await expect(panel.getByRole('checkbox', { name: 'Fight on entry', exact: true })).toBeVisible();
+  const budgetNote = panel.getByText('Preparation counts toward the budget. Maximum 24 hours per automatic stage.', { exact: true });
+  await expect(budgetNote).toBeVisible();
+  await expect(budgetNote).toHaveAttribute('title', 'Results are not guaranteed optimal.');
+  await expect(panel).not.toContainText('unused but kept for switching back');
+  expect((await saved(page)).Stages[0]).toEqual({ ...before.Stages[0], ExecutionMode: 1 });
+  await panel.getByRole('checkbox', { name: 'Fight on entry', exact: true }).check();
+  expect((await saved(page)).Stages[0].FightOnEntry).toBe(true);
+  const budget = panel.getByRole('textbox', { name: 'Total budget', exact: true });
+  await budget.fill('10m'); await budget.press('Enter');
+  await readback(page);
+  await expect(budget).toHaveValue('10m');
+  await expect(panel.getByRole('combobox', { name: 'Stage mode', exact: true })).toHaveValue('1');
+  await expect(panel.getByRole('checkbox', { name: 'Fight on entry', exact: true })).toBeChecked();
+  await panel.getByRole('combobox', { name: 'Stage mode', exact: true }).selectOption('0');
+  const restored = (await saved(page)).Stages[0];
+  expect(restored.FightOnEntry).toBe(true);
+  for (const key of ['EnergyFocus', 'MagicFocus', 'GearGoal', 'EnergyPriorities', 'MagicPriorities', 'Future'] as const) expect(restored[key]).toEqual(before.Stages[0][key]);
+  await expect(panel.getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('');
+  await expect(panel.getByRole('group', { name: 'Energy priorities', exact: true }).locator('.priority-name')).toHaveText(['Time Machine']);
+  await expect(panel.getByRole('textbox', { name: 'Duration', exact: true })).toHaveValue('10m');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('automatic mode requires an explicit change away from mandatory AT completion', async ({ page }) => {
+  await mount(page);
+  const before = await saved(page);
+  const panel = await selectStage(page, 1);
+  await panel.getByRole('combobox', { name: 'Stage mode', exact: true }).selectOption('1');
+  await expect(page.getByRole('alert')).toContainText('Choose Time or % of remaining');
+  expect(await saved(page)).toEqual(before);
+  await expect(panel.getByRole('combobox', { name: 'Stage mode', exact: true })).toHaveValue('0');
+});
+
+test('automatic adventure weight autosaves through native readback and mode switches', async ({ page }) => {
+  const errors: string[] = [];
+  diagnostics.set(page, errors);
+  page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(({ source }) => {
+    const fixture = {
+      plan: { ...source, Stages: [{ ...source.Stages[0], ExecutionMode: 1 }], StageLoopStartIndex: -1 } as SavedPlan,
+      writes: [] as SavedPlan[],
+      actions: [] as string[]
+    };
+    Object.assign(window, { __adventureStage: fixture, __TAURI_INTERNALS__: { invoke: async (command: string, args: Record<string, unknown> = {}) => {
+      const casPath = '/e2e/fixtures/settings-cas.ts';
+      const cas = await import(casPath);
+      switch (command) {
+        case 'get_ngui_state': return {
+          runtime_dir: 'C:\\AdventureStageFixture', marker_enabled: false, connected: false, protocol: { version: 3 },
+          ...await cas.settingsSnapshot({ _customPlanFile: 'stages' }), plans: ['stages'], profiles: [], logs: [], command_results: [],
+          runtime: { externalUiEnabled: false, status: 'unloaded', updatedAt: new Date().toISOString(), protocolVersion: 3, settingsCasVersion: 1, supportedCommands: [], planVersion: 17 }
+        };
+        case 'read_plan': return JSON.stringify(fixture.plan);
+        case 'save_plan': {
+          const plan = JSON.parse(String(args.planJson)) as SavedPlan;
+          fixture.writes.push(structuredClone(plan));
+          fixture.plan = { ...plan, __externalUiRevision: String(fixture.writes.length).padStart(64, '0'), Stages: plan.Stages.map(row => ({ AdventureDynamicWeight: 0, ...row })) };
+          return { success: true, mode: 'offline' };
+        }
+        case 'enqueue_command': fixture.actions.push(String(args.command)); throw new Error('Stage editing must not issue game actions');
+        default: throw new Error(`Unexpected native call: ${command}`);
+      }
+    } } });
+    localStorage.clear();
+  }, { source });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Plan & Rebirth', exact: true }).click();
+  const panel = await selectStage(page, 0);
+  const panelId = await panel.getAttribute('id');
+  const weight = panel.getByRole('spinbutton', { name: 'Adventure weight', exact: true });
+  await expect(weight).toHaveValue('0');
+  await weight.fill('0.125');
+  const persisted = () => page.evaluate(() => {
+    const fixture = (window as unknown as { __adventureStage: { plan: SavedPlan; writes: SavedPlan[]; actions: string[] } }).__adventureStage;
+    return { plan: fixture.plan, writes: fixture.writes, actions: fixture.actions };
+  });
+  await expect.poll(async () => (await persisted()).writes.length).toBe(1);
+  await expect(weight).toBeEnabled();
+  await expect(weight).toHaveValue('0.125');
+  await expect(panel).toHaveAttribute('id', panelId!);
+  expect((await persisted()).plan.Stages[0]).toEqual({ ...source.Stages[0], ExecutionMode: 1, AdventureDynamicWeight: .125 });
+  await panel.getByRole('combobox', { name: 'Stage mode', exact: true }).selectOption('0');
+  await expect(weight).toHaveCount(0);
+  await expect.poll(async () => (await persisted()).writes.length).toBe(2);
+  expect((await persisted()).plan.Stages[0].AdventureDynamicWeight).toBe(.125);
+  await panel.getByRole('combobox', { name: 'Stage mode', exact: true }).selectOption('1');
+  await expect.poll(async () => (await persisted()).writes.length).toBe(3);
+  await expect(weight).toHaveValue('0.125');
+  await expect(panel).toHaveAttribute('id', panelId!);
+  expect((await persisted()).writes.map(plan => plan.Stages[0].AdventureDynamicWeight)).toEqual([.125, .125, .125]);
+  expect((await persisted()).actions).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('persisted automatic stage loads with its own identity and supports flexible budget shares', async ({ page }) => {
+  await mount(page, { ...source, Stages: [{ ...source.Stages[0], ExecutionMode: 1, DurationSeconds: 0 }], StageLoopStartIndex: -1 });
+  await expectStageEstimates(page, ['20m flexible budget'], ['100% of remaining']);
+  await expect(page.locator('.segment-duration')).toHaveAttribute('title', 'Total elapsed budget including AT, planning and setup');
+  const panel = await selectStage(page, 0);
+  await expect(panel.getByRole('combobox', { name: 'Stage mode', exact: true })).toHaveValue('1');
+  await expect(panel.getByRole('combobox', { name: /^Finish stage by/ })).toHaveValue('flexible');
+  await expect(panel).toContainText('(total elapsed budget)');
+  await expect(panel.getByRole('textbox', { name: 'Flexible weight', exact: true })).toHaveValue('0.2');
+  await expect(panel.getByRole('combobox', { name: /^Finish stage by/ }).locator('option')).toHaveText(['Time', '% of remaining']);
+  await expect(panel).toContainText('Time and remaining shares are total elapsed budgets, including AT, planning and setup.');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+function automaticTimingPlan(): SavedPlan {
+  return { ...source, StageLoopStartIndex: -1, Stages: [0, 1].map(index => ({ ...source.Stages[0], ExecutionMode: 1, CompletionMode: 0, DurationSeconds: index ? 480 : 240 })) };
+}
+
+function automaticTimingProgress(): JsonObject {
+  return { available: true, status: 'running', planName: 'stages', planVersion: 17, planRevision: 'a'.repeat(64), schedulerMode: 'stages', stageEntry: 'generation:1',
+    activeStageIndex: 0, stageProgress: .5, stageElapsedSeconds: 120, repeating: false, loopStartIndex: -1,
+    stages: automaticTimingPlan().Stages.map((row, index) => ({ index, executionMode: 1, completionMode: 0, configuredDurationSeconds: row.DurationSeconds!, durationSeconds: row.DurationSeconds!,
+      timingKind: 'elapsed', flexWeight: row.Percent, energyFocus: row.EnergyFocus, magicFocus: row.MagicFocus, gearGoal: row.GearGoal, configuredEnergyPriorities: row.EnergyPriorities ?? [], configuredMagicPriorities: row.MagicPriorities ?? [], state: index ? 'pending' : 'current' })),
+    combatPrep: { schemaVersion: 1, owner: 'scheduled', planName: 'stages', stageIndex: 0, stageEntry: 'generation:1', runId: 'activity-run', active: true, status: 'running', phase: 'Augments',
+      activityTimingScope: 'run', activityTimingSemantics: 'exclusive-phase-wall-time-including-setup',
+      activityTimes: ['AT', 'Augments', 'Wandoos', 'NGU', 'Background'].map((kind, index) => ({ kind, elapsedSeconds: [61, 45, 0, 0, 0][index], active: kind === 'Augments' })) }
+  };
+}
+
+async function updateActivityProgress(page: Page, progress: JsonObject, props: Record<string, unknown> = {}) {
+  await page.evaluate(({ progress, props }) => (window as unknown as TimingFixtureWindow).__stageLive({ progress, connected: true, dirty: false, ...props }), { progress, props });
+}
+
+test('automatic activity timing follows live phase counters across replans without duplicate breakdowns or actions', async ({ page }) => {
+  await mount(page, automaticTimingPlan());
+  await page.evaluate(() => {
+    const fixture = window as unknown as TimingFixtureWindow;
+    fixture.__stageNativeCalls = [];
+    Object.assign(window, { __TAURI_INTERNALS__: { invoke: async (command: string) => { fixture.__stageNativeCalls.push(command); throw new Error(`Unexpected action: ${command}`); } } });
+  });
+  const before = await saved(page);
+  const progress = automaticTimingProgress();
+  await updateActivityProgress(page, progress);
+  await expect(page.locator('.live-position')).toContainText('Now: Augments / 45s');
+  const visibleTiming = page.locator('.activity-timing:visible');
+  await expect(visibleTiming).toHaveCount(1);
+  await expect(visibleTiming.locator('.timing-rows dd')).toHaveText(['1m 1s', '45s', 'Not visited']);
+  await expect(visibleTiming.locator('.active-badge')).toHaveText('Active');
+  const panel = await selectStage(page, 0);
+  await expect(panel.getByRole('region', { name: 'Actual activity timing' })).toBeVisible();
+  await expect(visibleTiming).toHaveCount(1);
+  const runtime = progress.combatPrep as JsonObject;
+  const rows = runtime.activityTimes as JsonObject[];
+  rows[1].active = false;
+  Object.assign(runtime, { equipmentReplanPending: true, phase: 'Wandoos' });
+  await updateActivityProgress(page, progress);
+  await expect(page.getByText(/^Now:/)).toHaveCount(0);
+  await expect(visibleTiming.locator('.timing-rows dd')).toHaveText(['1m 1s', '45s', 'Not visited']);
+  Object.assign(runtime, { replanCount: 1, replanReason: 'AT verified', phase: 'Wandoos', phaseElapsedSeconds: 0 });
+  runtime.equipmentReplanPending = false;
+  rows[2].active = true;
+  rows[2].elapsedSeconds = 12;
+  await updateActivityProgress(page, progress);
+  await expect(page.locator('.live-position')).toContainText('Now: Wandoos / 12s');
+  await expect(visibleTiming.locator('.timing-rows dd')).toHaveText(['1m 1s', '45s', '12s']);
+  await expect(visibleTiming.locator('.timing-rows [data-kind="Wandoos"] .active-badge')).toBeVisible();
+  await visibleTiming.getByText('How time is counted', { exact: true }).click();
+  for (const text of ['including phase setup', 'not separately added', 'Excludes entry preparation, replanning and cleanup', 'Excludes offline time and cumulative stage history']) await expect(visibleTiming).toContainText(text);
+  await expect(visibleTiming).not.toContainText(/in memory|storage|injector session|polling/i);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: test.info().outputPath('automatic-activity-timing.png'), fullPage: true });
+  await selectStage(page, 1);
+  await expect(page.getByRole('region', { name: 'Stage 2 settings', exact: true })).toContainText('Activity timing not recorded');
+  await expect(page.locator('.timing-rows:visible')).toHaveCount(1);
+  await selectStage(page, 0);
+  // Even inconsistent stale active flags must never make cleanup look like training.
+  Object.assign(runtime, { cleanupPending: true, status: 'failed' });
+  await updateActivityProgress(page, progress);
+  await expect(page.getByText(/^Now:/)).toHaveCount(0);
+  await expect(visibleTiming.locator('.active-badge')).toHaveCount(0);
+  await expect(visibleTiming.locator('.timing-rows dd')).toHaveText(['1m 1s', '45s', '12s']);
+  expect(await saved(page)).toEqual(before);
+  expect(await page.evaluate(() => { const fixture = window as unknown as TimingFixtureWindow; return [fixture.__stageEdits, fixture.__stageActions, fixture.__stageNativeCalls]; })).toEqual([0, [], []]);
+});
+
+test('automatic activity timing refuses old runs, stale progress, dirty drafts and mismatched stage identity', async ({ page }) => {
+  await mount(page, automaticTimingPlan());
+  const panel = await selectStage(page, 0);
+  await expect(panel).toContainText('Activity timing not recorded');
+  for (const mismatch of ['manual', 'plan-name', 'index', 'entry', 'previous-loop', 'freshness', 'dirty', 'revision', 'order', 'numbers', 'duplicates']) {
+    const progress = automaticTimingProgress();
+    const runtime = progress.combatPrep as JsonObject;
+    if (mismatch === 'manual') runtime.owner = 'manual';
+    if (mismatch === 'plan-name') runtime.planName = 'other';
+    if (mismatch === 'index') runtime.stageIndex = 1;
+    if (mismatch === 'entry') delete runtime.stageEntry;
+    if (mismatch === 'previous-loop') progress.stageEntry = 'generation:2';
+    if (mismatch === 'revision') progress.planRevision = 'b'.repeat(64);
+    if (mismatch === 'order') (progress.stages as JsonObject[]).reverse();
+    if (mismatch === 'numbers') (runtime.activityTimes as JsonObject[])[0].elapsedSeconds = '61';
+    if (mismatch === 'duplicates') (runtime.activityTimes as JsonObject[])[2].kind = 'AT';
+    await updateActivityProgress(page, progress, { connected: mismatch !== 'freshness', dirty: mismatch === 'dirty' });
+    await expect(panel).toContainText('Activity timing not recorded');
+    await expect(page.locator('.timing-rows:visible')).toHaveCount(0);
+    await expect(page.getByText(/^Now:/)).toHaveCount(0);
+  }
+  const progress = automaticTimingProgress();
+  await updateActivityProgress(page, progress);
+  await expect(panel.locator('.timing-rows')).toBeVisible();
+  const duration = panel.getByRole('textbox', { name: 'Total budget', exact: true });
+  await duration.fill('unfinished');
+  await expect(panel).toContainText('Activity timing not recorded');
+  await expect(page.getByText(/^Now:/)).toHaveCount(0);
+  await duration.press('Escape');
+  await expect(panel.locator('.timing-rows')).toBeVisible();
+  // A terminal receipt cannot be attached to the next selected stage or a new loop entry.
+  Object.assign(progress, { activeStageIndex: 1, stageEntry: 'generation:2' });
+  (progress.stages as JsonObject[])[0].state = 'completed';
+  (progress.stages as JsonObject[])[1].state = 'current';
+  Object.assign(progress.combatPrep as JsonObject, { status: 'completed', active: false });
+  await updateActivityProgress(page, progress);
+  await expect(panel).toContainText('Activity timing not recorded');
+  await selectStage(page, 1);
+  await expect(page.getByRole('region', { name: 'Stage 2 settings', exact: true })).toContainText('Activity timing not recorded');
+  await expect(page.locator('.timing-rows:visible')).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(await page.evaluate(() => { const fixture = window as unknown as TimingFixtureWindow; return [fixture.__stageEdits, fixture.__stageActions]; })).toEqual([0, []]);
+});
+
+test('automatic fixed budgets are limited per stage, not by a plan longer than 24 hours', async ({ page }) => {
+  await mount(page, { ...source, StageDurationSeconds: 172800, StageLoopStartIndex: -1, Stages: [0, 1].map(() => ({ ...source.Stages[0], ExecutionMode: 1, DurationSeconds: 86400 })) });
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  const panel = await selectStage(page, 0);
+  const duration = panel.getByRole('textbox', { name: 'Total budget', exact: true });
+  await expect(duration).toHaveValue('24h');
+  await expect(panel).toContainText('Maximum 24 hours per automatic stage.');
+  await duration.fill('25h'); await duration.press('Enter');
+  await expect(page.getByRole('alert')).toContainText('Stage 1: automatic Augments + Wandoos effective stage budget must not exceed 86400');
+  expect((await saved(page)).Stages[0].DurationSeconds).toBe(90000);
+  await duration.fill('24h'); await duration.press('Enter');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect((await saved(page)).StageDurationSeconds).toBe(172800);
+  expect((await saved(page)).Stages[1].DurationSeconds).toBe(86400);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('automatic flexible validation uses nominal weights and the enabled positive rebirth horizon', async ({ page }) => {
+  await mount(page, { ...source, StageDurationSeconds: 172801, StageLoopStartIndex: -1, Stages: [{ ...source.Stages[0], ExecutionMode: 1, DurationSeconds: 0, Percent: 1 }, { ...source.Stages[0], DurationSeconds: 0, Percent: 1 }] });
+  await expect(page.getByRole('alert')).toContainText('including flexible allocation');
+  await openSchedule(page);
+  const horizon = page.getByRole('textbox', { name: 'Fallback time budget', exact: true });
+  await horizon.fill('48h'); await horizon.press('Enter');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  const panel = await selectStage(page, 0);
+  const weight = panel.getByRole('textbox', { name: 'Flexible weight', exact: true });
+  await weight.fill('3'); await weight.press('Enter');
+  await expect(page.getByRole('alert')).toContainText('effective stage budget');
+  await page.getByRole('checkbox', { name: 'After a set time', exact: true }).check();
+  const rebirthAfter = page.getByRole('textbox', { name: 'Rebirth after', exact: true });
+  await rebirthAfter.fill('32h'); await rebirthAfter.press('Enter');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await rebirthAfter.fill('115201s'); await rebirthAfter.press('Enter');
+  await expect(page.getByRole('alert')).toContainText('effective stage budget');
+  await rebirthAfter.fill('0s'); await rebirthAfter.press('Enter');
+  await horizon.fill('32h'); await horizon.press('Enter');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect((await saved(page)).Stages[0].Percent).toBe(3);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('automatic flexible validation reserves standard fixed time before allocating its share', async ({ page }) => {
+  await mount(page, { ...source, StageDurationSeconds: 259200, StageLoopStartIndex: -1, Stages: [{ ...source.Stages[0], DurationSeconds: 86400 }, { ...source.Stages[0], ExecutionMode: 1, DurationSeconds: 0, Percent: 1 }, { ...source.Stages[0], DurationSeconds: 0, Percent: 1 }] });
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  const panel = await selectStage(page, 0);
+  const duration = panel.getByRole('textbox', { name: 'Duration', exact: true });
+  await duration.fill('23h'); await duration.press('Enter');
+  await expect(page.getByRole('alert')).toContainText('Stage 2: automatic Augments + Wandoos effective stage budget');
+  await duration.fill('24h'); await duration.press('Enter');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+for (const flexible of [
+  { mode: 'standard', ExecutionMode: 0, estimate: '22h flexible' },
+  { mode: 'automatic', ExecutionMode: 1, estimate: '22h flexible budget' }
+]) {
+  test(`24h rebirth horizon shows 2h fixed and 22h ${flexible.mode} flexible time`, async ({ page }) => {
+    await mount(page, { ...source, TimeTriggerEnabled: true, TimeTriggerSeconds: 86400, StageLoopStartIndex: -1, Stages: [
+      { ...source.Stages[0], DurationSeconds: 7200, CompletionMode: 0 },
+      { ...source.Stages[2], ExecutionMode: flexible.ExecutionMode, DurationSeconds: 0, CompletionMode: 0, Percent: 35 }
+    ] });
+    const before = await saved(page);
+    await expectStageEstimates(page, ['2h fixed', flexible.estimate], ['100% of remaining']);
+    const panel = await selectStage(page, 1);
+    await expect(panel.getByRole('textbox', { name: 'Flexible weight', exact: true })).toHaveValue('35');
+    await expect(panel.getByRole('combobox', { name: /^Finish stage by/ })).toHaveValue('flexible');
+    expect(await saved(page)).toEqual(before);
+    expect(before).toMatchObject({ StageDurationSeconds: 1200, TimeTriggerEnabled: true, TimeTriggerSeconds: 86400 });
+    expect(before.Stages.map(row => [row.DurationSeconds, row.Percent])).toEqual([[7200, .2], [0, 35]]);
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(0);
+    await expect(page.locator('.schedule-card').getByRole('status')).toHaveCount(0);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+test('weighted shares reserve fixed tail time and allow a zero fallback budget', async ({ page }) => {
+  const weightedPlan: SavedPlan = { ...source, Stages: [
+    { ...source.Stages[0], DurationSeconds: 120, CompletionMode: 0 },
+    { ...source.Stages[0], Name: 'Flex A', Percent: 35, DurationSeconds: 0, CompletionMode: 0 },
+    { ...source.Stages[2], Name: 'Flex B', Percent: 50, DurationSeconds: 0, CompletionMode: 0 },
+    { ...source.Stages[2], Name: 'Flex C', Percent: 15, DurationSeconds: 0, CompletionMode: 0 },
+    { ...source.Stages[0], Name: 'Tail', DurationSeconds: 80, CompletionMode: 0 }
+  ] };
+  await mount(page, weightedPlan);
+  await expectStageEstimates(page, ['2m fixed', '350s flexible', '500s flexible', '150s flexible', '80s fixed'], ['35% of remaining', '50% of remaining', '15% of remaining']);
+  const panel = await selectStage(page, 1);
+  await expect(panel.getByText('35% of remaining time.', { exact: false })).toBeVisible();
+  const weight = panel.getByRole('textbox', { name: 'Flexible weight', exact: true });
+  await expect(weight).toHaveValue('35');
+  await weight.fill('50%');
+  await weight.press('Enter');
+  await expect(weight).toHaveValue('50');
+  expect((await saved(page)).Stages.map(row => row.Percent)).toEqual([.2, 50, 50, 15, .2]);
+  await expect(panel.getByText('43.478261% of remaining time.', { exact: false })).toBeVisible();
+  await expectStageEstimates(page, ['2m fixed', '434s flexible', '435s flexible', '131s flexible', '80s fixed'], ['43.478261% of remaining', '43.478261% of remaining', '13.043478% of remaining']);
+  expect((await saved(page)).Stages.map(row => row.DurationSeconds)).toEqual([120, 0, 0, 0, 80]);
+  expect((await saved(page)).StageDurationSeconds).toBe(1200);
+  await openSchedule(page);
+  const budget = page.getByRole('textbox', { name: 'Fallback time budget', exact: true });
+  await budget.fill('4.1m');
+  await budget.press('Enter');
+  expect((await saved(page)).StageDurationSeconds).toBe(246);
+  await expectStageEstimates(page, ['2m fixed', '20s flexible', '20s flexible', '6s flexible', '80s fixed'], ['43.478261% of remaining', '43.478261% of remaining', '13.043478% of remaining']);
+  await budget.fill('200s');
+  await budget.press('Enter');
+  expect((await saved(page)).StageDurationSeconds).toBe(200);
+  await expectStageEstimates(page, ['2m fixed', '0s flexible', '0s flexible', '0s flexible', '80s fixed'], ['43.478261% of remaining', '43.478261% of remaining', '13.043478% of remaining']);
+  await expect(page.locator('.schedule-card').getByRole('status')).toHaveText('No time for flexible stages. Increase the budget or shorten fixed stages.');
+  await budget.fill('0s');
+  await budget.press('Enter');
+  expect((await saved(page)).StageDurationSeconds).toBe(0);
+  await expectStageEstimates(page, ['2m fixed', '0s flexible', '0s flexible', '0s flexible', '80s fixed'], ['43.478261% of remaining', '43.478261% of remaining', '13.043478% of remaining']);
+  await expect(page.locator('.schedule-card').getByRole('status')).toHaveText('Fixed stages exceed budget by 200s. Increase the budget or shorten fixed stages.');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+for (const trigger of [{ TimeTriggerEnabled: false, TimeTriggerSeconds: 3600 }, { TimeTriggerEnabled: true, TimeTriggerSeconds: 0 }]) {
+  test(`AT template refuses a zero horizon after confirmation with time trigger ${trigger.TimeTriggerEnabled ? 'zero' : 'disabled'}`, async ({ page }) => {
+    await mount(page, { ...source, StageDurationSeconds: 0, ...trigger });
+    const before = await page.evaluate(() => (window as unknown as { __stagePlan: string }).__stagePlan);
+    await chooseTemplate(page, 'AT targets 6k/6k then active preset', 'Yes');
+    await expect(page.getByRole('alert')).toHaveText('AT Adventure to NGU requires a positive time budget. Enable a positive time trigger or set a positive fallback time budget before applying this template.');
+    expect(await page.evaluate(() => (window as unknown as { __stagePlan: string }).__stagePlan)).toBe(before);
+    expect(await page.evaluate(() => (window as unknown as { __stageEdits: number }).__stageEdits)).toBe(0);
+    await expect(page.locator('.bar-segment')).toHaveCount(source.Stages.length);
+  });
+}
+
+for (const budget of [
+  { StageDurationSeconds: 0, TimeTriggerEnabled: true, TimeTriggerSeconds: 3600, horizon: '1h', source: 'Time trigger' },
+  { StageDurationSeconds: 1200, TimeTriggerEnabled: true, TimeTriggerSeconds: 3600, horizon: '1h', source: 'Time trigger' },
+  { StageDurationSeconds: 1200, TimeTriggerEnabled: false, TimeTriggerSeconds: 3600, horizon: '20m', source: 'Schedule length' }
+]) {
+  test(`AT template fills ${budget.horizon} from ${budget.source} with a flexible NGU row (fallback ${budget.StageDurationSeconds}s)`, async ({ page }) => {
+    const { StageDurationSeconds, TimeTriggerEnabled, TimeTriggerSeconds } = budget;
+    await mount(page, { ...source, StageDurationSeconds, TimeTriggerEnabled, TimeTriggerSeconds });
+    const before = await saved(page);
+    await chooseTemplate(page, 'AT targets 6k/6k then active preset', 'Yes');
+    await expect(page.locator('.bar-segment')).toHaveCount(2);
+    const next = await saved(page);
+    expect(next).toEqual({ ...before, Stages: next.Stages, StageSchedulerEnabled: true, StageLoopStartIndex: -1 });
+    expect(next.Stages[0]).toMatchObject({ CompletionMode: 1, DurationSeconds: 0, TargetAdvancedTrainingPower: '6000', TargetAdvancedTrainingToughness: '6000' });
+    expect(next.Stages[1]).toMatchObject({ Name: 'Weighted preset', PresetId: '@active', CompletionMode: 0, DurationSeconds: 0, DurationUnit: '%', Percent: 100 });
+    await expectStageEstimates(page, ['AT targets', `${budget.horizon} flexible`], ['100% of remaining']);
+    const panel = await selectStage(page, 1);
+    await expect(panel.getByRole('combobox', { name: /^Finish stage by/ })).toHaveValue('flexible');
+    await expect(panel.getByRole('textbox', { name: 'Flexible weight', exact: true })).toHaveValue('100');
+    await expect(panel.getByText('100% of remaining time.', { exact: false })).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as unknown as { __stageEdits: number }).__stageEdits)).toBe(1);
+  });
+}
+
+test('flexible weights enter exact 35/50/15 shares without changing fixed time or the horizon', async ({ page }) => {
+  const initial: SavedPlan = { ...source, TimeTriggerEnabled: true, TimeTriggerSeconds: 1200, Stages: [
+    { ...source.Stages[0], DurationSeconds: 120, CompletionMode: 0 },
+    ...source.Stages.map(row => ({ ...row, CompletionMode: 0, DurationSeconds: 0, Percent: 100 })),
+    { ...source.Stages[2], DurationSeconds: 80, CompletionMode: 0 }
+  ] };
+  await mount(page, initial);
+  const before = await saved(page);
+  for (const [index, text] of ['35', '50', '15'].entries()) {
+    const panel = await selectStage(page, index + 1);
+    const weight = panel.getByRole('textbox', { name: 'Flexible weight', exact: true });
+    await weight.fill(text);
+    await weight.press('Enter');
+    await expect(weight).toHaveValue(text);
+  }
+  const next = await saved(page);
+  expect(next).toEqual({ ...before, Stages: before.Stages.map((row, i) => i >= 1 && i <= 3 ? { ...row, Percent: [35, 50, 15][i - 1] } : row) });
+  for (const [index, text] of ['35', '50', '15'].entries()) {
+    const panel = await selectStage(page, index + 1);
+    await expect(panel.getByRole('textbox', { name: 'Flexible weight', exact: true })).toHaveValue(text);
+    await expect(panel.getByText(`${text}% of remaining time.`, { exact: false })).toBeVisible();
+    const segment = page.locator('.bar-segment').nth(index + 1);
+    await expect(segment.locator('.segment-share')).toHaveText(`${text}% of remaining`);
+    await expect(segment.locator('.segment-duration')).toHaveAttribute('title', 'Estimated flexible share, not live time remaining');
+  }
+  await expectStageEstimates(page, ['2m fixed', '350s flexible', '500s flexible', '150s flexible', '80s fixed'], ['35% of remaining', '50% of remaining', '15% of remaining']);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as unknown as { __stageEdits: number }).__stageEdits)).toBe(3);
+});
+
+test('flexible weight drafts commit on Enter and blur, cancel on Escape, and survive readback', async ({ page }) => {
+  await mount(page, { ...source, Stages: source.Stages.map(row => ({ ...row, CompletionMode: 0, DurationSeconds: 0, Percent: 100 })) }, true);
+  await pauseDurationClock(page);
+  const panel = await selectStage(page, 0);
+  const weight = panel.getByRole('textbox', { name: 'Flexible weight', exact: true });
+  await weight.fill('35');
+  expect((await saved(page)).Stages[0].Percent).toBe(100);
+  expect(await page.evaluate(() => (window as unknown as { __stageEdits: number }).__stageEdits)).toBe(0);
+  await readback(page);
+  await expect(weight).toBeFocused();
+  await expect(weight).toHaveValue('35');
+  await weight.press('Enter');
+  await expect(weight).toHaveValue('35');
+  expect((await saved(page)).Stages[0].Percent).toBe(35);
+  await weight.press('Tab');
+  expect(await page.evaluate(() => (window as unknown as { __stageEdits: number }).__stageEdits)).toBe(1);
+  await weight.fill('350%');
+  await weight.press('Tab');
+  await expect(weight).toHaveValue('350');
+  expect((await saved(page)).Stages.map(row => row.Percent)).toEqual([350, 100, 100]);
+  expect(await page.evaluate(() => (window as unknown as { __stageEdits: number }).__stageEdits)).toBe(2);
+  await weight.fill('15');
+  await weight.press('Escape');
+  await expect(weight).toHaveValue('350');
+  await weight.press('Tab');
+  expect((await saved(page)).Stages[0].Percent).toBe(350);
+  expect(await page.evaluate(() => (window as unknown as { __stageEdits: number }).__stageEdits)).toBe(2);
+  await weight.fill('0');
+  await weight.press('Enter');
+  await expect(page.getByRole('alert')).toContainText('Flexible weight');
+  await expect(weight).toHaveValue('0');
+  expect((await saved(page)).Stages[0].Percent).toBe(350);
+  await weight.press('Escape');
+  await expect(weight).toHaveValue('350');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await weight.press('Tab');
+  expect(await page.evaluate(() => (window as unknown as { __stageEdits: number }).__stageEdits)).toBe(2);
+  expect((await saved(page)).StageDurationSeconds).toBe(1200);
+});
+
+test('single flexible weight stays normalized to 100% without limiting its raw value', async ({ page }) => {
+  await mount(page, { ...source, Stages: [{ ...source.Stages[0], DurationSeconds: 120, CompletionMode: 0 }, { ...source.Stages[2], CompletionMode: 0, DurationSeconds: 0, Percent: 35 }] });
+  const panel = await selectStage(page, 1);
+  const weight = panel.getByRole('textbox', { name: 'Flexible weight', exact: true });
+  await expect(weight).toHaveValue('35');
+  await expect(panel.getByText('100% of remaining time.', { exact: false })).toBeVisible();
+  await weight.fill('150');
+  await weight.press('Enter');
+  await expect(weight).toHaveValue('150');
+  await expect(panel.getByText('100% of remaining time.', { exact: false })).toBeVisible();
+  await expectStageEstimates(page, ['2m fixed', '18m flexible'], ['100% of remaining']);
+  expect((await saved(page)).Stages.map(row => row.Percent)).toEqual([.2, 150]);
+  expect((await saved(page)).StageDurationSeconds).toBe(1200);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
 test('fight on entry survives normalized readback and presets without losing a duration draft', async ({ page }) => {
   await mount(page);
   const panel = await selectStage(page, 0);
@@ -167,11 +709,11 @@ test('fight on entry survives normalized readback and presets without losing a d
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-for (const label of ['30m NUMBER cycle', 'AT Adventure 6k/6k to NGU']) {
+for (const label of ['30m weighted cycle', 'AT targets 6k/6k then active preset']) {
   test(`confirming ${label} applies the complete template and preserves plan metadata`, async ({ page }) => {
     await mount(page);
     const before = await saved(page);
-    const advancedTraining = label === 'AT Adventure 6k/6k to NGU';
+    const advancedTraining = label === 'AT targets 6k/6k then active preset';
     await chooseTemplate(page, label, 'Yes');
     const rows = page.locator('.bar-segment');
     await expect(rows).toHaveCount(advancedTraining ? 2 : 8);
@@ -181,39 +723,42 @@ for (const label of ['30m NUMBER cycle', 'AT Adventure 6k/6k to NGU']) {
     expect(next.Stages.every(row => row.Future === undefined)).toBe(true);
     await expect(page.getByRole('checkbox', { name: 'Enable stages', exact: true })).toBeChecked();
     await expect(page.getByRole('textbox', { name: 'Stage name', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('combobox', { name: 'Stage timing', exact: true })).toHaveValue('time');
+    await expect(page.getByRole('combobox', { name: 'Stage timing', exact: true })).toHaveCount(0);
     await expect(page.getByRole('combobox', { name: 'Repeat from', exact: true })).toHaveValue(advancedTraining ? '-1' : '5');
-    const names = advancedTraining ? ['AT Adventure', 'Energy NGU'] : ['Time Machine', 'Augments + Blood', 'Time Machine', 'Augments + Blood', 'Wandoos', 'Time Machine', 'Augments + Blood', 'Wandoos'];
+    const names = advancedTraining ? ['AT Adventure', 'Weighted preset'] : Array(8).fill('Weighted preset');
     expect(next.Stages.map(row => row.Name)).toEqual(names);
     for (const [index, name] of names.entries()) {
-      const expected = stagePresets.find(preset => preset.label === name)!;
-      expect([next.Stages[index].EnergyPriorities, next.Stages[index].MagicPriorities]).toEqual([expected.EnergyPriorities, expected.MagicPriorities]);
+      const reference = advancedTraining && index === 0 ? 'global_6' : '@active';
+      expect(next.Stages[index].PresetId).toBe(reference);
+      expect(next.Stages[index]).not.toHaveProperty('EnergyPriorities');
+      expect(next.Stages[index]).not.toHaveProperty('MagicPriorities');
       const panel = await selectStage(page, index);
-      await expect(panel.getByRole('combobox', { name: 'Focus preset', exact: true }).locator('option:checked')).toHaveText(name);
-      await expect(rows.nth(index).getByRole('button', { name: `Edit stage ${index + 1}: ${name}`, exact: true })).toHaveAttribute('draggable', 'false');
+      await expect(panel.getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue(reference);
+      await expect(rows.nth(index).getByRole('button', { name: `Edit stage ${index + 1}: ${reference === '@active' ? 'Plan active preset' : name}`, exact: true })).toHaveAttribute('draggable', 'false');
     }
     if (advancedTraining) {
       expect(next.Stages.map(row => [row.CompletionMode, row.DurationSeconds, row.TargetAdvancedTrainingPower, row.TargetAdvancedTrainingToughness])).toEqual([
-        [1, 0, '6000', '6000'], [0, 1200, '0', '0']
+        [1, 0, '6000', '6000'], [0, 0, '0', '0']
       ]);
-      expect(next.Stages.map(row => [row.EnergyFocus, row.MagicFocus, row.GearGoal])).toEqual([[7, 4, 11], [5, 6, 2]]);
+      expect(next.Stages.every(row => row.EnergyFocus === undefined && row.MagicFocus === undefined && row.GearGoal === undefined)).toBe(true);
       const panel = await selectStage(page, 0);
       await expect(panel.getByRole('textbox', { name: 'Duration', exact: true })).toHaveCount(0);
       await expect(panel.getByRole('textbox', { name: 'AT power target', exact: true })).toHaveValue('6000');
       await expect(panel.getByRole('textbox', { name: 'AT toughness target', exact: true })).toHaveValue('6000');
-      await expectDurations(page, ['20m']);
-      await expect(page.locator('.dashboard-field').filter({ hasText: 'Total time' }).getByText('20m', { exact: true })).toBeVisible();
+      await expectDurations(page, []);
+      const sustain = await selectStage(page, 1);
+      await expect(sustain.getByRole('textbox', { name: 'Flexible weight', exact: true })).toHaveValue('100');
+      await expect(sustain.getByText('100% of remaining time.', { exact: false })).toBeVisible();
+      await expectStageEstimates(page, ['AT targets', '20m flexible'], ['100% of remaining']);
     } else {
       expect(next.Stages.map(row => row.DurationSeconds)).toEqual([300, 180, 180, 60, 180, 300, 300, 300]);
       expect(next.Stages.reduce((total, row) => total + row.DurationSeconds!, 0)).toBe(1800);
-      expect(next.Stages.map(row => [row.EnergyFocus, row.MagicFocus, row.GearGoal])).toEqual([
-        [1, 1, 5], [2, 4, 10], [1, 1, 5], [2, 4, 10], [3, 3, 12], [1, 1, 5], [2, 4, 10], [3, 3, 12]
-      ]);
+      expect(next.Stages.every(row => row.EnergyFocus === undefined && row.MagicFocus === undefined && row.GearGoal === undefined)).toBe(true);
       expect(next.Stages.every(row => row.CompletionMode === 0 && row.TargetAdvancedTrainingPower === '0' && row.TargetAdvancedTrainingToughness === '0')).toBe(true);
       await expect(page.getByRole('textbox', { name: 'AT power target', exact: true })).toHaveCount(0);
       await expectDurations(page, ['5m', '3m', '3m', '1m', '3m', '5m', '5m', '5m']);
       await expect(rows.nth(5).getByLabel('Loop start', { exact: true })).toBeVisible();
-      await expect(page.locator('.dashboard-field').filter({ hasText: 'Total time' }).getByText('30m', { exact: true })).toBeVisible();
+      await expectStageEstimates(page, ['5m fixed', '3m fixed', '3m fixed', '1m fixed', '3m fixed', '5m fixed', '5m fixed', '5m fixed']);
       const scroll = page.locator('.bar-scroll');
       if (await page.evaluate(() => innerWidth < 740)) {
         expect(await scroll.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
@@ -241,16 +786,16 @@ for (const label of ['30m NUMBER cycle', 'AT Adventure 6k/6k to NGU']) {
   });
 }
 
-test('Energy NGU preset pairs magic NGUs with energy-focused gear', async ({ page }) => {
+test('Energy NGU global selection references the saved definition without rewriting legacy fields', async ({ page }) => {
   await mount(page);
   const first = await selectStage(page, 0);
   await first.getByRole('combobox', { name: 'Focus preset', exact: true }).selectOption({ label: 'Energy NGU' });
-  await expect(first.getByRole('combobox', { name: 'Energy focus', exact: true })).toHaveValue('5');
-  await expect(first.getByRole('combobox', { name: 'Magic focus', exact: true })).toHaveValue('6');
+  await expect(first.getByRole('combobox', { name: 'Energy focus', exact: true })).toHaveCount(0);
+  await expect(first.getByRole('combobox', { name: 'Magic focus', exact: true })).toHaveCount(0);
   await expect(first.getByRole('combobox', { name: 'Gear goal', exact: true })).toHaveCount(0);
   await expect(page.locator('.bar-segment').first().getByRole('button', { name: 'Edit stage 1: Energy NGU', exact: true })).toHaveAttribute('aria-expanded', 'true');
   const next = await saved(page);
-  expect(next.Stages[0]).toEqual({ ...source.Stages[0], Name: 'Energy NGU', EnergyFocus: 5, MagicFocus: 6, GearGoal: 2, EnergyPriorities: ['NGU', 'WAN', 'TM', 'AUG', 'AT'], MagicPriorities: ['NGU', 'RIT', 'WAN', 'TM'] });
+  expect(next.Stages[0]).toEqual({ ...source.Stages[0], Name: 'Energy NGU', PresetId: 'global_3' });
   expect(next.Stages.slice(1)).toEqual(source.Stages.slice(1));
   expect(next.StageLoopStartIndex).toBe(source.StageLoopStartIndex);
 });
@@ -259,7 +804,7 @@ test('unrelated stage edits preserve hidden custom gear and cap until an explici
   const custom = { ...source, Stages: source.Stages.map((row, index) => index === 0 ? { ...row, Name: 'Time Machine', GearGoal: 9, BlackBarLookaheadSeconds: 37, FightOnEntry: true } : row) };
   await mount(page, custom);
   const panel = await selectStage(page, 0);
-  await expect(panel.getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('-1');
+  await expect(panel.getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('');
   expect((await saved(page)).Stages).toEqual(custom.Stages);
   const duration = panel.getByRole('textbox', { name: 'Duration', exact: true });
   await duration.fill('5m');
@@ -270,34 +815,31 @@ test('unrelated stage edits preserve hidden custom gear and cap until an explici
   await expect(panel.getByRole('checkbox', { name: 'Fight on entry', exact: true })).toBeChecked();
   expect((await saved(page)).Stages[0]).toMatchObject({ GearGoal: 9, BlackBarLookaheadSeconds: 37, FightOnEntry: true });
   await panel.getByRole('combobox', { name: 'Focus preset', exact: true }).selectOption({ label: 'Wandoos' });
-  expect((await saved(page)).Stages[0]).toMatchObject({ Name: 'Wandoos', EnergyFocus: 3, MagicFocus: 3, GearGoal: 12, EnergyPriorities: ['WAN', 'NGU', 'TM', 'AUG', 'AT'], MagicPriorities: ['WAN', 'RIT', 'NGU', 'TM'], BlackBarLookaheadSeconds: 37, FightOnEntry: true, DurationSeconds: 300 });
+  expect((await saved(page)).Stages[0]).toMatchObject({ Name: 'Wandoos', PresetId: 'global_2', EnergyFocus: 3, MagicFocus: 1, GearGoal: 9, EnergyPriorities: ['TM'], MagicPriorities: ['RIT'], BlackBarLookaheadSeconds: 37, FightOnEntry: true, DurationSeconds: 300 });
   await readback(page);
-  expect((await saved(page)).Stages[0]).toMatchObject({ GearGoal: 12, BlackBarLookaheadSeconds: 37, FightOnEntry: true });
-  await expect(panel.getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('2');
+  expect((await saved(page)).Stages[0]).toMatchObject({ PresetId: 'global_2', GearGoal: 9, BlackBarLookaheadSeconds: 37, FightOnEntry: true });
+  await expect(panel.getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('global_2');
 });
 
 for (const [index, label] of ['Time Machine', 'Augments + Blood', 'Wandoos', 'Energy NGU', 'Magic NGU', 'All NGU', 'AT Adventure', 'AT Wandoos'].entries()) {
-  test(`${label} base preset survives priority customization and normalized readback`, async ({ page }) => {
+  test(`${label} global reference survives legacy customization and normalized readback`, async ({ page }) => {
     await mount(page, { ...source, Stages: source.Stages.map((row, index) => index === 0 ? { ...row, GearGoal: 9, BlackBarLookaheadSeconds: 37, FightOnEntry: true } : row) });
-    await expect((await selectStage(page, 1)).getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('6');
-    await expect((await selectStage(page, 2)).getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('3');
+    await expect((await selectStage(page, 1)).getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('');
+    await expect((await selectStage(page, 2)).getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('');
     const first = await selectStage(page, 0);
     const preset = first.getByRole('combobox', { name: 'Focus preset', exact: true });
-    await expect(preset).toHaveValue('-1');
+    await expect(preset).toHaveValue('');
+    const energy = first.getByRole('group', { name: 'Energy priorities', exact: true });
+    const magic = first.getByRole('group', { name: 'Magic priorities', exact: true });
+    await expect(energy.locator('.priority-name')).toHaveText(['Time Machine']);
+    await expect(magic.locator('.priority-name')).toHaveText(['Blood Magic (automatic ritual)']);
+    await setPriorities(first, 'Energy priorities', ['Time Machine', 'NGU: Augments']);
+    await setPriorities(first, 'Magic priorities', ['Blood Magic: Fifty Papercuts']);
     await preset.selectOption({ label });
-    await expect(preset).toHaveValue(String(index));
-    const GearGoal = [5, 10, 12, 2, 3, 4, 11, 11][index];
-    expect((await saved(page)).Stages[0]).toMatchObject({ Name: label, GearGoal, BlackBarLookaheadSeconds: 37, FightOnEntry: true });
-    const energy = first.getByRole('textbox', { name: 'Energy priorities', exact: true });
-    const magic = first.getByRole('textbox', { name: 'Magic priorities', exact: true });
-    await expect(energy).toHaveValue(stagePresets[index].EnergyPriorities.join(', '));
-    await expect(magic).toHaveValue(stagePresets[index].MagicPriorities.join(', '));
-    await energy.fill('TM, NGU-0');
-    await expect(preset).toHaveValue(String(index));
-    await magic.fill('RIT-1');
-    await expect(preset).toHaveValue(String(index));
+    await expect(preset).toHaveValue(globalPresets[index].Id);
+    expect((await saved(page)).Stages[0]).toMatchObject({ Name: label, PresetId: globalPresets[index].Id, GearGoal: 9, BlackBarLookaheadSeconds: 37, FightOnEntry: true });
     await readback(page);
-    await expect(preset).toHaveValue(String(index));
+    await expect(preset).toHaveValue(globalPresets[index].Id);
     await expect(first).toBeVisible();
     await expect(page.getByRole('button', { name: `Edit stage 1: ${label}`, exact: true })).toHaveAttribute('aria-expanded', 'true');
     await expect(page.getByRole('button', { name: `Edit stage 1: ${label}`, exact: true })).toHaveAttribute('draggable', 'false');
@@ -305,53 +847,48 @@ for (const [index, label] of ['Time Machine', 'Augments + Blood', 'Wandoos', 'En
     await openSchedule(page);
     await expect(page.getByRole('combobox', { name: 'Repeat from', exact: true }).locator('option').first()).toHaveText('Do not repeat');
     await expect(page.getByRole('combobox', { name: 'Repeat from', exact: true }).locator('option').nth(1)).toHaveText(`1: ${label}`);
-    expect((await saved(page)).Stages[0]).toMatchObject({ Percent: .2, Future: 'A', GearGoal, BlackBarLookaheadSeconds: 37, FightOnEntry: true });
+    expect((await saved(page)).Stages[0]).toMatchObject({ Percent: .2, Future: 'A', GearGoal: 9, BlackBarLookaheadSeconds: 37, FightOnEntry: true });
     await expect(first.getByRole('heading', { name: label, exact: true })).toBeVisible();
-    await expect(energy).toHaveValue('TM, NGU-0');
-    await expect(magic).toHaveValue('RIT-1');
+    await expect(energy).toHaveCount(0);
+    await expect(magic).toHaveCount(0);
+    expect((await saved(page)).Stages[0]).toMatchObject({ EnergyPriorities: ['TM', 'NGU-0'], MagicPriorities: ['RIT-1'] });
     await preset.selectOption({ label });
-    await expect(energy).toHaveValue(stagePresets[index].EnergyPriorities.join(', '));
-    await expect(magic).toHaveValue(stagePresets[index].MagicPriorities.join(', '));
-    await energy.fill('');
-    await magic.fill('');
     await readback(page);
-    await expect(preset).toHaveValue(String(index));
+    await expect(preset).toHaveValue(globalPresets[index].Id);
+    expect((await saved(page)).Stages[0]).toMatchObject({ EnergyPriorities: ['TM', 'NGU-0'], MagicPriorities: ['RIT-1'] });
     await expect(page.getByRole('button', { name: `Edit stage 1: ${label}`, exact: true })).toHaveAttribute('aria-expanded', 'true');
   });
 }
 
-test('preset selection resets orders while AT Wandoos keeps its identity after order edits', async ({ page }) => {
+test('global selection preserves legacy orders while AT references retain timing and targets', async ({ page }) => {
   await mount(page);
   const row = await selectStage(page, 1);
-  const completion = row.getByRole('combobox', { name: 'Finish stage by', exact: true });
-  await completion.selectOption('0');
+  const completion = row.getByRole('combobox', { name: /^Finish stage by/ });
+  await completion.selectOption('fixed');
   const preset = row.getByRole('combobox', { name: 'Focus preset', exact: true });
-  const energy = row.getByRole('textbox', { name: 'Energy priorities', exact: true });
-  const magic = row.getByRole('textbox', { name: 'Magic priorities', exact: true });
-  await energy.fill('TM, NGU-0');
-  await magic.fill('RIT-1');
-  await expect(preset).toHaveValue('6');
+  const energy = row.getByRole('group', { name: 'Energy priorities', exact: true });
+  const magic = row.getByRole('group', { name: 'Magic priorities', exact: true });
+  await setPriorities(row, 'Energy priorities', ['Time Machine', 'NGU: Augments']);
+  await setPriorities(row, 'Magic priorities', ['Blood Magic: Fifty Papercuts']);
+  await expect(preset).toHaveValue('');
   await preset.selectOption({ label: 'AT Wandoos' });
-  await expect(energy).toHaveValue('AT-3, AT-4, WAN, NGU, TM, AUG, AT');
-  await expect(magic).toHaveValue('WAN, RIT, NGU, TM');
+  await expect(energy).toHaveCount(0);
+  await expect(magic).toHaveCount(0);
   expect((await saved(page)).Stages[1]).toEqual({
-    ...source.Stages[1], Name: 'AT Wandoos', MagicFocus: 3, CompletionMode: 0, DurationSeconds: 300, DurationUnit: 'min',
-    EnergyPriorities: ['AT-3', 'AT-4', 'WAN', 'NGU', 'TM', 'AUG', 'AT'], MagicPriorities: ['WAN', 'RIT', 'NGU', 'TM']
+    ...source.Stages[1], Name: 'AT Wandoos', PresetId: 'global_7', CompletionMode: 0, DurationSeconds: 300, DurationUnit: 's',
+    EnergyPriorities: ['TM', 'NGU-0'], MagicPriorities: ['RIT-1']
   });
   await readback(page);
-  await expect(preset).toHaveValue('7');
-  await energy.fill('AT-4, AT-3, WAN, NGU, TM');
-  await expect(preset).toHaveValue('7');
+  await expect(preset).toHaveValue('global_7');
   expect((await saved(page)).Stages[1].Name).toBe('AT Wandoos');
   await preset.selectOption({ label: 'AT Wandoos' });
-  await magic.fill('RIT, WAN, NGU, TM');
-  await expect(preset).toHaveValue('7');
+  await expect(preset).toHaveValue('global_7');
   await preset.selectOption({ label: 'AT Adventure' });
-  await expect(energy).toHaveValue('AT, NGU, WAN, TM, AUG');
-  await expect(magic).toHaveValue('RIT, NGU, WAN, TM');
-  await expect(preset).toHaveValue('6');
+  await expect(energy).toHaveCount(0);
+  await expect(magic).toHaveCount(0);
+  await expect(preset).toHaveValue('global_6');
   await expect(row.getByRole('textbox', { name: 'Duration', exact: true })).toHaveValue('5m');
-  await completion.selectOption({ label: 'AT power/toughness targets' });
+  await completion.selectOption('target');
   await expect(row.getByRole('textbox', { name: 'AT power target', exact: true })).toHaveValue('9223372036854775806');
   await expect(row.getByRole('textbox', { name: 'AT toughness target', exact: true })).toHaveValue('6000');
   expect((await saved(page)).Stages[1]).toMatchObject({ Name: 'AT Adventure', CompletionMode: 1, Percent: .3, Future: 'B' });
@@ -364,8 +901,8 @@ test('AT target completion rejects incompatible presets without saving an edit',
   const preset = row.getByRole('combobox', { name: 'Focus preset', exact: true });
   for (const label of ['Time Machine', 'Augments + Blood', 'Wandoos', 'Energy NGU', 'Magic NGU', 'All NGU', 'AT Wandoos']) {
     await preset.selectOption({ label });
-    await expect(page.getByRole('alert')).toHaveText('AT power/toughness targets require AT Adventure. Change "Finish stage by" to Duration before choosing another preset.');
-    await expect(preset).toHaveValue('6');
+    await expect(page.getByRole('alert')).toHaveText('AT targets require a saved global preset with Advanced Training weight and positive toughness/power ratios. Choose a compatible preset first.');
+    await expect(preset).toHaveValue('');
     await expect(row.getByRole('textbox', { name: 'AT power target', exact: true })).toHaveValue('9223372036854775806');
     await expect(row.getByRole('textbox', { name: 'AT toughness target', exact: true })).toHaveValue('6000');
     expect(await saved(page)).toEqual(before);
@@ -373,57 +910,63 @@ test('AT target completion rejects incompatible presets without saving an edit',
   }
 });
 
-test('switching to AT completion applies AT Adventure and cancels an invalid duration draft', async ({ page }) => {
+test('switching to AT completion requires compatible weights and cancels an invalid duration draft', async ({ page }) => {
   await mount(page);
   const row = await selectStage(page, 1);
-  const completion = row.getByRole('combobox', { name: 'Finish stage by', exact: true });
-  await completion.selectOption('0');
+  const completion = row.getByRole('combobox', { name: /^Finish stage by/ });
+  await completion.selectOption('fixed');
   const preset = row.getByRole('combobox', { name: 'Focus preset', exact: true });
   await preset.selectOption({ label: 'AT Wandoos' });
   const duration = row.getByRole('textbox', { name: 'Duration', exact: true });
   await duration.fill('0s');
   await duration.press('Tab');
-  await expect(page.getByRole('alert')).toContainText('Duration must be');
+  await expect(page.getByRole('alert')).toContainText('Fixed duration seconds must be');
   await expect(duration).toHaveValue('0s');
-  await completion.selectOption({ label: 'AT power/toughness targets' });
+  await completion.selectOption('target');
+  await expect(page.getByRole('alert').filter({ hasText: 'AT targets require a saved global preset' })).toBeVisible();
+  await expect(row.getByRole('alert')).toContainText('Fixed duration seconds must be');
+  await expect(completion).toHaveValue('fixed');
+  await expect(duration).toHaveValue('0s');
+  await preset.selectOption('global_6');
+  await completion.selectOption('target');
   await expect(duration).toHaveCount(0);
-  await expect(preset).toHaveValue('6');
-  await expect(row.getByRole('textbox', { name: 'Energy priorities', exact: true })).toHaveValue('AT, NGU, WAN, TM, AUG');
-  await expect(row.getByRole('textbox', { name: 'Magic priorities', exact: true })).toHaveValue('RIT, NGU, WAN, TM');
+  await expect(preset).toHaveValue('global_6');
+  await expect(row.getByRole('group', { name: 'Energy priorities', exact: true })).toHaveCount(0);
+  await expect(row.getByRole('group', { name: 'Magic priorities', exact: true })).toHaveCount(0);
   await expect(row.getByRole('textbox', { name: 'AT power target', exact: true })).toHaveValue('9223372036854775806');
   await expect(row.getByRole('textbox', { name: 'AT toughness target', exact: true })).toHaveValue('6000');
   await expect(page.getByRole('alert')).toHaveCount(0);
   expect((await saved(page)).Stages[1]).toEqual({
-    ...source.Stages[1], Name: 'AT Adventure', DurationSeconds: 300, DurationUnit: 'min', EnergyPriorities: ['AT', 'NGU', 'WAN', 'TM', 'AUG'], MagicPriorities: ['RIT', 'NGU', 'WAN', 'TM']
+    ...source.Stages[1], Name: 'AT Adventure', PresetId: 'global_6', DurationSeconds: 300, DurationUnit: 's'
   });
-  const timing = page.getByRole('combobox', { name: 'Stage timing', exact: true });
-  await timing.selectOption('time');
-  await expect(timing).toHaveValue('time');
-  await expectDurations(page, ['5m', '20m']);
+  await expect(page.getByRole('combobox', { name: 'Stage timing', exact: true })).toHaveCount(0);
+  await expectDurations(page, ['4m', '16m']);
   await expect(page.getByRole('alert')).toHaveCount(0);
-  await completion.selectOption('0');
+  await selectStage(page, 1);
+  await completion.selectOption('fixed');
   await expect(duration).toHaveValue('5m');
-  expect((await saved(page)).Stages.map(row => row.DurationSeconds)).toEqual([300, 300, 1200]);
+  expect((await saved(page)).Stages.map(row => row.DurationSeconds)).toEqual([240, 300, 960]);
 });
 
 for (const dormantSeconds of [undefined, 420]) {
-  for (const mode of ['%', 'time']) {
-    test(`AT row returning to ${mode} timing ${dormantSeconds ? 'restores dormant fixed time' : 'defaults to its own five minutes'} without changing other seconds`, async ({ page }) => {
+  for (const kind of ['fixed', 'flexible']) {
+    test(`AT row returning to ${kind} timing ${dormantSeconds ? 'retains dormant configuration' : 'uses the row default'} without changing the budget`, async ({ page }) => {
       await mount(page, { ...source, Stages: source.Stages.map((row, index) => index === 1 && dormantSeconds ? { ...row, DurationSeconds: dormantSeconds } : row) });
-      const timing = page.getByRole('combobox', { name: 'Stage timing', exact: true });
-      if (mode === 'time') await timing.selectOption('time');
       const before = await saved(page);
       const row = await selectStage(page, 1);
-      await row.getByRole('combobox', { name: 'Finish stage by', exact: true }).selectOption('0');
-      const seconds = dormantSeconds ?? 300;
-      await expect(row.getByRole('textbox', { name: 'Duration', exact: true })).toHaveValue(dormantSeconds ? '7m' : '5m');
+      await row.getByRole('combobox', { name: /^Finish stage by/ }).selectOption(kind);
+      const seconds = kind === 'fixed' ? dormantSeconds ?? 300 : 0;
+      if (kind === 'fixed') await expect(row.getByRole('textbox', { name: 'Duration', exact: true })).toHaveValue(dormantSeconds ? '7m' : '5m');
+      else {
+        await expect(row.getByRole('textbox', { name: 'Flexible weight', exact: true })).toHaveValue('0.3');
+        await expect(row.getByText('100% of remaining time.', { exact: false })).toBeVisible();
+      }
       const next = await saved(page);
-      expect(next.Stages[1]).toEqual({ ...source.Stages[1], CompletionMode: 0, DurationSeconds: seconds, DurationUnit: 'min' });
+      expect(next.Stages[1]).toEqual({ ...source.Stages[1], CompletionMode: 0, DurationSeconds: seconds, DurationUnit: kind === 'fixed' ? 's' : '%' });
       expect([next.Stages[0], next.Stages[2]]).toEqual([before.Stages[0], before.Stages[2]]);
-      expect(next.StageDurationSeconds).toBe(mode === '%' ? 1200 + seconds : 1200);
+      expect(next.StageDurationSeconds).toBe(1200);
       expect(next.StageLoopStartIndex).toBe(1);
-      await timing.selectOption('time');
-      expect((await saved(page)).Stages.map(row => row.DurationSeconds)).toEqual([240, seconds, 960]);
+      expect(next.Stages.map(row => row.DurationSeconds)).toEqual([240, seconds, 960]);
       await expect(page.getByRole('alert')).toHaveCount(0);
     });
   }
@@ -433,12 +976,12 @@ for (const scope of ['namespace', 'name', 'plan.Name']) {
   test(`invalid schedule draft is cleared after ${scope} changes and cannot leak on blur`, async ({ page }) => {
     await mount(page);
     await openSchedule(page);
-    const schedule = page.getByRole('textbox', { name: 'Schedule length', exact: true });
+    const schedule = page.getByRole('textbox', { name: 'Fallback time budget', exact: true });
     await expect(schedule).toHaveValue('20m');
-    await schedule.fill('0m');
+    await schedule.fill('invalid');
     await schedule.press('Enter');
-    await expect(page.getByRole('alert')).toHaveText('Schedule length must be a positive whole-second time, such as 30m or 2h.');
-    await expect(schedule).toHaveValue('0m');
+    await expect(page.getByRole('alert')).toHaveText('Enter a duration such as 25m, 2h, or 30%.');
+    await expect(schedule).toHaveValue('invalid');
     if (scope === 'plan.Name') await readback(page, 'name');
     else await page.evaluate(scope => {
       const state = window as unknown as { __stageNamespace: (name: string) => void; __stageName: (name: string) => void };
@@ -456,20 +999,17 @@ for (const scope of ['namespace', 'name', 'plan.Name']) {
   });
 }
 
-test('global stage timing converts every timed row without changing seconds or AT targets', async ({ page }) => {
+test('row timing changes preserve other fixed rows and AT targets without a bulk conversion', async ({ page }) => {
   await mount(page);
-  const timing = page.getByRole('combobox', { name: 'Stage timing', exact: true });
-  await expect(timing).toHaveValue('%');
-  await expectDurations(page, ['20%', '80%']);
-  await timing.selectOption('time');
-  await expect(timing).toHaveValue('time');
+  await expect(page.getByRole('combobox', { name: 'Stage timing', exact: true })).toHaveCount(0);
   await expectDurations(page, ['4m', '16m']);
-  expect((await saved(page)).Stages.map(row => row.DurationSeconds)).toEqual([240, undefined, 960]);
-  expect((await saved(page)).Stages[1]).toEqual(source.Stages[1]);
-  await timing.selectOption('%');
-  await expectDurations(page, ['20%', '80%']);
-  expect((await saved(page)).Stages.map(row => row.DurationSeconds)).toEqual([0, undefined, 0]);
-  await timing.selectOption('time');
+  const panel = await selectStage(page, 0);
+  const finish = panel.getByRole('combobox', { name: /^Finish stage by/ });
+  await finish.selectOption('flexible');
+  await expect(panel.getByRole('textbox', { name: 'Flexible weight', exact: true })).toHaveValue('0.2');
+  await expect(panel.getByText('100% of remaining time.', { exact: false })).toBeVisible();
+  expect((await saved(page)).Stages.slice(1)).toEqual(source.Stages.slice(1));
+  await finish.selectOption('fixed');
   await expectDurations(page, ['4m', '16m']);
   const next = await saved(page);
   expect(next.Stages.map(row => row.DurationSeconds)).toEqual([240, undefined, 960]);
@@ -481,9 +1021,7 @@ test('global stage timing converts every timed row without changing seconds or A
 test('time sequence uses inline suffixes and bare numbers follow the displayed unit', async ({ page }) => {
   await mount(page);
   const second = await selectStage(page, 1);
-  await second.getByRole('combobox', { name: 'Finish stage by', exact: true }).selectOption('0');
-  const timing = page.getByRole('combobox', { name: 'Stage timing', exact: true });
-  await timing.selectOption('time');
+  await second.getByRole('combobox', { name: /^Finish stage by/ }).selectOption('fixed');
   for (const [index, text] of ['25m', '35m', '2h'].entries()) {
     const duration = (await selectStage(page, index)).getByRole('textbox', { name: 'Duration', exact: true });
     await duration.fill(text);
@@ -495,11 +1033,11 @@ test('time sequence uses inline suffixes and bare numbers follow the displayed u
   await expect(page.getByRole('combobox', { name: 'Duration unit', exact: true })).toHaveCount(0);
   await expect(page.getByRole('spinbutton', { name: 'Duration', exact: true })).toHaveCount(0);
   await openSchedule(page);
-  await expect(page.locator('.dashboard-field').filter({ hasText: 'Total time' }).getByText('3h', { exact: true })).toBeVisible();
+  await expectStageEstimates(page, ['25m fixed', '35m fixed', '2h fixed']);
+  await expect(page.locator('.schedule-card').getByRole('status')).toHaveText('Fixed stages exceed budget by 160m. Increase the budget or shorten fixed stages.');
+  expect((await saved(page)).StageDurationSeconds).toBe(1200);
   await readback(page);
   await expectDurations(page, ['25m', '35m', '2h']);
-  // Global time mode stores minutes, but the last row is displayed in hours.
-  await timing.selectOption('time');
   for (const [index, text] of ['30', '40', '3'].entries()) {
     const duration = (await selectStage(page, index)).getByRole('textbox', { name: 'Duration', exact: true });
     await duration.fill(text);
@@ -518,25 +1056,42 @@ test('collapsed stage bar opens one full settings panel and fits desktop and mob
   await expect(page.locator('.stage-panel')).toHaveCount(3);
   await expect(page.locator('.stage-panel:visible')).toHaveCount(0);
   await expect(page.locator('.stage-table, .stage-row')).toHaveCount(0);
-  for (const summary of ['Schedule & templates', 'Gear settings', 'Rebirth settings', 'Rebirth history']) {
-    const details = page.locator('details').filter({ has: page.getByText(summary, { exact: true }) });
-    await expect(details).not.toHaveAttribute('open');
-  }
+  await expect(page.locator('details.schedule-settings')).not.toHaveAttribute('open');
+  await expect(page.getByText('Rebirth history', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Rebirth history table', exact: true })).toHaveCount(0);
+  await expectStageEstimates(page, ['4m fixed', 'AT targets', '16m fixed']);
+  await expect(page.getByRole('article', { name: 'Rebirth conditions', exact: true })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Active preset', exact: true })).toBeVisible();
   const first = await selectStage(page, 0);
   await expect(first.getByRole('combobox', { name: 'Focus preset', exact: true })).toBeVisible();
-  await expect(first.getByText('Focuses and gear identify the base preset.', { exact: false })).toBeVisible();
-  await expect(first.getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('0');
-  await expect(first.getByRole('combobox', { name: 'Finish stage by', exact: true })).toBeVisible();
+  await expect(first.getByRole('combobox', { name: 'Focus preset', exact: true }).locator('option')).toHaveText(['Existing settings', 'Use plan active preset: Energy NGU', ...globalPresets.map(row => row.Name)]);
+  await expect(first.getByText("Choosing a preset replaces this stage's allocation and gear.", { exact: true })).toBeVisible();
+  await expect(first.getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('');
+  await expect(first.getByRole('combobox', { name: /^Finish stage by/ })).toBeVisible();
   await expect(first.getByRole('textbox', { name: 'Duration', exact: true })).toBeVisible();
   await expect(first.getByRole('combobox', { name: 'Energy focus', exact: true })).toBeVisible();
   await expect(first.getByRole('combobox', { name: 'Magic focus', exact: true })).toBeVisible();
   await expect(page.locator('.stage-panel select[aria-label="Gear goal"]')).toHaveCount(0);
-  await expect(first.getByRole('textbox', { name: 'Energy priorities', exact: true })).toBeVisible();
-  await expect(first.getByRole('textbox', { name: 'Magic priorities', exact: true })).toBeVisible();
+  await expect(first.getByRole('group', { name: 'Energy priorities', exact: true })).toBeVisible();
+  await expect(first.getByRole('group', { name: 'Magic priorities', exact: true })).toBeVisible();
   await expect(first.getByRole('checkbox', { name: 'Fight on entry', exact: true })).toBeVisible();
   await expect(page.getByRole('spinbutton', { name: 'Black-bar lookahead (s)', includeHidden: true })).toHaveCount(0);
   await expect(page.getByText('Cap buffer (seconds)', { exact: false })).toHaveCount(0);
-  await expect(first.locator('details, [aria-haspopup="menu"]')).toHaveCount(0);
+  const history = first.locator('details').filter({ has: page.getByText('Runtime history', { exact: true }) });
+  await expect(history).not.toHaveAttribute('open');
+  const historyText = history.getByLabel('Stage runtime history', { exact: true });
+  await expect(historyText).toBeHidden();
+  await history.locator('summary').focus();
+  await history.locator('summary').press('Enter');
+  await expect(history).toHaveAttribute('open');
+  await expect(historyText).toBeVisible();
+  await expect(historyText).toContainText('Fixed duration');
+  await expect(historyText).toContainText('Actual applied: Not recorded');
+  await history.locator('summary').press('Enter');
+  await expect(historyText).toBeHidden();
+  await expect(first.locator('[aria-haspopup="menu"]')).toHaveCount(0);
+  await expect(segments.first().locator('.segment-duration')).toHaveText('4m fixed');
+  await expect(segments.first().locator('.segment-duration')).toHaveAttribute('title', 'Fixed duration');
   await expect(page.getByRole('button', { name: /^Move (earlier|later)$/, includeHidden: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /^Reorder stage/, includeHidden: true })).toHaveCount(0);
   await expect(bar.locator('.handle, [data-handle]')).toHaveCount(0);
@@ -549,6 +1104,7 @@ test('collapsed stage bar opens one full settings panel and fits desktop and mob
   await expect(second.getByRole('textbox', { name: 'AT toughness target', exact: true })).toBeVisible();
   await expect(second.getByRole('textbox', { name: 'Duration', exact: true })).toHaveCount(0);
   await expect(segments.nth(1).getByText('AT targets', { exact: true })).toBeVisible();
+  await expect(segments.nth(1).locator('.segment-duration')).toHaveAttribute('title', 'Mandatory AT targets');
   await expect(second.getByRole('button', { name: 'Repeat from here', exact: true })).toHaveAttribute('aria-pressed', 'true');
   const barBox = (await bar.boundingBox())!;
   const panelBox = (await second.boundingBox())!;
@@ -590,27 +1146,26 @@ test('keyboard selection opens stages without changing the plan', async ({ page 
   expect(await page.evaluate(() => (window as unknown as { __stageEdits: number }).__stageEdits)).toBe(0);
 });
 
-for (const mode of ['%', 'time']) test(`adding a stage in ${mode} mode applies Time Machine and opens its settings`, async ({ page }) => {
-  await mount(page);
-  if (mode === 'time') await page.getByRole('combobox', { name: 'Stage timing', exact: true }).selectOption('time');
+for (const kind of ['fixed', 'flexible']) test(`adding a stage to ${kind} rows inherits the active preset and opens its settings`, async ({ page }) => {
+  await mount(page, kind === 'fixed' ? source : { ...source, Stages: source.Stages.map(row => ({ ...row, DurationSeconds: 0 })) });
   const before = await saved(page);
   const previous = await selectStage(page, 1);
   await page.getByRole('button', { name: 'Add stage', exact: true }).click();
   await expect(page.locator('.bar-segment')).toHaveCount(4);
-  await expect(page.getByRole('button', { name: 'Edit stage 4: Time Machine', exact: true })).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByRole('button', { name: 'Edit stage 4: Plan active preset', exact: true })).toHaveAttribute('aria-expanded', 'true');
   const panel = page.getByRole('region', { name: 'Stage 4 settings', exact: true });
   await expect(panel).toBeVisible();
   await expect(previous).toBeHidden();
   await expect(page.locator('.stage-panel:visible')).toHaveCount(1);
-  await expect(panel.getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('0');
+  await expect(panel.getByRole('combobox', { name: 'Focus preset', exact: true })).toHaveValue('@active');
   expect((await saved(page)).Stages.slice(0, 3)).toEqual(before.Stages);
   expect((await saved(page)).Stages[3]).toEqual({
-    Name: 'Time Machine', Percent: 10, CompletionMode: 0, DurationSeconds: mode === 'time' ? 300 : 0, DurationUnit: mode === 'time' ? 'min' : '%',
-    EnergyFocus: 1, MagicFocus: 1, GearGoal: 5, EnergyPriorities: ['TM', 'NGU', 'WAN', 'AUG', 'AT'], MagicPriorities: ['TM', 'RIT', 'NGU', 'WAN'],
+    Name: 'Weighted preset', PresetId: '@active', ExecutionMode: 0, Percent: 10, CompletionMode: 0, DurationSeconds: 300, DurationUnit: 'min',
     TargetAdvancedTrainingPower: '0', TargetAdvancedTrainingToughness: '0', BlackBarLookaheadSeconds: 5
   });
-  await expect(panel.getByRole('textbox', { name: 'Energy priorities', exact: true })).toHaveValue('TM, NGU, WAN, AUG, AT');
-  await expect(panel.getByRole('textbox', { name: 'Magic priorities', exact: true })).toHaveValue('TM, RIT, NGU, WAN');
+  await expect(panel.getByRole('group', { name: 'Energy priorities', exact: true })).toHaveCount(0);
+  await expect(panel.getByRole('group', { name: 'Magic priorities', exact: true })).toHaveCount(0);
+  expect((await saved(page)).StageDurationSeconds).toBe(before.StageDurationSeconds);
 });
 
 test('direct mouse dragging retains selection and repeat follows the selected stage', async ({ page }) => {
@@ -942,17 +1497,17 @@ test('duration conversions, edits and priorities preserve unrelated lossless val
   await input.fill('240s');
   await input.press('Enter');
   await expect(input).toHaveValue('4m');
-  await expect(page.getByRole('combobox', { name: 'Stage timing', exact: true })).toHaveValue('mixed');
-  expect((await saved(page)).Stages[2].DurationSeconds).toBeUndefined();
+  await expect(page.getByRole('combobox', { name: 'Stage timing', exact: true })).toHaveCount(0);
+  expect((await saved(page)).Stages[2].DurationSeconds).toBe(960);
   await input.fill('4.5');
   await input.press('Tab');
   await expect(input).toHaveValue('270s');
-  expect((await saved(page)).StageDurationSeconds).toBe(1230);
+  expect((await saved(page)).StageDurationSeconds).toBe(1200);
   expect((await saved(page)).Stages[0].Percent).toBe(.2);
-  await first.getByRole('textbox', { name: 'Energy priorities', exact: true }).fill('TM, NGU-0');
+  await setPriorities(first, 'Energy priorities', ['Time Machine', 'NGU: Augments']);
   expect((await saved(page)).Stages[0].EnergyPriorities).toEqual(['TM', 'NGU-0']);
   expect(await first.getAttribute('data-stage')).toBe(stageKey);
-  await page.getByRole('combobox', { name: 'Stage timing', exact: true }).selectOption('%');
+  await first.getByRole('combobox', { name: /^Finish stage by/ }).selectOption('flexible');
   expect((await saved(page)).Stages[0].DurationSeconds).toBe(0);
   expect(await page.evaluate(() => (window as unknown as { __stagePlan: string }).__stagePlan)).toContain('"Future":9007199254740993');
   expect((await saved(page)).Stages[1].TargetAdvancedTrainingPower).toBe('9223372036854775806');
@@ -961,7 +1516,7 @@ test('duration conversions, edits and priorities preserve unrelated lossless val
 test('stage panel exposes completion mode and removes the loop boundary using its successor', async ({ page }) => {
   await mount(page);
   const panel = await selectStage(page, 1);
-  await panel.getByRole('combobox', { name: 'Finish stage by', exact: true }).selectOption('0');
+  await panel.getByRole('combobox', { name: /^Finish stage by/ }).selectOption('fixed');
   await expect(page.getByRole('textbox', { name: 'AT power target' })).toHaveCount(0);
   expect((await saved(page)).Stages[1].TargetAdvancedTrainingPower).toBe('9223372036854775806');
   await panel.getByRole('button', { name: 'Remove stage', exact: true }).click();
@@ -972,6 +1527,7 @@ test('stage panel exposes completion mode and removes the loop boundary using it
 for (const mode of ['normalized', 'reorder']) {
   test(`focused duration draft survives ${mode} autosave readback and commits to its logical row`, async ({ page }) => {
     await mount(page);
+    await pauseDurationClock(page);
     const row = await selectStage(page, 0);
     await row.getByRole('combobox', { name: 'Focus preset', exact: true }).selectOption({ label: 'Time Machine' });
     await row.getByRole('textbox', { name: 'Duration', exact: true }).fill('240s');
@@ -995,7 +1551,7 @@ for (const mode of ['normalized', 'reorder']) {
     await expect(input).toHaveValue('90s');
     expect((await saved(page)).Stages[index].Name).toBe('Time Machine');
     expect((await saved(page)).Stages.find(row => row.Name === 'Sustain')!.Percent).toBe(.8);
-    expect((await saved(page)).StageDurationSeconds).toBe(1050);
+    expect((await saved(page)).StageDurationSeconds).toBe(1200);
     expect((await saved(page)).__externalUiRevision).toBe('b'.repeat(64));
     expect(await page.evaluate(() => (window as unknown as { __stagePlan: string }).__stagePlan)).toContain('"Future":9007199254740993');
     await element?.dispose();
@@ -1013,9 +1569,8 @@ for (const mode of ['clone', 'normalized', 'unrelated field edit']) {
     const element = await duration.elementHandle();
     await duration.fill('0s');
     await duration.press('Tab');
-    await expect(page.getByRole('alert')).toContainText('Duration must be');
+    await expect(page.getByRole('alert')).toContainText('Fixed duration seconds must be');
     if (mode === 'unrelated field edit') {
-      await page.getByText('Gear settings', { exact: true }).click();
       await page.getByRole('combobox', { name: 'Fight scoring', exact: true }).selectOption('1');
       await expect(page.getByRole('combobox', { name: 'Fight scoring', exact: true })).toHaveValue('1');
       expect(await saved(page)).toMatchObject({ FightScoreMode: 1 });
@@ -1027,15 +1582,15 @@ for (const mode of ['clone', 'normalized', 'unrelated field edit']) {
     await expect(page.locator(`.stage-select[data-select="${keys[1]}"]`)).toHaveAttribute('aria-expanded', 'true');
     await expect(duration).toHaveValue('0s');
     expect(await duration.evaluate((current, previous) => current === previous, element)).toBe(true);
-    await expect(page.getByRole('alert')).toContainText('Duration must be');
-    expect((await saved(page)).Stages.map(row => row.DurationSeconds ?? 0)).toEqual([0, 0, 0, 0]);
+    await expect(page.getByRole('alert')).toContainText('Fixed duration seconds must be');
+    expect((await saved(page)).Stages.map(row => row.DurationSeconds ?? 0)).toEqual([240, 240, 240, 240]);
     expect(await page.evaluate(() => (window as unknown as { __stageEdits: number }).__stageEdits)).toBe(mode === 'unrelated field edit' ? 1 : 0);
     await selected.getByRole('button', { name: 'Close stage settings', exact: true }).click();
     await selectStage(page, 1);
     await expect(duration).toHaveValue('0s');
     await duration.fill('120s');
     await duration.press('Enter');
-    expect((await saved(page)).Stages.map(row => row.DurationSeconds ?? 0)).toEqual([0, 120, 0, 0]);
+    expect((await saved(page)).Stages.map(row => row.DurationSeconds ?? 0)).toEqual([240, 120, 240, 240]);
     await element?.dispose();
   });
 }
@@ -1070,6 +1625,7 @@ for (const [target, normalized] of [['006000', '6000'], ['009223372036854775806'
 for (const mode of ['namespace', 'name', 'ambiguous']) {
   test(`duration draft cannot leak to a different stage after ${mode} changes`, async ({ page }) => {
     await mount(page);
+    await pauseDurationClock(page);
     const row = await selectStage(page, 0);
     const input = row.getByRole('textbox', { name: 'Duration', exact: true });
     await input.fill('240s');
@@ -1098,7 +1654,7 @@ for (const mode of ['namespace', 'name', 'ambiguous']) {
 
 for (const invalid of [
   { text: '', message: 'Enter a duration such as 25m, 2h, or 30%.' },
-  { text: '0s', message: 'Duration must be' },
+  { text: '0s', message: 'Fixed duration seconds must be' },
   { text: '1.5s', message: 'whole seconds' },
   { text: '2147483648s', message: 'Fixed duration seconds must be' },
   { text: '90ms', message: 'Enter a duration such as 25m, 2h, or 30%.' }
@@ -1123,4 +1679,182 @@ for (const invalid of [
   await expect(page.getByRole('alert')).toHaveCount(0);
   await input.press('Tab');
   expect((await saved(page)).Stages[0].DurationSeconds).toBe(240);
+});
+
+type DurationEditorKind = 'fixed' | 'flexible' | 'fallback' | 'rebirth';
+
+async function autosaveDurationEditor(page: Page, kind: DurationEditorKind) {
+  const plan = { ...source, TimeTriggerEnabled: kind === 'rebirth', TimeTriggerSeconds: 1200,
+    Stages: source.Stages.map((row, index) => kind === 'flexible' && index === 0 ? { ...row, DurationSeconds: 0 } : row) };
+  await mount(page, plan, true);
+  if (kind === 'fixed' || kind === 'flexible') await selectStage(page, 0);
+  if (kind === 'fallback') await openSchedule(page);
+  await pauseDurationClock(page);
+  const label = kind === 'fixed' ? 'Duration' : kind === 'flexible' ? 'Flexible weight' : kind === 'fallback' ? 'Fallback time budget' : 'Rebirth after';
+  return page.getByRole('textbox', { name: label, exact: true });
+}
+
+function durationValue(plan: SavedPlan, kind: DurationEditorKind): number | undefined {
+  return kind === 'fixed' ? plan.Stages[0].DurationSeconds : kind === 'flexible' ? plan.Stages[0].Percent : kind === 'fallback' ? plan.StageDurationSeconds : plan.TimeTriggerSeconds;
+}
+
+for (const kind of ['fixed', 'flexible', 'fallback', 'rebirth'] as const) {
+  test(`duration autosave debounces ${kind} edits for 350ms without blur or Enter`, async ({ page }) => {
+    const input = await autosaveDurationEditor(page, kind);
+    const before = await saved(page);
+    const element = await input.elementHandle();
+    await input.fill(kind === 'flexible' ? '150' : '6m');
+    await page.clock.runFor(200);
+    await input.fill(kind === 'flexible' ? '175' : '7m');
+    await page.clock.runFor(349);
+    expect(durationValue(await saved(page), kind)).toBe(durationValue(before, kind));
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(0);
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageDraftDirty)).toBe(true);
+    await page.clock.runFor(1);
+    await expect.poll(async () => durationValue(await saved(page), kind)).toBe(kind === 'flexible' ? 175 : 420);
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(1);
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageDraftDirty)).toBe(false);
+    await expect(input).toBeFocused();
+    expect(await input.evaluate((current, previous) => current === previous, element)).toBe(true);
+    expect(await page.evaluate(() => (window as unknown as { __stagePlan: string }).__stagePlan)).toContain('"Future":9007199254740993');
+    await input.press('Tab');
+    await page.clock.runFor(500);
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(1);
+    await element?.dispose();
+  });
+
+  test(`duration autosave keeps incomplete ${kind} drafts local and Escape cancels pending work`, async ({ page }) => {
+    const input = await autosaveDurationEditor(page, kind);
+    const before = await saved(page);
+    const original = await input.inputValue();
+    for (const invalid of kind === 'flexible' ? ['', '1.', '1e', '0', '-1'] : ['', '1.', '1e', '1.5s', '2147483648s']) {
+      await input.fill(invalid);
+      await expect(input).toHaveAttribute('aria-invalid', 'true');
+      await expect(page.getByRole('alert')).toBeVisible();
+      await page.clock.runFor(500);
+      expect(durationValue(await saved(page), kind)).toBe(durationValue(before, kind));
+    }
+    await input.fill(kind === 'flexible' ? '175' : '7m');
+    await page.clock.runFor(200);
+    await input.fill('.');
+    await page.clock.runFor(500);
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(0);
+    await input.press('Escape');
+    await expect(input).toHaveValue(original);
+    await expect(input).toHaveAttribute('aria-invalid', 'false');
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await input.fill(kind === 'flexible' ? '200' : '8m');
+    await page.clock.runFor(200);
+    await input.press('Escape');
+    await page.clock.runFor(500);
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(0);
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageDraftDirty)).toBe(false);
+    await input.fill(kind === 'flexible' ? '225' : '9m');
+    await page.clock.runFor(350);
+    await expect.poll(async () => durationValue(await saved(page), kind)).toBe(kind === 'flexible' ? 225 : 540);
+  });
+
+  test(`duration autosave retries a ready ${kind} draft once busy clears`, async ({ page }) => {
+    const input = await autosaveDurationEditor(page, kind);
+    await input.fill(kind === 'flexible' ? '175' : '7m');
+    await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageLive({ disabled: true }));
+    await page.clock.runFor(500);
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(0);
+    await expect(input).toHaveValue(kind === 'flexible' ? '175' : '7m');
+    await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageLive({ disabled: false }));
+    await expect.poll(async () => durationValue(await saved(page), kind)).toBe(kind === 'flexible' ? 175 : 420);
+    await page.clock.runFor(1000);
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(1);
+  });
+
+  for (const context of ['namespace', 'name', 'plan.Name', 'unmount'] as const) {
+    test(`duration autosave cancels pending ${kind} edits after ${context} changes`, async ({ page }) => {
+      const input = await autosaveDurationEditor(page, kind);
+      await input.fill(kind === 'flexible' ? '175' : '7m');
+      await page.clock.runFor(200);
+      if (context === 'plan.Name') await readback(page, 'name');
+      else await page.evaluate(context => {
+        const fixture = window as unknown as TimingFixtureWindow & { __stageNamespace: (value: string) => void; __stageName: (value: string) => void };
+        if (context === 'namespace') fixture.__stageNamespace('folder-b');
+        if (context === 'name') fixture.__stageName('other-plan');
+        if (context === 'unmount') fixture.__stageDestroy();
+      }, context);
+      await page.clock.runFor(1000);
+      expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(0);
+      expect(durationValue(await saved(page), kind)).toBe(kind === 'fixed' ? 240 : kind === 'flexible' ? .2 : 1200);
+    });
+  }
+}
+
+for (const kind of ['fixed', 'flexible'] as const) {
+  test(`duration autosave follows the stable ${kind} stage identity through normalized reorder readback`, async ({ page }) => {
+    const input = await autosaveDurationEditor(page, kind);
+    const element = await input.elementHandle();
+    await input.fill(kind === 'flexible' ? '175' : '7m');
+    await page.clock.runFor(200);
+    await readback(page, 'reorder');
+    await expect(input).toBeFocused();
+    expect(await input.evaluate((current, previous) => current === previous, element)).toBe(true);
+    await page.clock.runFor(150);
+    await expect.poll(async () => {
+      const plan = await saved(page);
+      return kind === 'fixed' ? plan.Stages[2].DurationSeconds : plan.Stages[2].Percent;
+    }).toBe(kind === 'fixed' ? 420 : 175);
+    const plan = await saved(page);
+    expect(plan.Stages.map(row => row.Future)).toEqual(['C', 'B', 'A']);
+    expect(plan.Stages[0].DurationSeconds).toBe(960);
+    expect(plan.__externalUiRevision).toBe('b'.repeat(64));
+    await element?.dispose();
+  });
+
+  test(`duration autosave cancels the ${kind} timer when its stage is removed`, async ({ page }) => {
+    const input = await autosaveDurationEditor(page, kind);
+    await input.fill(kind === 'flexible' ? '175' : '7m');
+    await page.clock.runFor(200);
+    await readback(page, 'remove');
+    await page.clock.runFor(1000);
+    expect((await saved(page)).Stages.map(row => row.Future)).toEqual(['B', 'C']);
+    expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(0);
+  });
+}
+
+test('duration autosave cancels a pending rebirth edit when its condition is removed externally', async ({ page }) => {
+  const input = await autosaveDurationEditor(page, 'rebirth');
+  await input.fill('7m');
+  await page.clock.runFor(200);
+  const plan = await saved(page);
+  await page.evaluate(plan => (window as unknown as TimingFixtureWindow).__stageLive({ plan: { ...plan, TimeTriggerEnabled: false } }), plan);
+  await expect(input).toHaveCount(0);
+  await page.clock.runFor(1000);
+  expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(0);
+  await page.evaluate(plan => (window as unknown as TimingFixtureWindow).__stageLive({ plan }), plan);
+  await expect(input).toHaveValue('20m');
+  await page.clock.runFor(500);
+  expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(0);
+});
+
+test('duration autosave preserves all ready drafts when busy clears for multiple editors', async ({ page }) => {
+  await mount(page, { ...source, TimeTriggerEnabled: true, TimeTriggerSeconds: 1200 }, true);
+  await pauseDurationClock(page);
+  // Keep focus unchanged so these independent drafts all await the same busy action.
+  for (const [selector, text] of [
+    ['.stage-panel:nth-of-type(1) input[data-duration-key]', '7m'],
+    ['.stage-panel:nth-of-type(3) input[data-duration-key]', '9m'],
+    ['input[aria-label="Fallback time budget"]', '40m'],
+    ['input[aria-label="Rebirth after"]', '30m']
+  ]) {
+    await page.locator(selector).evaluate((element, text) => {
+      (element as HTMLInputElement).value = text;
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    }, text);
+  }
+  await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageLive({ disabled: true }));
+  await page.clock.runFor(350);
+  expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(0);
+  await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageLive({ disabled: false }));
+  await expect.poll(async () => {
+    const plan = await saved(page);
+    return [plan.Stages[0].DurationSeconds, plan.Stages[2].DurationSeconds, plan.StageDurationSeconds, plan.TimeTriggerSeconds];
+  }).toEqual([420, 540, 2400, 1800]);
+  expect(await page.evaluate(() => (window as unknown as TimingFixtureWindow).__stageEdits)).toBe(4);
 });

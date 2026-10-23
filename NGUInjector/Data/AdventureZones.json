@@ -1,0 +1,708 @@
+{
+  "schemaVersion": 1,
+  "title": "NGU Idle adventure zone reference",
+  "retrievedAt": "2026-10-16",
+  "purpose": "Offline reference only; not runtime configuration or verified combat safety thresholds.",
+  "coverage": {
+    "regularCombatZones": 32,
+    "safeZones": 1,
+    "titanIndexEntries": 14,
+    "enemyStatRecords": 8,
+    "equipmentAndOtherDrops": "Selected equipment groups and notable drops; not an exhaustive loot simulator.",
+    "enemyStats": "Partial: Adventure-tab stats only, never Boss Fight attack/defense. Empty arrays mean not collected, not no enemies."
+  },
+  "sources": {
+    "adventureOverview": {
+      "url": "https://ngu-idle.fandom.com/wiki/Adventure_Mode",
+      "retrievalUrl": "https://ngu-idle.fandom.com/wiki/Adventure_Mode?action=render",
+      "type": "community_wiki",
+      "supports": "Zone order, recommendations, idle interpretation, cube-root loot scaling from Chocolate World."
+    },
+    "titans": {
+      "url": "https://ngu-idle.fandom.com/wiki/Titans",
+      "type": "community_wiki",
+      "supports": "Titan names, sequence and difficulty-specific boss unlocks; combat/loot intentionally excluded."
+    },
+    "skills": {
+      "url": "https://ngu-idle.fandom.com/wiki/Skills",
+      "type": "community_wiki",
+      "supports": "Idle damage multipliers 1.2/1.5/1.8 and Beast Mode effects."
+    },
+    "localZoneStats": {
+      "path": "NGUInjector/Managers/ZoneStatHelper.cs",
+      "type": "local_source_snapshot",
+      "supports": "Game zone IDs for regular zones 0 through 41; comparison with legacy recommendations. Not independent game verification."
+    },
+    "localBoostFarm": {
+      "path": "NGUInjector/Managers/BoostFarmHelper.cs",
+      "type": "local_source_snapshot",
+      "supports": "Regular zone IDs including 43; boost table cross-check. Comment attributes table to Farmer Sanc's Boost Almanac, NGU 1.220; original spreadsheet not retrieved."
+    },
+    "localZoneHelpers": {
+      "path": "NGUInjector/Managers/ZoneHelpers.cs",
+      "type": "local_source_snapshot",
+      "supports": "Safe zone -1, titan IDs, final titan IDs 44/45. Effective boss IDs in this file are NOT the wiki's difficulty-relative boss numbers."
+    }
+  },
+  "conventions": {
+    "zoneId": "Game/injector ID, not wiki ordinal. Safe zone is -1; wikiOrdinal = zoneId + 2 for these 47 locations.",
+    "sourceInheritance": "All zone fields except zoneId and explicitly separately sourced enemyStats come from that record's sourceUrl, retrieved on the top-level retrievedAt date. Local ID mapping uses the local sources above. Zone pages were fetched with ?action=render.",
+    "recommendationStatus": "Community recommendations transcribed from individual zone Fight tables; not actual enemy stats, verified minima, or guarantees. Individual zone pages take precedence over the overview; conflicts are preserved in notes/documentation.",
+    "numberUnits": "Unscaled adventure stat points; JSON scientific notation is numeric. Probabilities are fractions in [0,1], not percentages. Displayed wiki units are converted without adding precision.",
+    "null": "Unknown, unspecified, uncollected, or unresolved as explained in notes. Never interpret null as zero or safe. An empty enemyStats array means stats not collected.",
+    "beastMode": "null = source did not distinguish; false/true = source's OFF/ON recommendation, not an instruction to toggle it.",
+    "idleMeaning": "Overview describes toughness to maintain about 90% health and power sufficient to kill exploders. Player HP requirements were not specified in retrieved regular-zone tables and are null throughout.",
+    "oneHitMeaning": "Source-listed player power recommendation; attack modifier/sets are not consistently specified. Do not treat as enemy HP or derive enemy stats from it.",
+    "boostChance": "Conditional on killing a normal enemy, before player loot modifiers. capChance null means cap not stated in the zone page, not an assumed 100% cap. Duplicate rows are preserved; roll independence is not verified.",
+    "equipmentChance": "Chance of the listed group, not each item. selection one_of does not establish equal item weights. null normal/boss chance means no chance transcribed, not proof of no drop.",
+    "equipmentLevels": "Base drop levels before challenge/set rewards. baseLevelExceptions overrides baseLevel by exact item name.",
+    "otherDrops": "Selected source descriptions retained as strings, not a normalized probability model. Conditions matter. See the zone source for complete loot and independent/conditional roll details.",
+    "enemyStats": "Static values from the Adventure tab of linked bestiary pages. attackRate and hpRegen retain wiki labels; their precise timing units have not been independently verified. isZoneBoss is a zone roster classification, distinct from the bestiary Type field."
+  },
+  "formulas": {
+    "loot": {
+      "source": "adventureOverview",
+      "linearBeforeZoneId": 20,
+      "rootedFromZoneId": 20,
+      "lootMultiplier": "D = displayed total drop-chance percent / 100; baseline 100% gives D = 1.",
+      "perListedBoostRow": "p = min(capChance, baseChance * D) before Chocolate World; p = min(capChance, baseChance * D^(1/3)) from Chocolate World, where a cap is known.",
+      "scope": "Interpretation of the wiki's zone-factor formula, cross-checked with localBoostFarm. Not a universal formula for every special, quest, guaranteed or additive-chance drop. Do not cube-root baseChance itself.",
+      "unconditionalNormalBoostExpectation": "If applicable, expected boosts per arbitrary zone kill = (1 - bossChance.numerator / bossChance.denominator) * sum(p for eligible boost rows). Expected count, not probability of at least one drop; no independence assumption needed for the sum."
+    },
+    "combat": {
+      "source": "skills",
+      "idleDamageMultipliers": [1.2, 1.5, 1.8],
+      "idleMultiplierConditions": ["Base idle mode", "Spoopy set complete", "Spoopy set and all Sadistic No Equipment challenges complete"],
+      "beastMode": "Wiki lists +40% power (+50% with Purple Liquid set), but damage received becomes 300%. Buff/set context must be known before comparing thresholds.",
+      "exactDamageFormula": null,
+      "oneHitVerification": "Not calculated or game-tested. No enemy HP/toughness values are inferred from recommendations or BoostFarmHelper.OneHitPower."
+    }
+  },
+  "safeZones": [
+    {
+      "zoneId": -1,
+      "wikiOrdinal": 1,
+      "name": "Safe Zone: Awakening Site",
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Safe_Zone:_Awakening_Site",
+      "unlockBoss": 4,
+      "difficulty": "normal",
+      "hasEnemies": false,
+      "hpRegenMultiplier": 5,
+      "hpRegenMultiplierWithGrbSet": 10
+    }
+  ],
+  "zones": [
+    {
+      "zoneId": 0, "wikiOrdinal": 2, "name": "Tutorial Zone", "difficulty": "normal", "unlockBoss": 4,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Tutorial_Zone",
+      "recommendations": {
+        "manual": {"power": 10, "toughness": 10, "hp": null},
+        "idle": [{"beastMode": null, "power": 13, "toughness": 13, "hp": null}],
+        "oneHit": [{"power": 129.5, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["A Small Piece of Fluff", "Floating Sewage", "A Stick?"], "boss": ["A SMALL MOUSE (BOSS)"]},
+      "enemyStats": [
+        {"name": "A Small Piece of Fluff", "bestiaryId": 1, "isZoneBoss": false, "type": "normal", "power": 7, "toughness": 6, "hp": 40, "hpRegen": 1, "attackRate": 1, "sourceUrl": "https://ngu-idle.fandom.com/wiki/A_Small_Piece_of_Fluff"},
+        {"name": "Floating Sewage", "bestiaryId": 2, "isZoneBoss": false, "type": "normal", "power": 7, "toughness": 6, "hp": 45, "hpRegen": 1.5, "attackRate": 1.2, "sourceUrl": "https://ngu-idle.fandom.com/wiki/Floating_Sewage"},
+        {"name": "A Stick?", "bestiaryId": 3, "isZoneBoss": false, "type": "normal", "power": 8, "toughness": 7, "hp": 55, "hpRegen": 0.5, "attackRate": 1.5, "sourceUrl": "https://ngu-idle.fandom.com/wiki/A_Stick%3F"},
+        {"name": "A SMALL MOUSE (BOSS)", "bestiaryId": 4, "isZoneBoss": true, "type": "normal", "power": 9, "toughness": 9, "hp": 100, "hpRegen": 1, "attackRate": 1, "sourceUrl": "https://ngu-idle.fandom.com/wiki/A_SMALL_MOUSE_(BOSS)"}
+      ],
+      "drops": {
+        "boosts": [{"value": 1, "baseChance": 0.15, "capChance": null, "condition": "Whole Training set unlocked"}],
+        "equipment": {"group": "Training (set), boss armor subset", "selection": "one_of", "baseLevel": 10, "baseLevelExceptions": {}, "items": ["Cloth Hat", "Cloth Shirt", "Cloth Leggings", "Cloth Boots"], "normalChance": null, "bossChance": {"base": 1, "cap": 1}},
+        "other": ["Normal: A Stick level 10, 25% base chance; first guaranteed.", "Boss: EXP 1, 7% base chance, 8% cap.", "Either: The Lonely Flubber level 10, after boss 59; 0.82%-100% scaling with bosses killed this rebirth from 59 to 300; unaffected by drop-chance bonuses."]
+      },
+      "notes": ["Bestiary Type normal does not mean the mouse is not a zone boss."]
+    },
+    {
+      "zoneId": 1, "wikiOrdinal": 3, "name": "Sewers", "difficulty": "normal", "unlockBoss": 7,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Sewers",
+      "recommendations": {
+        "manual": {"power": 12, "toughness": 12, "hp": null},
+        "idle": [{"beastMode": null, "power": 21, "toughness": 21, "hp": null}],
+        "oneHit": [{"power": 194, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["Small Mouse", "Slightly Bigger Mouse", "Big Rat"], "boss": ["BROWN SLIME (BOSS)"]},
+      "enemyStats": [{"name": "BROWN SLIME (BOSS)", "bestiaryId": 7, "isZoneBoss": true, "type": "poison", "power": 13, "toughness": 13, "hp": 150, "hpRegen": 1, "attackRate": 1, "sourceUrl": "https://ngu-idle.fandom.com/wiki/Brown_Slime"}],
+      "drops": {
+        "boosts": [{"value": 1, "baseChance": 0.15, "capChance": null, "condition": null}],
+        "equipment": {"group": "Sewers (set)", "selection": "one_of", "baseLevel": 4, "baseLevelExceptions": {}, "items": ["Crappy Helmet", "Crappy Chestplate", "Crappy Leggings", "Crappy Boots", "Rusty Sword", "Gross Ring", "Cracked Amulet"], "normalChance": null, "bossChance": {"base": 0.65, "cap": null}},
+        "other": ["Boss: EXP 1, 8.5% base chance, 10% cap.", "Boss: 4G's Merge and Boost Tutorial Cube level 4, 10% base chance.", "Energy Power MacGuffin Fragment after Walderp; Bits of String if on quest."]
+      },
+      "notes": []
+    },
+    {
+      "zoneId": 2, "wikiOrdinal": 4, "name": "Forest", "difficulty": "normal", "unlockBoss": 17,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Forest",
+      "recommendations": {
+        "manual": {"power": 35, "toughness": 35, "hp": null},
+        "idle": [{"beastMode": null, "power": 53, "toughness": 53, "hp": null}],
+        "oneHit": [{"power": 1134, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 2, "denominator": 9},
+      "enemies": {"normal": ["Skeleton", "Goblin", "Giant", "Ent", "Zombie", "Orc", "Fairy"], "boss": ["R.O.U.S (BOSS)", "GORGON (BOSS)"]},
+      "enemyStats": [{"name": "GORGON (BOSS)", "bestiaryId": 17, "isZoneBoss": true, "type": "paralyze", "power": 33, "toughness": 33, "hp": 600, "hpRegen": 2.5, "attackRate": 1.25, "sourceUrl": "https://ngu-idle.fandom.com/wiki/Gorgon"}],
+      "drops": {
+        "boosts": [{"value": 1, "baseChance": 0.12, "capChance": null, "condition": null}, {"value": 2, "baseChance": 0.08, "capChance": null, "condition": null}],
+        "equipment": {"group": "Forest (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {"Forest Pendant": 0}, "items": ["Forest Helmet", "Forest Chestplate", "Forest Leggings", "Forest Boots", "Kokiri Blade", "Mossy Ring", "Forest Pendant"], "normalChance": null, "bossChance": {"base": 0.5, "cap": null}},
+        "other": ["Normal/boss: The Tuba of Time level 1, 1.3% base chance.", "Boss: EXP 1, 10% base chance, 12% cap.", "Goblin: Ring of Apathy level 1, 0.8% base chance after boss 100 or a previous drop.", "Magic Power MacGuffin Fragment after Walderp; A Dreamcatcher if on quest."]
+      },
+      "notes": []
+    },
+    {
+      "zoneId": 3, "wikiOrdinal": 5, "name": "Cave of Many Things", "difficulty": "normal", "unlockBoss": 37,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Cave_of_Many_Things",
+      "recommendations": {
+        "manual": {"power": 150, "toughness": 150, "hp": null},
+        "idle": [{"beastMode": null, "power": 200, "toughness": 200, "hp": null}],
+        "oneHit": [{"power": 3811, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 3, "denominator": 16},
+      "enemies": {"normal": ["Gorgonzola", "Brie", "Gouda", "Blue Cheese", "Parmesan", "Robot", "Fluffy Chair", "Couch", "Floppy Mattress", "Evil Fridge", "T-800", "Wide Screen T.V", "Kitchen Sink"], "boss": ["LIMBURGER (BOSS)", "MEGA RAT (BOSS)", "CHAD (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 1, "baseChance": 0.13, "capChance": null, "condition": null}, {"value": 2, "baseChance": 0.12, "capChance": null, "condition": null}],
+        "equipment": {"group": "Cave equipment and Forest Pendant shared roll", "selection": "one_of", "baseLevel": 0, "baseLevelExceptions": {"Forest Pendant": 1}, "items": ["Blue Cheese Helmet", "Gouda Chestplate", "Swiss Leggings", "Limburger Boots", "Mole Hammer", "Havarti Ring", "Cheddar Amulet", "Combat Cheese", "Forest Pendant"], "normalChance": null, "bossChance": {"base": 0.75, "cap": null}},
+        "other": ["Normal/boss: Cheese Grater level 1, 1.25% base chance.", "Boss: EXP 1, 12% base chance, 15% cap.", "Energy Cap MacGuffin Fragment after Walderp."]
+      },
+      "notes": ["No enemy stat table transcribed; attempted Chad page returned 404."]
+    },
+    {
+      "zoneId": 4, "wikiOrdinal": 6, "name": "The Sky", "difficulty": "normal", "unlockBoss": 48,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/The_Sky",
+      "recommendations": {
+        "manual": {"power": 600, "toughness": 400, "hp": null},
+        "idle": [{"beastMode": null, "power": 750, "toughness": 650, "hp": null}],
+        "oneHit": [{"power": 11420, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 5},
+      "enemies": {"normal": ["Kid On a Cloud", "747", "Oriental Dragon", "Lester", "Ninja Samurai", "Icarus Proudbottom", "Gigantic Flock of Seagulls", "Two Headed Guy"], "boss": ["G.F.O.C.G (BOSS)", "BIRD PERSON (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 2, "baseChance": 0.08, "capChance": null, "condition": null}, {"value": 5, "baseChance": 0.08, "capChance": null, "condition": null}],
+        "equipment": null,
+        "other": ["Normal/boss: A Dragon's Left Ball level 1, 1% base chance.", "Icarus Proudbottom: Poop, 0.05% base chance, 0.5% cap.", "Boss: EXP 1, 16% base chance, 20% cap.", "Boss: A busted copy of Wandoos 98 level 0, 0.3% base chance; Looty McLootFace level 0, 1% base chance; Pissed Off Key level 0, 1% base chance, first guaranteed; Forest Pendant level 2, 40% base chance.", "Magic Cap MacGuffin Fragment after Walderp."]
+      },
+      "notes": ["Manual toughness 400 is explicitly marked unconfirmed by the wiki."]
+    },
+    {
+      "zoneId": 5, "wikiOrdinal": 7, "name": "High Security Base", "difficulty": "normal", "unlockBoss": 58,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/High_Security_Base",
+      "recommendations": {
+        "manual": {"power": 700, "toughness": 500, "hp": null},
+        "idle": [{"beastMode": null, "power": 750, "toughness": 750, "hp": null}],
+        "oneHit": [{"power": 15220, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 5},
+      "enemies": {"normal": ["Hooloovoo", "Gross Green Alien", "The Rat God", "Massive Plant Monster", "High Security Insect Guard 1", "High Security Insect Guard 2", "The Experiment", "Whole Lotta Guards"], "boss": ["MEGA GUARD (BOSS)", "SPIKY HAIRED GUY (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 2, "baseChance": 0.06, "capChance": null, "condition": null}, {"value": 5, "baseChance": 0.015, "capChance": null, "condition": null}],
+        "equipment": {"group": "HSB equipment and Forest Pendant shared roll", "selection": "one_of", "baseLevel": 0, "baseLevelExceptions": {"Forest Pendant": 3}, "items": ["Magitech Helmet", "Magitech Chestplate", "Magitech Leggings", "Magitech Boots", "Magitech Blade", "Magitech Ring", "Magitech Amulet", "Forest Pendant"], "normalChance": null, "bossChance": {"base": 0.4, "cap": null}},
+        "other": ["Normal/boss: Magicite Crystal level 1, 0.7% base chance.", "Boss: EXP 2, 9% base chance, 12% cap.", "Energy NGU MacGuffin Fragment after Walderp; A Missing Puzzle Piece if on quest."]
+      },
+      "notes": []
+    },
+    {
+      "zoneId": 7, "wikiOrdinal": 9, "name": "Clock Dimension", "difficulty": "normal", "unlockBoss": 66,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Clock_Dimension",
+      "recommendations": {
+        "manual": {"power": 3250, "toughness": 2250, "hp": null},
+        "idle": [{"beastMode": null, "power": 3850, "toughness": 3600, "hp": null}],
+        "oneHit": [{"power": 107110, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 2, "denominator": 9},
+      "enemies": {"normal": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], "boss": ["SUNDAE (BOSS)"]},
+      "enemyStats": [{"name": "SUNDAE (BOSS)", "bestiaryId": 66, "isZoneBoss": true, "type": "Normal", "power": 1700, "toughness": 1720, "hp": 85000, "hpRegen": 200, "attackRate": 1.3, "sourceUrl": "https://ngu-idle.fandom.com/wiki/Sundae"}],
+      "drops": {
+        "boosts": [{"value": 5, "baseChance": 0.03, "capChance": 0.15, "condition": null}, {"value": 10, "baseChance": 0.03, "capChance": 0.15, "condition": null}],
+        "equipment": {"group": "Clock (set)", "selection": "one_of", "baseLevel": 0, "baseLevelExceptions": {}, "items": ["Clockwork Hat", "Clockwork Chest", "Clockwork Pants", "Clockwork Boots", "A Comically Oversized Minute-Hand", "Alarm Clock", "The Sands of Time"], "normalChance": null, "bossChance": {"base": 0.3, "cap": null}},
+        "other": ["Normal/boss: Giant Windup Gear level 1, 0.5% base chance.", "Boss: EXP 2, 10% base chance, 16% cap.", "Magic NGU MacGuffin Fragment after Walderp; SUNDAE drops Pickle Ice Cream after first IT HUNGERS encounter."]
+      },
+      "notes": ["SUNDAE has double encounter weight; do not derive boss chance from count of unique names.", "Overview and localZoneStats idle recommendation is 4500/3000, not zone-page 3850/3600."]
+    },
+    {
+      "zoneId": 9, "wikiOrdinal": 11, "name": "The 2D Universe", "difficulty": "normal", "unlockBoss": 74,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/The_2D_Universe",
+      "recommendations": {
+        "manual": {"power": 4500, "toughness": 3500, "hp": null},
+        "idle": [{"beastMode": null, "power": 7500, "toughness": 6000, "hp": null}],
+        "oneHit": [{"power": 168233, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["A Flat Mouse", "A Tiny Triangle", "A Square Bear", "The Pentagon", "The First Stop Sign", "The Second Stop Sign"], "boss": ["KING CIRCLE (BOSS)", "SUPER HEXAGON (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 10, "baseChance": 0.07, "capChance": 0.15, "condition": null}, {"value": 20, "baseChance": 0.07, "capChance": 0.15, "condition": null}],
+        "equipment": {"group": "2D (set)", "selection": "one_of", "baseLevel": 0, "baseLevelExceptions": {}, "items": ["Circle Helmet", "Square Chestpiece", "Rectangle Pants", "Polygon Boots", "A Triangle", "THE CUBE", "King Circle's Amulet of Helping Random Stuff"], "normalChance": null, "bossChance": {"base": 0.32, "cap": null}},
+        "other": ["Normal/boss: A Sinusoidal Wave level 1, 0.5% base chance.", "Boss: EXP 3, 5% base chance, 15% cap.", "Energy Bar MacGuffin Fragment after Walderp; The Entire State of North Dakota if on quest."]
+      },
+      "notes": ["Overview/local idle power 8000 and one-hit 168223 differ from zone-page 7500 and 168233."]
+    },
+    {
+      "zoneId": 10, "wikiOrdinal": 12, "name": "Ancient Battlefield", "difficulty": "normal", "unlockBoss": 82,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Ancient_Battlefield",
+      "recommendations": {
+        "manual": {"power": 12000, "toughness": 10000, "hp": null},
+        "idle": [{"beastMode": null, "power": 17000, "toughness": 16000, "hp": null}],
+        "oneHit": [{"power": 422550, "toughness": null, "hp": null, "condition": "Without the separately listed Spoopy set bonus"}, {"power": 282966, "toughness": null, "hp": null, "condition": "With Spoopy set bonus"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["Ghost Mice", "Crasper, The Pissed Off Ghost", "Living Armor", "Living Armour", "\"\"", "The Pantheon of Fallen Gods"], "boss": ["GHOST DAD (BOSS)", "MYSTERIOUS FIGURE (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 10, "baseChance": 0.06, "capChance": 0.2, "condition": null}, {"value": 20, "baseChance": 0.06, "capChance": 0.2, "condition": null}],
+        "equipment": {"group": "Spoopy (set)", "selection": "one_of", "baseLevel": 0, "baseLevelExceptions": {}, "items": ["Spoopy Helmet", "Ghostly Chest", "Pants of Horror", "Spectral Boots", "Spooky Sword", "Cursed Ring", "Amulet of Sunshine, Sparkles, and Gore"], "normalChance": null, "bossChance": {"base": 0.3, "cap": null}},
+        "other": ["Normal/boss: Ghost Typewriter level 1, 0.45% base chance.", "Boss: EXP 5, 3% base chance, 10% cap; A busted copy of Wandoos 98 level 0, 0.2% base chance.", "MYSTERIOUS FIGURE: Dragon Wings level 4, 0.15% base chance; Magic Bar MacGuffin Fragment after Walderp."]
+      },
+      "notes": ["The enemy name consisting of two quote characters is preserved as displayed.", "localZoneStats stores only the Spoopy-bonus one-hit value without the condition; localBoostFarm uses a different one-hit model (353000)."]
+    },
+    {
+      "zoneId": 12, "wikiOrdinal": 14, "name": "A Very Strange Place", "difficulty": "normal", "unlockBoss": 90,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/A_Very_Strange_Place",
+      "recommendations": {
+        "manual": {"power": 28000, "toughness": 18000, "hp": null},
+        "idle": [{"beastMode": null, "power": 48000, "toughness": 38000, "hp": null}],
+        "oneHit": [{"power": 842490, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["The Entire Alphabet Up a Coconut Tree", "The Lummox", "A Metal Slime", "A Ginormous Sword", "An Ordinary Chicken", "743 Chickens"], "boss": ["KENNY (BOSS)", "VIC (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 20, "baseChance": 0.03, "capChance": 0.25, "condition": null}, {"value": 50, "baseChance": 0.03, "capChance": 0.25, "condition": null}],
+        "equipment": {"group": "Gaudy (set)", "selection": "one_of", "baseLevel": 0, "baseLevelExceptions": {}, "items": ["Gaudy Hat", "Gaudy Shirt", "Gaudy Pants", "Gaudy Boots", "Paper Fan"], "normalChance": null, "bossChance": {"base": 0.2, "cap": null}},
+        "other": ["Normal/boss: Gaudy Epaulettes level 1, 0.4% base chance.", "Boss: EXP 10, 1% base chance, 10% cap; A Beanie level 4, 0.15% base chance; A busted copy of Wandoos 98 level 1, 0.25% base chance.", "Zone page calls the fragment SEXY MacGuffin Fragment, after Walderp; Random Canadian Coins if on quest."]
+      },
+      "notes": ["Overview/local one-hit 842483 differs from zone-page 842490. Overview calls the fragment Energy Beard MacGuffin Fragment."]
+    },
+    {
+      "zoneId": 13, "wikiOrdinal": 15, "name": "Mega Lands", "difficulty": "normal", "unlockBoss": 100,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Mega_Lands",
+      "recommendations": {
+        "manual": {"power": 125000, "toughness": 60000, "hp": null},
+        "idle": [{"beastMode": null, "power": 190000, "toughness": 145000, "hp": null}],
+        "oneHit": [{"power": 3.53e6, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 5},
+      "enemies": {"normal": ["Broken VCR Man", "Kitten In a Mech Woman", "Mr Plow", "ROBUTT (NOT A BOSS)", "Former Canadian PM Stephen Harper", "A Cyberdemon", "Robo Rat 9000", "Butter-Passing Robot"], "boss": ["DOCTOR WAHWEE (BOSS)"]},
+      "enemyStats": [{"name": "DOCTOR WAHWEE (BOSS)", "bestiaryId": 100, "isZoneBoss": true, "type": "rapid", "power": 64300, "toughness": 63300, "hp": 4.2e6, "hpRegen": 7660, "attackRate": 1.2, "sourceUrl": "https://ngu-idle.fandom.com/wiki/Doctor_Wahwee"}],
+      "drops": {
+        "boosts": [{"value": 50, "baseChance": 0.011, "capChance": 0.15, "condition": null}, {"value": 100, "baseChance": 0.011, "capChance": 0.15, "condition": null}],
+        "equipment": {"group": "Mega (set)", "selection": "one_of", "baseLevel": 0, "baseLevelExceptions": {}, "items": ["Mega Helmet", "Mega Chest", "Mega Blue Jeans", "Mega Boots", "Beam Laser Sword"], "normalChance": null, "bossChance": {"base": 0.08, "cap": null}},
+        "other": ["Normal/boss: The F Tank level 1, 0.2% base chance.", "Boss: EXP 15, 0.5% base chance, 10% cap; Ascended Forest Pendant level 0, 1% base chance.", "Zone page calls the fragment SMART MacGuffin Fragment, after Walderp; A Useless College Diploma if on quest."]
+      },
+      "notes": ["Doctor Wahwee has double encounter weight.", "Overview idle power 265000 / one-hit 3.54e6; local idle power 265000 / one-hit 3.5e6; individual page 190000 / 3.53e6.", "Overview calls the fragment Magic Beard MacGuffin Fragment."]
+    },
+    {
+      "zoneId": 15, "wikiOrdinal": 17, "name": "The Beardverse", "difficulty": "normal", "unlockBoss": 108,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/The_Beardverse",
+      "recommendations": {
+        "manual": {"power": 1.3e6, "toughness": 850000, "hp": null},
+        "idle": [{"beastMode": null, "power": 2.5e6, "toughness": 1.7e6, "hp": null}],
+        "oneHit": [{"power": 4.621e7, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["A Bearded Lady", "A Bearded Man", "Cousin Itt", "A Naked Molerat", "Rob Boss", "Gossamer"], "boss": ["AN ORANGE TOUPEE WITH FISTS (BOSS)", "A CLOGGED SHOWER DRAIN (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 50, "baseChance": 0.0035, "capChance": 0.25, "condition": null}, {"value": 100, "baseChance": 0.0035, "capChance": 0.25, "condition": null}],
+        "equipment": {"group": "Beardverse (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Groucho Marx Disguise", "Gossamer Chest", "Braided Beard Legs", "Fuzzy Orange Cheeto Slippers!", "Bearded Axe"], "normalChance": null, "bossChance": {"base": 0.01, "cap": null}},
+        "other": ["Normal/boss: A Beard Comb level 1, 0.02% base chance.", "Boss: EXP 20, 0.2% base chance, 10% cap; An Infinitely Long Strand of Beard Hair level 5, 0.02% base chance; Ascended Forest Pendant level 1, 0.6% base chance.", "Drop Chance MacGuffin Fragment after Walderp; A Spittoon if on quest; AN ORANGE TOUPEE WITH FISTS drops A Well Done Steak With Ketchup after first IT HUNGERS encounter."]
+      },
+      "notes": ["Overview manual toughness 550000, internally conflicting idle 3e6/2e6 versus parenthetical 2.5e6/2e6, one-hit 46.23M (4.62e7). Local manual toughness 550000, idle 3e6/2.2e6, one-hit 4.62e7. Individual page chosen without claiming verification."]
+    },
+    {
+      "zoneId": 17, "wikiOrdinal": 19, "name": "Badly Drawn World", "difficulty": "normal", "unlockBoss": 116,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Badly_Drawn_World",
+      "recommendations": {
+        "manual": {"power": 1.8e7, "toughness": 1.1e7, "hp": null},
+        "idle": [{"beastMode": null, "power": 4.5e7, "toughness": 3.5e7, "hp": null}],
+        "oneHit": [{"power": 8.8908e8, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["Badly Drawn Dragon", "Really Bad Sonic Fanart", "Badly Drawn Schoolgirl", "No Enemy(?)", "Really Bad MLP Fanart", "Loss.png"], "boss": ["EVIL SPIKY HAIRED GUY", "EVIL BADLY DRAWN KITTY"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 100, "baseChance": 0.001, "capChance": 0.2, "condition": null}, {"value": 200, "baseChance": 0.001, "capChance": 0.2, "condition": null}],
+        "equipment": {"group": "Badly Drawn (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Badly Drawn Smiley Face", "Badly Drawn Chest", "Badly Drawn Pants", "Badly Drawn Foot", "Badly Drawn Gun"], "normalChance": {"base": 0.00006, "cap": 0.05}, "bossChance": {"base": 0.00018, "cap": 0.15}},
+        "other": ["Normal/boss: Random Crayons level 1, 0.0012% base chance, 3% cap.", "Boss: EXP 25, 0.05% base chance, 10% cap; Looty McLootFace level 10, 0.05% base chance, 10% cap; Sir Looty McLootington III, Esquire level 5, 0.001% base chance, 1% cap; Ascended Ascended Forest Pendant level 1, 0.01% base chance, 1% cap; A busted copy of Wandoos XL level 3, 0.005% base chance, 1% cap.", "Golden MacGuffin Fragment after Walderp."]
+      },
+      "notes": ["Local manual recommendation 2.5e7/1.5e7 differs. Overview idle headline toughness 3.5e7 conflicts with parenthetical 3.7e7. Headline one-hit 889.08M is more precise than parenthetical 8.89e8."]
+    },
+    {
+      "zoneId": 18, "wikiOrdinal": 20, "name": "Boring-Ass Earth", "difficulty": "normal", "unlockBoss": 124,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Boring-Ass_Earth",
+      "recommendations": {
+        "manual": {"power": 1.8e8, "toughness": 9e7, "hp": null},
+        "idle": [{"beastMode": null, "power": 3.6e8, "toughness": 2.7e8, "hp": null}],
+        "oneHit": [{"power": 7.21e9, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 2, "denominator": 9},
+      "enemies": {"normal": ["The Eiffel Tower", "A Mummy", "A Daddy", "Two Bananas In Pyjamas", "Giant Raisins From California", "An Annoying Penguin", "An Army of Annoying Penguins"], "boss": ["THE ELUSIVE C.S (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 200, "baseChance": 0.00012, "capChance": 0.2, "condition": null}, {"value": 500, "baseChance": 0.00012, "capChance": 0.2, "condition": null}],
+        "equipment": {"group": "Stealth (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Stealthy Hat", "Stealthy Chest", "No Pants", "High Heeled Boots", "A Giant Bazooka"], "normalChance": {"base": 0.00003, "cap": 0.04}, "bossChance": {"base": 0.00009, "cap": 0.1}},
+        "other": ["Normal/boss: Red Lipstick level 1, 0.0006% base chance, 2% cap.", "Boss: EXP 30, 0.03% base chance, 10% cap; Ascended Ascended Forest Pendant level 5, 0.007% base chance, 1% cap; A busted copy of Wandoos XL level 8, 0.003% base chance, 1% cap; Sir Looty McLootington III, Esquire level 8, 0.0007% base chance, 1% cap.", "Boss: The Stealthiest Armour level 5 after Stealth set complete, 0.0001% base chance, 0.5% cap; Augment MacGuffin Fragment after Walderp."]
+      },
+      "notes": ["THE ELUSIVE C.S has double encounter weight."]
+    },
+    {
+      "zoneId": 20, "wikiOrdinal": 22, "name": "Chocolate World", "difficulty": "normal", "unlockBoss": 137,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Chocolate_World",
+      "recommendations": {
+        "manual": {"power": 7e10, "toughness": 5e10, "hp": null},
+        "idle": [{"beastMode": false, "power": 1.4e11, "toughness": 8e10, "hp": null}, {"beastMode": true, "power": 4e11, "toughness": 1.7e11, "hp": null}],
+        "oneHit": [{"power": 2.72e12, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 3, "denominator": 13},
+      "enemies": {"normal": ["Chocolate Mouse", "Chocolate Mimic", "Chocolate Crowbar", "Choco-Freeman", "Chocolate Fondue", "Chocolate Slime", "Dark Chocolate", "Chocolate Salty Balls", "Screaming Chocolate Fish", "A Mighty Lump of Poo"], "boss": ["MELTED CHOCOLATE BLOB (BOSS)", "CHOCO GIANT (BOSS)", "TYPE 2 DIABETES (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 200, "baseChance": 0.00055, "capChance": 0.1, "condition": null}, {"value": 500, "baseChance": 0.00055, "capChance": 0.1, "condition": null}],
+        "equipment": {"group": "Choco (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Chocolate Helmet", "Chocolate Chest", "Chocolate Pants", "Chocolate Boots", "Chocolate Crowbar"], "normalChance": {"base": 0.00018, "cap": 0.08}, "bossChance": {"base": 0.00055, "cap": 0.12}},
+        "other": ["Normal/boss: Candy Corn Necklace level 1, 0.008% base chance, 1.6% cap.", "Boss: EXP 30, 0.02% base chance, 3% cap; after Choco set complete, one of Energy Bar Bar (Accessory)/Magic Bar Bar (Accessory) level 1, 0.018% base chance, 12% cap.", "Boss: Ascended Ascended Ascended Pendant level 0, source states '0.1% + 0.0000001% base chance, up to 1% max'; additive interpretation not normalized.", "Stat MacGuffin Fragment after Walderp and Choco set completion; A Toothbrush if on quest; Screaming Chocolate Fish drops Can of Surstromming after first IT HUNGERS encounter."]
+      },
+      "notes": ["First cube-root loot zone; last normal-difficulty regular zone.", "Overview/local idle OFF recommendation is 1.5e11/9e10, not individual page 1.4e11/8e10."]
+    },
+    {
+      "zoneId": 21, "wikiOrdinal": 23, "name": "The Evilverse", "difficulty": "evil", "unlockBoss": 58,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/The_Evilverse",
+      "recommendations": {
+        "manual": {"power": 1e13, "toughness": 4.7e12, "hp": null},
+        "idle": [{"beastMode": false, "power": 2.4e13, "toughness": 1.6e13, "hp": null}, {"beastMode": true, "power": 5.3e13, "toughness": 2.4e13, "hp": null}],
+        "oneHit": [{"power": 4.4002e14, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 2, "denominator": 9},
+      "enemies": {"normal": ["Evil Mouse", "Evil Goblin", "Evil Gorgon", "Evil Mole", "Evil Icarus Proudbottom", "Evil Brown Slime", "Flock of Canada Geese"], "boss": ["EVIL SPIKY HAIRED GUY (BOSS)", "EVIL CHAD(BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 200, "baseChance": 0.00012, "capChance": 0.1, "condition": null}, {"value": 500, "baseChance": 0.00012, "capChance": 0.1, "condition": null}],
+        "equipment": {"group": "Edgy (set) + Edgy Boots (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Edgy Helmet", "Edgy Chest", "Edgy Pants", "Edgy Jaw Axe", "A Cheap Plastic Amulet", "Left Edgy Boot", "Right Edgy Boot"], "normalChance": {"base": 0.00007, "cap": 0.08}, "bossChance": {"base": 0.00021, "cap": 0.12}},
+        "other": ["Normal/boss: Edgy Magicite Crystal level 1, 0.002% base chance, 1.1% cap.", "Boss: EXP 30, 0.01% base chance, 3% cap; BOTH Edgy Boots level 1 after Edgy Boots set completion, 0.0018% base chance, 12% cap.", "Boss: Ascended Ascended Ascended Pendant level 1, source states '0.15% + 0.00000001% base chance, up to 1.5% max'; additive interpretation not normalized.", "Energy Wandoos MacGuffin Fragment after Walderp; A Severed Human Thumb if on quest."]
+      },
+      "notes": ["Headline 440.02T retained instead of rounded parenthetical 4.40e14."]
+    },
+    {
+      "zoneId": 22, "wikiOrdinal": 24, "name": "Pretty Pink Princess Land", "difficulty": "evil", "unlockBoss": 100,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Pretty_Pink_Princess_Land",
+      "recommendations": {
+        "manual": {"power": 5.4e13, "toughness": 2.4e13, "hp": null},
+        "idle": [{"beastMode": false, "power": 1.15e14, "toughness": 7e13, "hp": null}, {"beastMode": true, "power": 2.7e14, "toughness": 1.3e14, "hp": null}],
+        "oneHit": [{"power": 2.27e15, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["The Humkeycorn", "Pooky The Bunny", "'The More You Know' Star", "A Fabulous Leprechaun", "An Ordinary Possum", "Barry, the Beer Fairy"], "boss": ["AN ASSHOLE SWAN (BOSS)", "TINKLES (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 500, "baseChance": 0.0001, "capChance": 0.08, "condition": null}, {"value": 1000, "baseChance": 0.0001, "capChance": 0.06, "condition": null}],
+        "equipment": {"group": "Pretty Pink Princess (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Clown Hat", "Fabulous Super Chest", "A Crappy Tutu", "Pretty Pink Slippers", "Giant Sticky Foot", "A Pretty Pink Bow"], "normalChance": {"base": 0.00003, "cap": 0.08}, "bossChance": {"base": 0.0001, "cap": 0.12}},
+        "other": ["Normal/boss: Creepy Doll level 1, 0.0012% base chance, 1.3% cap.", "Boss: EXP 30, 0.03% base chance, 3% cap; Ascended Ascended Ascended Pendant level 2, source states '0.15% + 0.000000002% base chance, up to 2% max'; additive interpretation not normalized.", "Magic Wandoos MacGuffin Fragment after Walderp; A Smaller Caterpillar if on quest; Barry, the Beer Fairy drops A Jar of Marmite after first IT HUNGERS encounter."]
+      },
+      "notes": ["Overview/local idle OFF 1.3e14/9.7e13 differs from zone-page 1.15e14/7e13."]
+    },
+    {
+      "zoneId": 24, "wikiOrdinal": 26, "name": "Meta Land", "difficulty": "evil", "unlockBoss": 158,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Meta_Land",
+      "recommendations": {
+        "manual": {"power": 2.5e16, "toughness": 1.5e16, "hp": null},
+        "idle": [{"beastMode": false, "power": 4.5e16, "toughness": 3.5e16, "hp": null}, {"beastMode": true, "power": 1.15e17, "toughness": 5.5e16, "hp": null}],
+        "oneHit": [{"power": 1.05e18, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["A Half-eaten Cookie", "A Rusty Crank", "Ahh!! A Shark!!", "The number 1.8 x 10^308", "A Weird Goblin-Demon-Thing", "A Cute Kitten"], "boss": ["THE DRAGON OF WISDOM (BOSS)", "THE DRAGON OF DILDO (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 1000, "baseChance": 0.00005, "capChance": 0.07, "condition": null}, {"value": 2000, "baseChance": 0.00005, "capChance": 0.07, "condition": null}],
+        "equipment": {"group": "Meta (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Numerical Head", "Numerical Chest", "Numerical Legs", "Numerical Boots", "The Number 7", "Infinity Charm", "69 Charm"], "normalChance": {"base": 0.000015, "cap": 0.04}, "bossChance": {"base": 0.00005, "cap": 0.12}},
+        "other": ["Normal/boss: THE EXPONENTIAL level 1, 0.0006% base chance, 1.7% cap.", "Boss: EXP 30, 0.001% base chance, 3% cap; Ascended Ascended Ascended Pendant level 5, 0.005% base chance, 3% cap; Sir Looty McLootington III, Esquire level 25, 0.0012% base chance, 3% cap.", "Number MacGuffin Fragment after Walderp."]
+      },
+      "notes": ["Overview/local manual 2.6e16/1.2e16 and idle OFF toughness 3.1e16 differ from individual page."]
+    },
+    {
+      "zoneId": 25, "wikiOrdinal": 27, "name": "Interdimensional Party", "difficulty": "evil", "unlockBoss": 166,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Interdimensional_Party",
+      "recommendations": {
+        "manual": {"power": 2.5e17, "toughness": 1.5e17, "hp": null},
+        "idle": [{"beastMode": false, "power": 5e17, "toughness": 3.5e17, "hp": null}, {"beastMode": true, "power": 1.1e18, "toughness": 6e17, "hp": null}],
+        "oneHit": [{"power": 1.047e19, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["The Bouncer, Part 2", "Jambi", "God of Thunder", "The Entire State of South Dakota", "A Huge Stack of Pogs", "Three Guys Shouting out 'Ed'"], "boss": ["'MR CHOW' (BOSS)", "THE LIFE OF THE PARTY (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 1000, "baseChance": 0.00003, "capChance": 0.08, "condition": null}, {"value": 2000, "baseChance": 0.00003, "capChance": 0.08, "condition": null}],
+        "equipment": {"group": "Party (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Party Hat", "Pogmail Chest", "Tear Away Pants", "Pizza Boots", "The God of Thunder's Hammer", "Plastic Red Cup", "Party Whistle"], "normalChance": {"base": 0.000011, "cap": 0.04}, "bossChance": {"base": 0.000035, "cap": 0.12}},
+        "other": ["Normal/boss: Mt. Rushmore Roosevelt's Nose level 1, 0.0014% base chance, 1.7% cap.", "Boss: EXP 30, 0.003% base chance, 3% cap; Ascended Ascended Ascended Pendant level 10, 0.0035% base chance, 12% cap; Sir Looty McLootington III, Esquire level 68, 0.001% base chance, 12% cap.", "Blood MacGuffin Fragment after Walderp."]
+      },
+      "notes": ["Overview/local manual toughness 1.1e17, idle OFF 4.8e17/3.1e17; overview idle ON power 1.2e18. Individual page differs. One-hit headline 10.47Qi retained instead of rounded 1.05e19."]
+    },
+    {
+      "zoneId": 27, "wikiOrdinal": 29, "name": "Typo Zonw", "difficulty": "evil", "unlockBoss": 174,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Typo_Zonw",
+      "recommendations": {
+        "manual": {"power": 1.5e20, "toughness": 6.8e19, "hp": null},
+        "idle": [{"beastMode": false, "power": 3.7e20, "toughness": 2.4e20, "hp": null}, {"beastMode": true, "power": 8.8e20, "toughness": 4e20, "hp": null}],
+        "oneHit": [{"power": 6.92e21, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["Permanenet", "Coudl", "Liek", "Brian", "Blodo", "Odign"], "boss": ["HORUS (BOSS)", "ELDER TYPO GOD, ELXU (BOSS)"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 1000, "baseChance": 0.000022, "capChance": 0.08, "condition": null}, {"value": 2000, "baseChance": 0.000022, "capChance": 0.08, "condition": null}],
+        "equipment": {"group": "Typo (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Hamlet", "Chess Plate", "Logs", "Booms", "Wee pin", "The Ass-cessory", "Eye of ELXU"], "normalChance": {"base": 0.000009, "cap": 0.04}, "bossChance": {"base": 0.000025, "cap": 0.12}},
+        "other": ["Normal/boss: THRO, ODIGNSLUG level 1, 0.0004% base chance, 1.7% cap.", "Boss: EXP 35, 0.0022% base chance, 3% cap; Ascended Ascended Ascended Pendant level 10, 0.0025% base chance, 12% cap; Sir Looty McLootington III, Esquire level 68, 0.0006% base chance, 12% cap."]
+      },
+      "notes": ["Local/overview idle OFF power 2.7e20 differs from page 3.7e20. localBoostFarm boost caps 9% differ from wiki page 8%; wiki retained."]
+    },
+    {
+      "zoneId": 28, "wikiOrdinal": 30, "name": "The Fad-lands", "difficulty": "evil", "unlockBoss": 182,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/The_Fad-lands",
+      "recommendations": {
+        "manual": {"power": 7e20, "toughness": 4e20, "hp": null},
+        "idle": [{"beastMode": false, "power": 1.5e21, "toughness": 1.1e21, "hp": null}, {"beastMode": true, "power": 4e21, "toughness": 2e21, "hp": null}],
+        "oneHit": [{"power": 3.562e22, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["A Very Sad Slinky :c", "Giant Metal Spinning Top", "A Stack of Krazy Bonez", "Rare Foil Pokeyman Card", "A Busted Gameboy", "A Worthless Bean-y Baby"], "boss": ["THE SLAMMER", "DEMONIC FLURBIE"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 2000, "baseChance": 0.000018, "capChance": 0.08, "condition": null}, {"value": 5000, "baseChance": 0.000018, "capChance": 0.08, "condition": null}],
+        "equipment": {"group": "Fad (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Spinning Tophat", "Demonic Flurbie Chestplate", "AAA Battery Legs", "Slinky Boots", "THE MALF SLAMMER", "Rare Foil Pokeyman Card", "A handful of Krazy Bonez"], "normalChance": {"base": 0.000007, "cap": 0.04}, "bossChance": {"base": 0.000021, "cap": 0.12}},
+        "other": ["Normal/boss: A Link Cable level 1, 0.00025% base chance, 1.7% cap.", "Boss: EXP 40, 0.00018% base chance, 3% cap; Ascended Ascended Ascended Pendant level 10, 0.0021% base chance, 8% cap; Sir Looty McLootington III, Esquire level 68, 0.0007% base chance, 8% cap."]
+      },
+      "notes": ["Headline one-hit 35.62Sx retained instead of rounded 3.56e22. localBoostFarm boost caps 10% differ from wiki page 8%; wiki retained."]
+    },
+    {
+      "zoneId": 29, "wikiOrdinal": 31, "name": "JRPGVille", "difficulty": "evil", "unlockBoss": 190,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/JRPGVille",
+      "recommendations": {
+        "manual": {"power": 3e21, "toughness": 2.1e21, "hp": null},
+        "idle": [{"beastMode": false, "power": 8e21, "toughness": 6e21, "hp": null}, {"beastMode": true, "power": 2.5e22, "toughness": 1.3e22, "hp": null}],
+        "oneHit": [{"power": 1.8858e23, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["Sentient Pile of Belts", "Mimic 'Mimic Chest' Chest", "A Suplexing Train", "The Annoying Fan", "The Infinity+1 Sword", "The Damage Cap"], "boss": ["FINAL BOSS", "TRUE FINAL BOSS"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 2000, "baseChance": 0.000015, "capChance": 0.1, "condition": null}, {"value": 5000, "baseChance": 0.000015, "capChance": 0.1, "condition": null}],
+        "equipment": {"group": "JRPG (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Buster Sword Top", "Buster Sword Upper", "Buster Sword Lower", "Buster Sword Bottom", "Gift Shop Buster Sword Replica", "A Gigantic Zipper", "Anime Hero Wig"], "normalChance": {"base": 0.0000055, "cap": 0.04}, "bossChance": {"base": 0.000018, "cap": 0.12}},
+        "other": ["Normal/boss: A Hand Cursor level 1, 0.0002% base chance, 1.7% cap.", "Boss: EXP 45, 0.0018% base chance, 3% cap; Ascended Ascended Ascended Pendant level 10, 0.0018% base chance, 12% cap; Sir Looty McLootington III, Esquire level 68, 0.00055% base chance, 12% cap.", "The Annoying Fan drops Pizza With Pineapple after first IT HUNGERS encounter."]
+      },
+      "notes": ["Local manual 4e21/2e21, idle OFF 9e21/6e21, one-hit 7.2e23 differ materially from page 3e21/2.1e21, 8e21/6e21, 1.8858e23."]
+    },
+    {
+      "zoneId": 31, "wikiOrdinal": 33, "name": "The Rad-Lands", "difficulty": "evil", "unlockBoss": 200,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/The_Rad-Lands",
+      "recommendations": {
+        "manual": {"power": 3.2e24, "toughness": 1.4e24, "hp": null},
+        "idle": [{"beastMode": false, "power": 9.1e24, "toughness": 5.6e24, "hp": null}, {"beastMode": true, "power": 2.4e25, "toughness": 1.2e25, "hp": null}],
+        "oneHit": [{"power": 1.8857e26, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 5},
+      "enemies": {"normal": ["Small Bart", "Pair of Shades Wearing Shades", "Lame Security Guard", "A Giant Vat of Plutonium-238", "Mutant Zombie Marie Curie", "Nuclear Power Pants", "A Wandering Gamma Ray", "A Massive Sealed Vault"], "boss": ["A.C SKATER", "RADIOACTIVE MACGUFFIN"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 2000, "baseChance": 6e-7, "capChance": 0.15, "condition": null}, {"value": 5000, "baseChance": 6e-7, "capChance": 0.15, "condition": null}],
+        "equipment": {"group": "Rad (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Cool Shades", "Leather Jacket", "Flamin' Hot Shorts", "A Skateboard", "Nunchuks", "Not Drugs", "The Glove of Power"], "normalChance": {"base": 2e-7, "cap": 0.05}, "bossChance": {"base": 6e-7, "cap": 0.15}},
+        "other": ["Normal/boss: Rad Mixtape level 1, 0.000008% base chance, 1.7% cap.", "Boss: EXP 450, 0.00006% base chance, 15% cap; Ascended x4 Pendant level 1, 0.00012% base chance, 12% cap; King Looty level 1, 0.00004% base chance, 12% cap."]
+      },
+      "notes": ["Last evil-difficulty regular zone. Local idle OFF 7.8e24/5.2e24 and one-hit 1.04e25 differ materially from page 9.1e24/5.6e24 and 1.8857e26."]
+    },
+    {
+      "zoneId": 32, "wikiOrdinal": 34, "name": "Back To School", "difficulty": "sadistic", "unlockBoss": 125,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Back_To_School",
+      "recommendations": {
+        "manual": {"power": 5e26, "toughness": 2.5e26, "hp": null},
+        "idle": [{"beastMode": false, "power": 1.7e27, "toughness": 8.5e26, "hp": null}, {"beastMode": true, "power": 4.4e27, "toughness": 1.4e27, "hp": null}],
+        "oneHit": [{"power": 5.239e28, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["A Different Greasy Nerd", "Sentient Jock Strap", "The Flying Spinelli Monster", "A Really Strict Nun", "The Nun's Ruler", "The Mystery Meat"], "boss": ["WILLY", "BELDING"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 5000, "baseChance": 4e-7, "capChance": 0.1, "condition": null}, {"value": 10000, "baseChance": 4e-7, "capChance": 0.1, "condition": null}],
+        "equipment": {"group": "Back To School (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Dunce Cap", "School Jersey", "ULTRAWIDE Pants", "Shoes With Wheels", "Floppy Elastic Ruler", "THE S", "A Walkman"], "normalChance": {"base": 1.5e-7, "cap": 0.05}, "bossChance": {"base": 4.5e-7, "cap": 0.15}},
+        "other": ["Boss: EXP 500, 0.000045% base chance, 15% cap; Ascended x5 Pendant level 1, 0.000045% base chance, 12% cap; Emperor Looty level 1, 0.000015% base chance, 12% cap."]
+      },
+      "notes": ["Local idle OFF 1.75e27/8.8e26 and one-hit 1.76e27 differ from page 1.7e27/8.5e26 and 5.239e28."]
+    },
+    {
+      "zoneId": 33, "wikiOrdinal": 35, "name": "The West World", "difficulty": "sadistic", "unlockBoss": 150,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/The_West_World",
+      "recommendations": {
+        "manual": {"power": 2.65e27, "toughness": 8.3e26, "hp": null},
+        "idle": [{"beastMode": false, "power": 8e27, "toughness": 3.5e27, "hp": null}, {"beastMode": false, "power": 6.3e27, "toughness": 4.8e27, "hp": null}, {"beastMode": true, "power": 1.92e28, "toughness": 8.7e27, "hp": null}],
+        "oneHit": [{"power": 2.2216e29, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["A Stickman Cowboy", "A Giant Cannon", "The Entire Bar", "A Pathetic Tumbleweed", "A Single Cow", "Herd of Pissed Off Cows"], "boss": ["THE OUTLAW", "THE SHERIFF"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 5000, "baseChance": 2.5e-7, "capChance": 0.15, "condition": null}, {"value": 10000, "baseChance": 2.5e-7, "capChance": 0.15, "condition": null}],
+        "equipment": {"group": "Western (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["A 10 Litre Hat", "Asslest Vest", "Assful Chaps", "Extra Spiky Spurs", "The Six Shooter", "A Battle Corgi", "A Pink Bandana"], "normalChance": {"base": 1e-7, "cap": 0.05}, "bossChance": {"base": 3e-7, "cap": 0.15}},
+        "other": ["After Western set completion: A 9mm Beretta level 1, normal 0.000002% base chance / boss 0.000006% base chance, 12% cap.", "Boss: EXP 600, 0.00003% base chance, 15% cap; Ascended x5 Pendant level 1, 0.0001% base chance, 12% cap; Emperor Looty level 1, 0.00003% base chance, 12% cap."]
+      },
+      "notes": ["Both OFF recommendations preserved; second is source's 'alt'. Local manual toughness 8.26e26, idle 8.85e27/4.6e27, one-hit 9.2e27 differ."]
+    },
+    {
+      "zoneId": 35, "wikiOrdinal": 37, "name": "The Breadverse", "difficulty": "sadistic", "unlockBoss": 208,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/The_Breadverse",
+      "recommendations": {
+        "manual": {"power": 1.73e29, "toughness": 6.41e28, "hp": null},
+        "idle": [{"beastMode": false, "power": 4e29, "toughness": 2.6e29, "hp": null}, {"beastMode": true, "power": 9e29, "toughness": 4.5e29, "hp": null}],
+        "oneHit": [{"power": null, "toughness": null, "hp": null, "condition": "Zone page lists '-'"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["Grandma's 'Brownies'", "Angry Raw Cookie Dough", "A Bearded Breaded Braid", "Butcher & Candlestick Maker", "The Ex-Greatest Thing", "Moldy Slice Of Bread"], "boss": ["THE YEAST BEAST", "A DAY-OLD BAGUETTE"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 5000, "baseChance": 1e-7, "capChance": 0.15, "condition": null}, {"value": 10000, "baseChance": 1e-7, "capChance": 0.15, "condition": null}],
+        "equipment": {"group": "Bread (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Bread Bowl Helmet", "Paper Thin Crepe Cape", "Flour Sack Pants", "Gingerbread Boots", "1 Day-Old Baguette", "A Cream Pie", "A Spoonful of Yeast", "A Rolling Pin"], "normalChance": {"base": 4e-8, "cap": 0.04}, "bossChance": {"base": 1.2e-7, "cap": 0.15}},
+        "other": ["Boss: EXP 800, 0.000012% base chance, 15% cap; Ascended x5 Pendant level 5, 0.00004% base chance, 12% cap; Emperor Looty level 5, 0.000012% base chance, 12% cap."]
+      },
+      "notes": ["Local manual power 1.79e29, idle 4.31e29/2.44e29, one-hit 4.88e29. Zone page lacks one-hit; local value is NOT promoted to a wiki-verified threshold."]
+    },
+    {
+      "zoneId": 36, "wikiOrdinal": 38, "name": "That 70's Zone", "difficulty": "sadistic", "unlockBoss": 216,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/That_70%27s_Zone",
+      "recommendations": {
+        "manual": {"power": 5e29, "toughness": 2e29, "hp": null},
+        "idle": [{"beastMode": false, "power": 1.28e30, "toughness": 9.3e29, "hp": null}, {"beastMode": true, "power": 3.7e30, "toughness": 1.5e30, "hp": null}],
+        "oneHit": [{"power": 1.36e31, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["A Groovy Saxophone", "A Giant Pair Of Roller Skates", "A 70's Porn Mustasche", "A Disgusting Bong", "A Hippie with a Hip", "Holy Crap It's Another Shark"], "boss": ["THE WORST VINYL RECORD", "THE 'FRO"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 10000, "baseChance": 6e-8, "capChance": 0.15, "condition": null}, {"value": 10000, "baseChance": 6e-8, "capChance": 0.15, "condition": null}],
+        "equipment": {"group": "Disco (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Disco Ball Helmet", "Disco Shirt", "Bell Bottoms", "Roller Skates", "A Rusty Old Sabre", "A Bit of White Powder", "Some Rolling Paper", "A Vinyl Record Shard"], "normalChance": {"base": 2.5e-8, "cap": 0.04}, "bossChance": {"base": 8e-8, "cap": 0.15}},
+        "other": ["Boss: EXP 1000, 0.000008% base chance, 15% cap; Ascended x5 Pendant level 15, 0.000025% base chance, 12% cap; Emperor Looty level 15, 0.000008% base chance, 12% cap."]
+      },
+      "notes": ["Two identical Boost 10000 rows are intentional, as listed in the wiki and local helper.", "Local manual 5.77e29/1.17e29, idle 1.07e30/7.59e29, one-hit 1.518e30 differ from individual page."]
+    },
+    {
+      "zoneId": 37, "wikiOrdinal": 39, "name": "The Halloweenies", "difficulty": "sadistic", "unlockBoss": 224,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/The_Halloweenies",
+      "recommendations": {
+        "manual": {"power": 1.6e30, "toughness": 4e29, "hp": null},
+        "idle": [{"beastMode": false, "power": 3.7e30, "toughness": 2.8e30, "hp": null}, {"beastMode": true, "power": 7.7e30, "toughness": 4e30, "hp": null}],
+        "oneHit": [{"power": 4.2e31, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["Ultra Instinct Stoner", "A Skeleton Inside a Body", "A Badly Made Sexy Florida Costume", "An Unnecessary Sequel", "An Elevator Full of Blood", "Candy Corn"], "boss": ["TEXAS CHAINSAW MASCARA", "JIGSAW"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 10000, "baseChance": 4e-8, "capChance": 0.15, "condition": null}, {"value": 10000, "baseChance": 4e-8, "capChance": 0.15, "condition": null}],
+        "equipment": {"group": "Halloweenie (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Neck Bolts", "Skeleton Shirt", "A Broomstick", "Fuzzy Boots", "An Ordinary Apple", "A Roll of Toilet Paper", "Pandora's Box", "A Giant Scythe"], "normalChance": {"base": 1.6e-8, "cap": 0.04}, "bossChance": {"base": 5e-8, "cap": 0.15}},
+        "other": ["Boss: EXP 1200, 0.000005% base chance, 15% cap; Ascended x5 Pendant level 40, 0.000016% base chance, 12% cap; Emperor Looty level 40, 0.000006% base chance, 12% cap."]
+      },
+      "notes": ["Local manual 1.55e30/5.51e29, idle 3.84e30/2.33e30, one-hit 4.66e30 differ from individual page."]
+    },
+    {
+      "zoneId": 39, "wikiOrdinal": 41, "name": "Construction Zone", "difficulty": "sadistic", "unlockBoss": 232,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/Construction_Zone",
+      "recommendations": {
+        "manual": {"power": 5.3e31, "toughness": 1.8e31, "hp": null},
+        "idle": [{"beastMode": false, "power": 1.259e32, "toughness": 9.535e31, "hp": null}, {"beastMode": true, "power": 3.7e32, "toughness": 1.64e32, "hp": null}],
+        "oneHit": [{"power": null, "toughness": null, "hp": null, "condition": "Unresolved source unit/exponent conflict: '1.42 Dec (1.42E+32)'"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["A Construction Slob", "Quicksand Cement", "A Cement Truck", "A Bulldozer", "3 Guys Carrying a Beam", "A Piano-Safe"], "boss": ["7 GUYS TAKING A BREAK", "THE CRANE"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 10000, "baseChance": 2.5e-8, "capChance": 0.16, "condition": null}, {"value": 10000, "baseChance": 2.5e-8, "capChance": 0.16, "condition": null}],
+        "equipment": {"group": "Construction (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["A Hardhat", "High Visibility Vest", "Yet Another Generic Pair Of Jeans", "Steel Toed Boots", "A Wooden Hammer", "The Toolbox", "A Level Level", "A Giant Wrecking Ball"], "normalChance": {"base": 1e-8, "cap": 0.04}, "bossChance": {"base": 3e-8, "cap": 0.15}},
+        "other": ["Boss: EXP 1200, 0.000004% base chance, 15% cap; Ascended x6 Pendant level 2, 0.00001% base chance, 12% cap; GALACTIC HERALD LOOTY level 2, 0.000004% base chance, 12% cap."]
+      },
+      "notes": ["Wiki stub. 'Dec' would ordinarily indicate 1e33, conflicting with parenthetical 1e32; no silent correction made.", "Local manual 5.24e31/2.01e31, idle 1.45e32/8e31, one-hit 1.6e32; not independently verified."]
+    },
+    {
+      "zoneId": 40, "wikiOrdinal": 42, "name": "DUCK DUCK ZONE", "difficulty": "sadistic", "unlockBoss": 240,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/DUCK_DUCK_ZONE",
+      "recommendations": {
+        "manual": {"power": 1.44e32, "toughness": 4.3e31, "hp": null},
+        "idle": [{"beastMode": false, "power": 3.3e32, "toughness": 3e32, "hp": null}, {"beastMode": true, "power": 1.23e33, "toughness": 4.27e32, "hp": null}],
+        "oneHit": [{"power": null, "toughness": null, "hp": null, "condition": "Zone page lists '?'"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["A Duck", "Another Duck", "...Goose!", "Scientifically Accurate Duck", "A MotherDucker", "Totally A Duck"], "boss": ["THE DOG", "A SINGLE GRAPE"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 10000, "baseChance": 2e-8, "capChance": 0.17, "condition": null}, {"value": 10000, "baseChance": 2e-8, "capChance": 0.17, "condition": null}],
+        "equipment": {"group": "Duck (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["A Fake Duckbill", "An Inflatable Ducky Innertube", "Duck Duck Shorts", "Duck Slippers", "A shotgun", "Some Duck-t Tape", "A Duck Caller", "The Zapper"], "normalChance": {"base": 8e-9, "cap": 0.05}, "bossChance": {"base": 2.4e-8, "cap": 0.15}},
+        "other": ["Boss: EXP 1200, 0.0000033% base chance, 15% cap; Ascended x6 Pendant level 4, 0.000008% base chance, 12% cap; GALACTIC HERALD LOOTY level 4, 0.000003% base chance, 12% cap."]
+      },
+      "notes": ["Wiki stub. Local manual 1.28e32/3.2e31, idle 3.5e32/2.7e32, one-hit 1e33; wiki supplies no one-hit value."]
+    },
+    {
+      "zoneId": 41, "wikiOrdinal": 43, "name": "The Nether Regions", "difficulty": "sadistic", "unlockBoss": 248,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/The_Nether_Regions",
+      "recommendations": {
+        "manual": {"power": 3.15e32, "toughness": 8.42e31, "hp": null},
+        "idle": [{"beastMode": false, "power": 7.8e32, "toughness": 5.2e32, "hp": null}, {"beastMode": true, "power": 1.8e33, "toughness": 6.7e32, "hp": null}],
+        "oneHit": [{"power": null, "toughness": null, "hp": null, "condition": "Zone page lists '?'"}]
+      },
+      "bossChance": {"numerator": 1, "denominator": 4},
+      "enemies": {"normal": ["A Patch of Tulips", "A Random Lady", "A Lost Canadian Moose :c", "A 5-Bladed Windmill", "A Jerk Cyclist", "A Dutch Oven"], "boss": ["THE GRAND DUTCH DUCHY", "DAAN VAN DER VAAN JAANSEN"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 10000, "baseChance": 1.6e-8, "capChance": 0.17, "condition": null}, {"value": 10000, "baseChance": 1.6e-8, "capChance": 0.17, "condition": null}],
+        "equipment": {"group": "Dutch (set)", "selection": "one_of", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["A Dutch Hat", "Windmill Shirt", "Stroopwaffel Pants", "Clogs", "Black Tulip", "Pocket Netherlands", "Rest of the Combat Cheese", "Weaponized Hollandaise sauce"], "normalChance": {"base": 6e-9, "cap": 0.05}, "bossChance": {"base": 1.8e-8, "cap": 0.15}},
+        "other": ["Boss: EXP 1200, 0.0000018% base chance, 15% cap; Ascended x6 Pendant level 8, 0.000006% base chance, 12% cap; GALACTIC HERALD LOOTY level 8, 0.0000024% base chance, 12% cap."]
+      },
+      "notes": ["Wiki stub. Local idle 8.94e32/6.03e32, one-hit 1.12e33; wiki supplies no one-hit value."]
+    },
+    {
+      "zoneId": 43, "wikiOrdinal": 45, "name": "The Aethereal Sea", "difficulty": "sadistic", "unlockBoss": 269,
+      "sourceUrl": "https://ngu-idle.fandom.com/wiki/The_Aethereal_Sea",
+      "recommendations": {
+        "manual": {"power": 1.72e34, "toughness": 6.1e33, "hp": null},
+        "idle": [{"beastMode": false, "power": 5.2e34, "toughness": 3.3e34, "hp": null}, {"beastMode": true, "power": 1.22e35, "toughness": 5.44e34, "hp": null}],
+        "oneHit": [{"power": 5.75e35, "toughness": null, "hp": null, "condition": "As listed; modifier unspecified"}]
+      },
+      "bossChance": {"numerator": 4, "denominator": 21},
+      "enemies": {"normal": ["A Seagull", "Cosmic Jellyfish", "Aether Eel", "You.", "A Pi-rat", "A Bunch of Old Newspapers", "Another You.", "A Paddlefish", "An Anglerfish", "A Bunch of Cannons", "A Pile of Ropes", "Ladders!", "And Snakes!!!", "The First Pirate", "The Second Pirate", "The Third Pirate", "The Fourth Pirate"], "boss": ["THE BUCKET", "A TAR BLOB MONSTER", "RAMSHACKLE SEA INN", "THE CAPTAIN"]},
+      "enemyStats": [],
+      "drops": {
+        "boosts": [{"value": 10000, "baseChance": 1e-8, "capChance": 0.17, "condition": null}, {"value": 10000, "baseChance": 1e-8, "capChance": 0.17, "condition": null}],
+        "equipment": {"group": "Pirate (set)", "selection": "unspecified", "baseLevel": 1, "baseLevelExceptions": {}, "items": ["Pirate Hat", "Swashbuckler Chest", "Piratey Pants", "Piratey Peglegs", "The Cutlass", "A Giant's Eyepatch", "A Compass!", "The Flintlock"], "normalChance": {"base": 4e-9, "cap": 0.05}, "bossChance": {"base": 1.2e-8, "cap": 0.15}},
+        "other": ["Boss: EXP 1200, chance not specified.", "Boss: Ascended x6 Pendant level 16 and GALACTIC HERALD LOOTY level 16; both chances explicitly unknown ('?') on zone page."]
+      },
+      "notes": ["Wiki stub. Former name The Aethereal Sea Part 1; intended Part 2 reportedly cancelled in Build 1.260.", "Manual power headline 17.2Dc retained as 1.72e34 rather than rounded parenthetical 1.7e34.", "No entry in localZoneStats. localBoostFarm includes ID 43 but has a different model one-hit value 8.77e35, not enemy HP.", "Roster names have no linked enemy stat pages on the zone page; attempted THE_CAPTAIN page returned 404."]
+    }
+  ],
+  "titans": [
+    {"zoneId": 6, "wikiOrdinal": 8, "titanNumber": 1, "name": "Gordon Ramsay Bolton", "difficulty": "normal", "unlockBoss": 58, "source": "titans"},
+    {"zoneId": 8, "wikiOrdinal": 10, "titanNumber": 2, "name": "Grand Corrupted Tree", "difficulty": "normal", "unlockBoss": 66, "source": "titans"},
+    {"zoneId": 11, "wikiOrdinal": 13, "titanNumber": 3, "name": "Jake from Accounting", "difficulty": "normal", "unlockBoss": 82, "source": "titans"},
+    {"zoneId": 14, "wikiOrdinal": 16, "titanNumber": 4, "name": "UUG, The Unmentionable", "difficulty": "normal", "unlockBoss": 100, "source": "titans"},
+    {"zoneId": 16, "wikiOrdinal": 18, "titanNumber": 5, "name": "Walderp", "difficulty": "normal", "unlockBoss": 116, "source": "titans"},
+    {"zoneId": 19, "wikiOrdinal": 21, "titanNumber": 6, "name": "The Beast", "difficulty": "normal", "unlockBoss": 132, "source": "titans"},
+    {"zoneId": 23, "wikiOrdinal": 25, "titanNumber": 7, "name": "Greasy Nerd", "difficulty": "evil", "unlockBoss": 125, "source": "titans"},
+    {"zoneId": 26, "wikiOrdinal": 28, "titanNumber": 8, "name": "The Godmother", "difficulty": "evil", "unlockBoss": 166, "source": "titans"},
+    {"zoneId": 30, "wikiOrdinal": 32, "titanNumber": 9, "name": "The Exile", "difficulty": "evil", "unlockBoss": 190, "source": "titans"},
+    {"zoneId": 34, "wikiOrdinal": 36, "titanNumber": 10, "name": "IT HUNGERS", "difficulty": "sadistic", "unlockBoss": 175, "source": "titans"},
+    {"zoneId": 38, "wikiOrdinal": 40, "titanNumber": 11, "name": "ROCK LOBSTER", "difficulty": "sadistic", "unlockBoss": 224, "source": "titans"},
+    {"zoneId": 42, "wikiOrdinal": 44, "titanNumber": 12, "name": "AMALGAMATE", "difficulty": "sadistic", "unlockBoss": 248, "source": "titans"},
+    {"zoneId": 44, "wikiOrdinal": 46, "titanNumber": 13, "name": "TIPPI THE TUTORIAL MOUSE", "difficulty": "sadistic", "unlockBoss": 295, "source": "titans"},
+    {"zoneId": 45, "wikiOrdinal": 47, "titanNumber": 14, "name": "THE TRAITOR", "difficulty": "sadistic", "unlockBoss": 300, "source": "titans"}
+  ],
+  "excluded": [
+    "Titan combat stats, version-specific autokill requirements, timers, unlock quests and drops: separate systems, not interchangeable with regular-zone idle/one-hit recommendations.",
+    "ITOPOD (injector sentinel 1000): floor-based scaling, not one of the 47 indexed locations.",
+    "Live save state, effectiveBossID offsets, equipment bonuses, loot filters, recycle probabilities and automation decisions.",
+    "Gold ranges and most per-enemy ability/timing details were not transcribed."
+  ],
+  "missingFields": [
+    "All recommended player HP values; all one-hit toughness values.",
+    "Enemy stats outside the eight separately sourced records; no full-zone enemy maxima have been calculated.",
+    "Reliable numeric one-hit recommendations for The Breadverse, Construction Zone, DUCK DUCK ZONE and The Nether Regions.",
+    "Explicit boost caps for Tutorial through High Security Base; duplicate boost roll independence and individual gear selection weights.",
+    "Exact damage formula and consistent modifier/buff conditions for wiki one-hit values.",
+    "Aethereal Sea special-drop probabilities and EXP chance; complete normalized special/quest/MacGuffin drop rules.",
+    "Wiki revision IDs were not captured; URLs are live community pages and may change after retrieval."
+  ]
+}

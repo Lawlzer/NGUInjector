@@ -1,363 +1,94 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using static NGUInjector.Main;
 
 namespace NGUInjector.Managers
 {
-    internal enum LockType
-    {
-        Titan,
-        Yggdrasil,
-        MoneyPit,
-        Gold,
-        None
-    }
     internal static class LoadoutManager
     {
-        // Each snapshot owns its helpers but retains the original Equipment references for identity.
-        private static ih[] _savedLoadout;
-        private static ih[] _tempLoadout;
-        internal static LockType CurrentLock { get; set; }
-
-        internal static bool CanSwap()
+        // Equipment references are only meaningful in the save/rebirth that supplied them.
+        internal sealed class SnapshotEpoch
         {
-            return CurrentLock == LockType.None;
-        }
+            private readonly Character character = Main.Character;
+            private readonly object inventory = Main.Character.inventory;
+            private readonly object diggers = Main.Character.diggers;
+            private readonly object yggdrasil = Main.Character.yggdrasil;
+            private readonly object stats = Main.Character.stats;
+            private readonly long rebirth = Main.Character.stats.rebirthNumber;
+            private readonly double elapsed = Main.Character.rebirthTime.totalseconds;
+            private readonly double total = Main.Character.totalPlaytime.totalseconds;
 
-        internal static void AcquireLock(LockType type)
-        {
-            CurrentLock = type;
-        }
-
-        internal static void ReleaseLock()
-        {
-            CurrentLock = LockType.None;
-        }
-
-        internal static void RemoveResourcesForGearSwap()
-        {
-            // Matches the in-game R/T behavior: keep basic energy training, clear gear-dependent allocations.
-            Main.Character.removeMostEnergy();
-            Main.Character.removeMostMagic();
-            Main.Character.removeAllRes3();
-        }
-
-        internal static void RestoreGear()
-        {
-            if (_savedLoadout == null)
+            internal bool Matches()
             {
-                Log("Failed to restore original loadout: no saved snapshot is available");
-                return;
-            }
-
-            Log($"Restoring original loadout");
-            var failure = GearOptimizer.EquipGear(_savedLoadout, false, true);
-            if (failure != null)
-                Log($"Failed to restore original loadout: {failure}");
-        }
-
-        internal static void TryTitanSwap()
-        {
-            if (Settings.TitanLoadout.Length == 0 && Settings.GoldDropLoadout.Length == 0)
-                return;
-            //Skip if we're currently locked for yggdrasil (although this generally shouldn't happen)
-            if (!CanAcquireOrHasLock(LockType.Titan))
-                return;
-
-            //If we're currently holding the lock
-            if (CurrentLock == LockType.Titan)
-            {
-                //If we haven't AKed yet, just return
-                if (ZoneHelpers.TitansSpawningSoon().SpawningSoon)
-                    return;
-
-                //Titans have been AKed, restore back to original gear
-                RestoreGear();
-                ReleaseLock();
-                return;
-            }
-
-            //No lock currently, check if titans are spawning
-            var ts = ZoneHelpers.TitansSpawningSoon();
-            if (ts.SpawningSoon)
-            {
-                Log("Equipping Loadout for Titans");
-                
-                //Titans are spawning soon, grab a lock and swap
-                AcquireLock(LockType.Titan);
-                SaveCurrentLoadout();
-
-                if (Settings.ManageGoldLoadouts && ts.RunMoneyLoadout)
-                {
-                    Log("Equipping Gold Drop Loadout");
-                    ChangeGear(Settings.GoldDropLoadout);
-                    ZoneHelpers.MarkTitanMoneyDone(ts.GoldTargetIndex);
-                    Settings.DoGoldSwap = false;
-                }
-                else
-                {
-                    Log("Equipping Titan Loadout");
-                    ChangeGear(Settings.TitanLoadout);
-                }
+                var c = Main.Character;
+                return ReferenceEquals(c, character) && c?.rebirthTime != null && c.totalPlaytime != null
+                    && ReferenceEquals(c.inventory, inventory) && ReferenceEquals(c.diggers, diggers)
+                    && ReferenceEquals(c.yggdrasil, yggdrasil) && ReferenceEquals(c.stats, stats)
+                    && c.stats.rebirthNumber == rebirth && c.rebirthTime.totalseconds + .1d >= elapsed
+                    && c.totalPlaytime.totalseconds + .1d >= total
+                    && Math.Abs(c.totalPlaytime.totalseconds - c.rebirthTime.totalseconds - (total - elapsed)) <= 1d;
             }
         }
 
-        internal static bool TryYggdrasilSwap()
-        {
-            if (!CanAcquireOrHasLock(LockType.Yggdrasil))
-                return false;
-
-            if (CurrentLock == LockType.Yggdrasil)
-                return true;
-
-            Log("Equipping Yggdrasil Loadout");
-            AcquireLock(LockType.Yggdrasil);
-            SaveCurrentLoadout();
-            ChangeGear(Settings.YggdrasilLoadout);
-            return true;
-        }
-
-        internal static bool TryMoneyPitSwap()
-        {
-            if (!CanAcquireOrHasLock(LockType.MoneyPit))
-                return false;
-
-            Log("Equipping Money Pit");
-            AcquireLock(LockType.MoneyPit);
-            SaveCurrentLoadout();
-            ChangeGear(Settings.MoneyPitLoadout, true);
-            return true;
-        }
-
-        internal static bool TryGoldDropSwap()
-        {
-            if (!CanAcquireOrHasLock(LockType.Gold))
-                return false;
-
-            //We already hold the lock so just return true
-            if (CurrentLock == LockType.Gold)
-            {
-                return true;
-            }
-
-            Log("Equipping Gold Loadout");
-            AcquireLock(LockType.Gold);
-            SaveCurrentLoadout();
-            ChangeGear(Settings.GoldDropLoadout);
-
-            return true;
-        }
-
-        private static bool CanAcquireOrHasLock(LockType requestor)
-        {
-            if (CurrentLock == requestor)
-            {
-                return true;
-            }
-
-            if (CurrentLock == LockType.None)
-            {
-                return true;
-            }
-
-            return false;
-        }
-
-        internal static void ChangeGear(int[] gearIds, bool moneyPit = false)
-        {
-            if (gearIds.Length == 0)
-                return;
-            Log($"Received New Gear: {string.Join(",", gearIds.Select(x => x.ToString()).ToArray())}");
-            var weaponSlot = -5;
-            var accSlot = 10000;
-            var controller = Controller;
-
-            RemoveResourcesForGearSwap();
-
-            try
-            {
-                foreach (var itemId in gearIds)
-                {
-                    var inv = Main.Character.inventory;
-
-                    var equip = FindItemSlot(itemId, moneyPit);
-
-                    if (equip == null)
-                    {
-                        try
-                        {
-                            Log($"Missing item {Controller.itemInfo.itemName[itemId]} with ID {itemId}");
-                        }
-                        catch (Exception)
-                        {
-                            //pass
-                        }
-
-                        continue;
-                    }
-
-                    var type = equip.equipment.type;
-
-                    inv.item2 = equip.slot;
-                    switch (type)
-                    {
-                        case part.Head:
-                            inv.item1 = -1;
-                            controller.swapHead();
-                            break;
-                        case part.Chest:
-                            inv.item1 = -2;
-                            controller.swapChest();
-                            break;
-                        case part.Legs:
-                            inv.item1 = -3;
-                            controller.swapLegs();
-                            break;
-                        case part.Boots:
-                            inv.item1 = -4;
-                            controller.swapBoots();
-                            break;
-                        case part.Weapon:
-                            if (weaponSlot == -5)
-                            {
-                                inv.item1 = -5;
-                                controller.swapWeapon();
-                            }
-                            else if (weaponSlot == -6 && controller.weapon2Unlocked())
-                            {
-                                inv.item1 = -6;
-                                controller.swapWeapon2();
-                            }
-
-                            weaponSlot--;
-                            break;
-                        case part.Accessory:
-                            if (controller.accessoryID(accSlot) < controller.accessorySpaces() && accSlot != equip.slot)
-                            {
-                                inv.item1 = accSlot;
-                                controller.swapAcc();
-                            }
-
-                            accSlot++;
-
-                            break;
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                Log(e.Message);
-                Log(e.StackTrace);
-            }
-            
-
-            controller.updateBonuses();
-            controller.updateInventory();
-            Log("Finished equipping gear");
-        }
-
-        private static ih FindItemSlot(int id, bool moneyPit = false)
+        internal static ih[] CaptureExactLoadout()
         {
             var inv = Main.Character.inventory;
-            if (inv.head.id == id)
-            {
-                return inv.head.GetInventoryHelper(-1);
-            }
+            var result = new List<ih> {
+                inv.head.GetInventoryHelper(-1), inv.chest.GetInventoryHelper(-2), inv.legs.GetInventoryHelper(-3),
+                inv.boots.GetInventoryHelper(-4), inv.weapon.GetInventoryHelper(-5)
+            };
+            if (Controller.weapon2Unlocked()) result.Add(inv.weapon2.GetInventoryHelper(-6));
+            result.AddRange(inv.accs.Take(Math.Max(0, Controller.accessorySpaces()))
+                .Select((item, index) => item.GetInventoryHelper(10000 + index)));
+            return result.ToArray();
+        }
 
-            if (inv.chest.id == id)
-            {
-                return inv.chest.GetInventoryHelper(-2);
-            }
+        internal static ih[] ComposeExactLoadout(ih[] original, IEnumerable<ih> selectedDestinations)
+        {
+            if (original == null || selectedDestinations == null) throw new ArgumentNullException();
+            var selected = selectedDestinations.ToArray();
+            if (original.Any(x => x?.equipment == null) || original.Select(x => x.slot).Distinct().Count() != original.Length
+                || selected.Any(x => x?.equipment == null || !original.Any(y => y.slot == x.slot))
+                || selected.Select(x => x.slot).Distinct().Count() != selected.Length
+                || selected.Where(x => x.id != 0).Select(x => x.equipment).Distinct().Count() != selected.Count(x => x.id != 0)
+                || selected.Where(x => x.id != 0).Select(x => x.id).Distinct().Count() != selected.Count(x => x.id != 0))
+                throw new InvalidOperationException("Exact loadout contains missing, duplicate or unavailable destinations/items.");
+            var ids = new HashSet<int>(selected.Where(x => x.id != 0).Select(x => x.id));
+            var instances = new HashSet<Equipment>(selected.Where(x => x.id != 0).Select(x => x.equipment));
+            var retainedIds = new HashSet<int>();
+            return original.Select(item => {
+                var replacement = selected.FirstOrDefault(x => x.slot == item.slot);
+                var keep = replacement ?? (item.id == 0 || !ids.Contains(item.id) && !instances.Contains(item.equipment)
+                    && retainedIds.Add(item.id) ? item : new ih { equipment = new Equipment(), id = 0 });
+                return new ih { slot = item.slot, equipment = keep.equipment, id = keep.id,
+                    level = keep.level, locked = keep.locked, name = keep.name };
+            }).ToArray();
+        }
 
-            if (inv.legs.id == id)
-            {
-                return inv.legs.GetInventoryHelper(-3);
-            }
+        internal static GearMutationOutcome ApplyExactLoadoutObserved(ih[] wanted,
+            GearRecallFootprint recallFootprint = GearRecallFootprint.None, Func<bool> authorized = null)
+        {
+            return GearOptimizer.EquipGearObserved(wanted?.Where(x => x != null && x.id != 0).ToArray(),
+                recallFootprint, true, wanted, authorized);
+        }
 
-            if (inv.boots.id == id)
-            {
-                return inv.boots.GetInventoryHelper(-4);
-            }
+        internal static bool ExactLoadoutMatches(ih[] wanted)
+        {
+            if (ValidateExactLoadout(wanted) != null) return false;
+            var actual = CaptureExactLoadout();
+            return wanted.All(x => actual.Any(y => x.slot == y.slot && (x.id == 0 ? y.id == 0
+                : y.id == x.id && ReferenceEquals(x.equipment, y.equipment))));
+        }
 
-            if (inv.weapon.id == id)
-            {
-                return inv.weapon.GetInventoryHelper(-5);
-            }
-
-            if (Controller.weapon2Unlocked())
-            {
-                if (inv.weapon2.id == id)
-                {
-                    return inv.weapon2.GetInventoryHelper(-6);
-                }
-            }
-
-            for (var i = 0; i < inv.accs.Count; i++)
-            {
-                if (inv.accs[i].id == id)
-                {
-                    return inv.accs[i].GetInventoryHelper(i + 10000);
-                }
-            }
-
-            var items = Main.Character.inventory.GetConvertedInventory()
-                .Where(x => x.id == id && x.equipment.isEquipment()).ToArray();
-            if (items.Length != 0)
-            {
-                return moneyPit ? items.OrderByDescending(x => x.level).First() : items.MaxItem();
-            }
-
+        internal static string ValidateExactLoadout(ih[] wanted)
+        {
+            var slots = CaptureExactLoadout().Select(x => x.slot).ToArray();
+            if (wanted == null || wanted.Length != slots.Length || wanted.Any(x => x?.equipment == null || x.id != x.equipment.id)
+                || wanted.Select(x => x.slot).Distinct().Count() != slots.Length || wanted.Any(x => !slots.Contains(x.slot)))
+                return "Exact loadout must describe every currently unlocked equipment slot, including empty slots.";
             return null;
         }
 
-        internal static void SaveCurrentLoadout()
-        {
-            _savedLoadout = Main.Character.inventory.GetConvertedEquips().ToArray();
-            Log($"Saved Loadout {string.Join(",", _savedLoadout.Select(x => x.id.ToString()).ToArray())}");
-        }
-
-        internal static void SaveTempLoadout()
-        {
-            _tempLoadout = Main.Character.inventory.GetConvertedEquips().ToArray();
-            Log($"Saved Temp Loadout {string.Join(",", _tempLoadout.Select(x => x.id.ToString()).ToArray())}");
-        }
-
-        internal static void RestoreTempLoadout()
-        {
-            if (_tempLoadout == null)
-            {
-                Log("Failed to restore temporary loadout: no saved snapshot is available");
-                return;
-            }
-
-            var failure = GearOptimizer.EquipGear(_tempLoadout, false, true);
-            if (failure != null)
-                Log($"Failed to restore temporary loadout: {failure}");
-        }
-
-        //private static float GetSeedGain(Equipment e)
-        //{
-        //    var amount =
-        //        typeof(ItemController).GetMethod("effectBonus", BindingFlags.NonPublic | BindingFlags.Instance);
-        //    if (e.spec1Type == specType.Seeds)
-        //    {
-        //        var p = new object[] { e.spec1Cur, e.spec1Type };
-        //        return (float)amount?.Invoke(Main.Controller, p);
-        //    }
-        //    if (e.spec2Type == specType.Seeds)
-        //    {
-        //        var p = new object[] { e.spec2Cur, e.spec2Type };
-        //        return (float)amount?.Invoke(Main.Controller, p);
-        //    }
-        //    if (e.spec3Type == specType.Seeds)
-        //    {
-        //        var p = new object[] { e.spec3Cur, e.spec3Type };
-        //        return (float)amount?.Invoke(Main.Controller, p);
-        //    }
-
-        //    return 0;
-        //}
     }
 }

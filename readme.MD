@@ -2,6 +2,15 @@
 
 NGUInjector is an automation platform for the steam version of NGU Idle.
 
+## Verification And Diagnostics
+
+`test-all.ps1` runs the offline verification suite; `diagnostics.ps1` observes live
+allocations, gear, support, and save safety without changing the game. Explicit
+`test-all.ps1 -Mode Prepare` adds a verified local native backup and guarded
+longest-playtime recovery. Destructive live fixtures remain blocked until native
+save/cloud/account and automation checkpoint isolation is available. See
+[Test-All And Save Safety](docs/test-all.md) for commands, reports, and limits.
+
 ## External Desktop UI
 
 The new controller is in [`NGUInjector.UI`](NGUInjector.UI/README.md): **Tauri 2 / Rust + Svelte 5 / TypeScript**. The injected Unity automation remains C#; WinForms is retained as an optional fallback.
@@ -20,9 +29,23 @@ The controller uses the existing `%USERPROFILE%\Desktop\NGUInjector` runtime fol
 
 See the UI README for runtime setup, command protocol, safety constraints, and verification details. The screenshots and instructions below describe the legacy WinForms interface.
 
+The **Presets** tab manages the global weighted library shared by Dashboard Quick and plan/stage selectors, with read-only previews, two-phase estimates, support/gold details and sourced zone references. Standalone presets do not expire; plan stages own scheduled execution timing. Two-phase estimates are advisory, not executable schedules. See [Weighted Loadout Presets](docs/loadout-presets.md) for scoring, safety and forecast limitations.
+
+**Dashboard Quick** is an indefinite manual override using the global weighted preset library, not a timed stage. **Advanced > Auto Augments + Wandoos** is the separate fixed-budget Combat Prep search: it maximizes terminal A*W with phase gear and bounded current-versus-standard beard/digger support at captured levels. The two-hour default also accepts 15m, 1h and 24h budgets. Shared support capture/projection/exact transactions are integrated into the normal production build; no temporary compile imports are required. See [Combat Prep Backend](docs/COMBAT_PREP_BACKEND.md), [Shared Support](docs/support-core.md) and [current verification](docs/AUTOMATION_IMPROVEMENTS.md#completed-verification). October 16 live facts remain [historical](docs/COMBAT_PREP_LIVE_VERIFICATION.md); current live evidence is to be recorded separately in the main-task-owned [Phase Support Live Verification](docs/PHASE_SUPPORT_LIVE_VERIFICATION.md).
+
+**Adventure > Manual Adventure > Push ITOPOD** climbs from the highest enterable floor for a saved death limit (default 3, range 1..1000), then switches the fallback Adventure mode to **Optimal ITOPOD**. Push and its death limit can be configured before enabling either **Manual adventure** or **Adventure goal**; enabling either starts the push. Edits during a push apply to the next run. Turning off Push ITOPOD, changing Adventure mode, disabling both owners, rebirth, or unloading cancels the mode-owned push; disabling only one owner retains its death budget. Priority titans, quests, and fight/rebirth preparation pause it without replenishing the budget. Tower inputs and Lazy ITOPOD Shifter are restored afterward. Manual Adventure still supplies the push's combat style when enabled and resumes its selected zone after completion. Manual combat heals/precasts on entry only, since between-fight Safe Zone trips reset the game's ten-kill floor progress. Existing command-started detours under modes 0..2 retain their settings-preserving behavior.
+
 Custom stages optionally support **Fight on entry** (`FightOnEntry`, default false). Put it on the stage after Augments to run manual-style fight prep/boss push, then resume the current stage's gear/allocation without changing plan or auto-rebirth switches. See the UI README for lock, timing, and reload caveats; existing plans are unchanged until edited.
 
-Custom plans optionally set root `"AutoIronPillEnabled": false` to disable automatic Iron Pill reservation/prep/casting, including its Augments/Blood resource override. Omitted values default to true for existing and new plans. This leaves automatic blood spells, rebirth settings, and the stage schedule unchanged, allowing a final NGU-only phase without Iron Pill interruptions. The field accepts only JSON booleans and is preserved by plan reads, saves, and copies; no dedicated UI toggle is provided.
+Custom-stage and Quick-focus allocation treats adjacent related energy bars as one equally shared priority: Wandoos AT (`AT-3`, `AT-4`), adventure AT (`AT-1`, `AT-0`, including generic `AT`), and an augment plus its upgrade. When energy is insufficient, each receives 50%; a capped, completed, locked, or unavailable bar leaves its unused share to its partner. Once both are capped, excess flows to later priorities. Unrelated priorities and separated explicit targets remain ordered. No saved-plan edits are required.
+
+Automatic Iron Pill uses a temporary magic-priority overlay, not a replacement stage. Before each saving window, banked blood is spent on NUMBER once, then ordinary automatic blood spells pause. Blood Magic moves first in the magic order except during Time Machine and Wandoos/AT Wandoos, where that stage's main magic target stays first. Energy, stage gear, saved orders, AT targets, and stage timing remain unchanged; casting/cancellation restores ordinary priorities and spells. Preparation is bounded to `max(900, saving seconds) + 60` seconds, with a 900-second retry delay after timeout or a rejected NUMBER flush. Manual/boss preparation and ready automatic rebirth preempt saving.
+
+Outside Iron Pill reservation, Energy NGU stages and Quick Energy NGU temporarily move Blood Magic before magic NGUs until enabled Spaghetti and Counterfeit Gold goals are reached. This narrow energy-focused allocation excludes dedicated Magic NGU and balanced All NGU, and does not flush blood or require auto-rebirth/Iron Pill permission. Disabled blood spells, manual/boss preparation, and ready automatic rebirth suppress catch-up. Once goals are met, the saved magic priority order resumes automatically.
+
+Custom plans optionally set root `"AutoIronPillEnabled": false` to disable this reservation/casting behavior without changing ordinary blood spells or rebirth settings. Omitted values default to true for existing and new plans. The field accepts only JSON booleans and is preserved by plan reads, saves, and copies; no dedicated UI toggle is provided.
+
+Beards rotate every 60 seconds while the injector runs, independently of plan, Quick focus, and the legacy master switch. Neckbeard/Drop Chance, NGU Speed, Adventure, and unlocked Gold/GPS stay active; remaining slots rotate among Fu Manchu, NUMBER, and Wandoos. Boss fights protect Fu Manchu, rebirth protects NUMBER, and Wandoos intent or actual resource allocation protects Ladybeard. With five slots, the fifth slot is the only rotating slot; while fighting during rebirth preparation it holds Fu Manchu, then switches to NUMBER before rebirth. Requirements are enforced immediately without postponing the minute clock; a rotation changes the optional set whenever a legal alternative exists. With insufficient slots, core beards take precedence, followed by context requirements. Retained beards are never cleared, and explicit Gold removal restores affordable previously active diggers through game controllers. Safe probes report active IDs and the last rotation time.
 
 # Instructions
 

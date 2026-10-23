@@ -1,70 +1,30 @@
-param(
-    [string] $ScratchRoot = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'opencode')
-)
-
+param([string]$ScratchRoot = [IO.Path]::GetTempPath())
 $ErrorActionPreference = 'Stop'
-if (-not (Test-Path -LiteralPath $ScratchRoot -PathType Container)) {
-    throw "Scratch parent does not exist: $ScratchRoot"
-}
-$projectPath = Join-Path $PSScriptRoot 'CombatChecks.csproj'
-$sourcePath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../NGUInjector/Main.CustomAdventure.cs'))
-$source = [System.IO.File]::ReadAllText($sourcePath)
+if (!(Test-Path -LiteralPath $ScratchRoot -PathType Container)) { throw 'Source mutation scratch parent is unavailable.' }
+$sourceRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../NGUInjector'))
+$project = Join-Path $PSScriptRoot 'CombatChecks.csproj'
 $mutations = @(
-    @{
-        Name = 'boss90-cutoff'
-        Original = 'var rebirthSeconds = Character.rebirthTime.totalseconds;'
-        Replacement = 'if (ZoneHelpers.CurrentRebirthEffectiveBossId() >= 90) { reason = "regression: boss 90 cutoff"; return false; }' +
-            [Environment]::NewLine + '            var rebirthSeconds = Character.rebirthTime.totalseconds;'
-        ExpectedFailure = 'FAIL: gold eligibility mode=0, boss=90, seconds=1017;'
-    },
-    @{
-        Name = 'disabled-death-guard'
-        Original = 'if (_customAdventureGoldPushEnteredZone && (Character.adventure.zone == -1 || Character.adventure.curHP <= 0))'
-        Replacement = 'if (_customAdventureGoldPushEnteredZone && Character.bossID == int.MinValue)'
-        ExpectedFailure = 'FAIL: death mode=0, observedEnemy=False, safeZone=False: cleanup before farm;'
-    }
+    @{ Name = 'prompt-inversion'; File = 'Managers/CombatManager.cs'; From = 'if (waldoSays)'; To = 'if (!waldoSays)'; Failure = 'FAIL: true prompt' },
+    @{ Name = 'attack-reservation'; File = 'Managers/CombatManager.cs'; From = 'var budget = WalderpSecondsUntilPrompt() - .25f;'; To = 'var budget = WalderpSecondsUntilPrompt() + 100f;'; Failure = 'FAIL: attack 3 cooldown' },
+    @{ Name = 'inclusive-rule'; File = 'AdventureRule.cs'; From = 'power >= MinPower'; To = 'power > MinPower'; Failure = 'FAIL: inclusive AND thresholds none' }
 )
-
-$scratch = Join-Path $ScratchRoot ('combat-regressions-' + [Guid]::NewGuid().ToString('N'))
-[void][System.IO.Directory]::CreateDirectory($scratch)
+$scratch = Join-Path $ScratchRoot ('combat-decisions-' + [Guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($scratch)
 try {
     foreach ($mutation in $mutations) {
-        $first = $source.IndexOf($mutation.Original, [StringComparison]::Ordinal)
-        if ($first -lt 0 -or $first -ne $source.LastIndexOf($mutation.Original, [StringComparison]::Ordinal)) {
-            throw "Mutation anchor changed or is ambiguous: $($mutation.Name)"
+        $root = Join-Path $scratch $mutation.Name
+        [void][IO.Directory]::CreateDirectory((Join-Path $root 'Managers'))
+        foreach ($relative in @('AdventureRule.cs', 'Main.CustomAdventure.cs', 'Managers/CombatManager.cs', 'Managers/CombatHelpers.cs', 'Managers/ZoneHelpers.cs')) {
+            $text = [IO.File]::ReadAllText((Join-Path $sourceRoot $relative))
+            if ($relative -eq $mutation.File) {
+                $first = $text.IndexOf($mutation.From, [StringComparison]::Ordinal)
+                if ($first -lt 0 -or $first -ne $text.LastIndexOf($mutation.From, [StringComparison]::Ordinal)) { throw "Ambiguous mutation anchor: $($mutation.Name)" }
+                $text = $text.Replace($mutation.From, $mutation.To)
+            }
+            [IO.File]::WriteAllText((Join-Path $root $relative), $text)
         }
-        $directory = Join-Path $scratch $mutation.Name
-        [void][System.IO.Directory]::CreateDirectory($directory)
-        $mutatedSource = Join-Path $directory 'Main.CustomAdventure.cs'
-        [System.IO.File]::WriteAllText($mutatedSource, $source.Replace($mutation.Original, $mutation.Replacement))
-
-        # Clone project links into scratch; production and test files remain untouched.
-        $project = [xml][System.IO.File]::ReadAllText($projectPath)
-        foreach ($compile in $project.Project.ItemGroup.Compile) {
-            $absolute = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $compile.Include))
-            if ($absolute -eq $sourcePath) { $absolute = $mutatedSource }
-            $compile.SetAttribute('Include', $absolute)
-        }
-        $defaultItems = $project.CreateElement('EnableDefaultCompileItems')
-        $defaultItems.InnerText = 'false'
-        [void]$project.Project.PropertyGroup.AppendChild($defaultItems)
-        foreach ($testSource in [System.IO.Directory]::GetFiles($PSScriptRoot, '*.cs')) {
-            $compile = $project.CreateElement('Compile')
-            $compile.SetAttribute('Include', $testSource)
-            [void]$project.Project.ItemGroup.AppendChild($compile)
-        }
-        $temporaryProject = Join-Path $directory 'CombatChecks.csproj'
-        $project.Save($temporaryProject)
-        $output = & dotnet run --project $temporaryProject 2>&1 | Out-String
-        $exitCode = $LASTEXITCODE
-        $evidence = [regex]::Match($output, '(?m)^' + [regex]::Escape($mutation.ExpectedFailure) + '[^\r\n]*').Value
-        if ($exitCode -ne 1 -or -not $evidence) {
-            throw "Expected assertion failure missing for $($mutation.Name) (exit $exitCode):`n$output"
-        }
-        "PASS: $($mutation.Name) rejected by executed production-route checks (exit $exitCode)."
-        $evidence
+        $output = & dotnet run --project $project -c Release "-p:CombatSourceRoot=$root" "-p:BaseIntermediateOutputPath=$root/obj/" "-p:BaseOutputPath=$root/bin/" 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 1 -or !$output.Contains($mutation.Failure) -or $output.Contains('error CS')) { throw "Missing behavioral rejection for $($mutation.Name):`n$output" }
+        "PASS: source decision mutant $($mutation.Name) rejected by executed assertions."
     }
-}
-finally {
-    [System.IO.Directory]::Delete($scratch, $true)
-}
+} finally { [IO.Directory]::Delete($scratch, $true) }

@@ -10,18 +10,12 @@ namespace NGUInjector.AllocationProfiles
         private AllocationBreakPoint _currentMagicBreakpoint;
         private AllocationBreakPoint _currentEnergyBreakpoint;
         private AllocationBreakPoint _currentR3Breakpoint;
-        private GearBreakpoint _currentGearBreakpoint;
-        private DiggerBreakpoint _currentDiggerBreakpoint;
         private WandoosBreakpoint _currentWandoosBreakpoint;
         private NGUDiffBreakpoint _currentNguBreakpoint;
-        private bool _hasGearSwapped;
-        private bool _hasDiggerSwapped;
         private bool _hasWandoosSwapped;
         private bool _hasNGUSwapped;
         private readonly string _allocationPath;
         private readonly string _profileName;
-
-        internal bool IsAllocationRunning;
 
         public CustomAllocation(string profilesDir, string profile)
         {

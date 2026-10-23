@@ -17,13 +17,6 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return Character.hacksController.hitTarget(Index);
         }
 
-        internal override bool Allocate()
-        {
-            var alloc = MaxAllocation;
-            Character.hacksController.addR3(Index, (long)alloc);
-            return true;
-        }
-
         protected override bool CorrectResourceType()
         {
             return Type == ResourceType.R3;

@@ -157,7 +157,7 @@ namespace NGUInjector.Managers
                 if (!_character.inventory.HasBoosts())
                     break;
 
-                _controller.applyAllBoosts(item.slot);
+                BoostNativeItem(item);
             }
 
             if (_character.inventory.HasBoosts())
@@ -176,8 +176,9 @@ namespace NGUInjector.Managers
             var equipped = _character.inventory.GetConvertedEquips()
                 .Where(IsCustomBoostTarget)
                 .ToArray();
+            var mergeSlotCount = _controller.totalInvMergeSlots();
             var mergeSlots = ci
-                .Where(x => x.locked && IsCustomBoostTarget(x))
+                .Where(x => (x.locked || (x.slot >= 0 && x.slot < mergeSlotCount)) && IsCustomBoostTarget(x))
                 .ToArray();
 
             var targets = new List<ih>();
@@ -185,7 +186,13 @@ namespace NGUInjector.Managers
             targets.AddRange(mergeSlots.Where(x => !IsHeart(x)).OrderBy(x => x.slot));
             targets.AddRange(OrderCustomEquipped(equipped.Where(IsHeart)));
             targets.AddRange(mergeSlots.Where(IsHeart).OrderBy(x => x.slot));
-            return targets.Where(NeedsAnyBoost).ToArray();
+            var priorities = Settings.PriorityBoosts ?? new int[0];
+            // OrderBy is stable: copies of an ID and all unlisted targets keep the default order.
+            return targets.Where(NeedsAnyBoost).OrderBy(x =>
+            {
+                var rank = Array.IndexOf(priorities, x.id);
+                return rank < 0 ? int.MaxValue : rank;
+            }).ToArray();
         }
 
         private static bool IsCustomBoostTarget(ih item)
@@ -246,19 +253,19 @@ namespace NGUInjector.Managers
                 var needed = item.equipment.GetNeededBoosts();
                 if (needed.Power > 0)
                 {
-                    _controller.selectAutoPowerTransform();
+                    Main.reference?.RequestBoostTransform(1);
                     return $"Auto boost: transforming Power for {SanitizeName(item.name)}.";
                 }
 
                 if (needed.Toughness > 0)
                 {
-                    _controller.selectAutoToughTransform();
+                    Main.reference?.RequestBoostTransform(2);
                     return $"Auto boost: transforming Toughness for {SanitizeName(item.name)}.";
                 }
 
                 if (needed.Special > 0)
                 {
-                    _controller.selectAutoSpecialTransform();
+                    Main.reference?.RequestBoostTransform(3);
                     return $"Auto boost: transforming Special for {SanitizeName(item.name)}.";
                 }
             }
@@ -278,7 +285,7 @@ namespace NGUInjector.Managers
 
             if (ci.Count(x => x.id == target.id) > 1)
             {
-                _controller.mergeAll(target.slot);
+                MergeNativeItem(target);
                 _controller.updateInventory();
             }
 
@@ -300,19 +307,19 @@ namespace NGUInjector.Managers
             var name = item.name ?? string.Empty;
             if (name.IndexOf("power", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                _controller.selectAutoPowerTransform();
+                Main.reference?.RequestBoostTransform(1);
                 return "Transforming Power boosts for it.";
             }
 
             if (name.IndexOf("tough", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                _controller.selectAutoToughTransform();
+                Main.reference?.RequestBoostTransform(2);
                 return "Transforming Toughness boosts for it.";
             }
 
             if (name.IndexOf("special", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                _controller.selectAutoSpecialTransform();
+                Main.reference?.RequestBoostTransform(3);
                 return "Transforming Special boosts for it.";
             }
 
@@ -326,11 +333,11 @@ namespace NGUInjector.Managers
             var ratio = Math.Max(1, Settings.CustomAutoBoostCubePowerRatio);
             if (power < toughness * ratio)
             {
-                _controller.selectAutoPowerTransform();
+                Main.reference?.RequestBoostTransform(1);
                 return $"Auto boost: transforming Power for cube {ratio}:1.";
             }
 
-            _controller.selectAutoToughTransform();
+            Main.reference?.RequestBoostTransform(2);
             return $"Auto boost: transforming Toughness for cube {ratio}:1.";
         }
 
@@ -340,7 +347,7 @@ namespace NGUInjector.Managers
             {
                 if (!_character.inventory.HasBoosts())
                     break;
-                _controller.applyAllBoosts(item.slot);
+                BoostNativeItem(item);
             }
         }
 
@@ -394,64 +401,18 @@ namespace NGUInjector.Managers
             return null;
         }
 
-        private int ChangePage(int slot)
-        {
-            var page = (int)Math.Floor((double)slot / 60);
-            _controller.changePage(page);
-            return slot - (page * 60);
-        }
-
         internal void BoostInfinityCube()
         {
             if (!_character.inventory.HasBoosts())
                 return;
-            _controller.infinityCubeAll();
-            _controller.updateInventory();
+            for (var i = 0; i < 40 * _character.inventory.inventory.Count && _character.inventory.HasBoosts(); i++)
+                if (Main.reference?.RunInventoryLeaf(ItemActionKind.Cube, null) != true) break;
         }
 
         internal void MergeEquipped(ih[] ci)
         {
-            if (ci.Any(x => x.id == _character.inventory.head.id))
-            {
-                _controller.mergeAll(-1);
-            }
-
-            if (ci.Any(x => x.id == _character.inventory.chest.id))
-            {
-                _controller.mergeAll(-2);
-            }
-
-            if (ci.Any(x => x.id == _character.inventory.legs.id))
-            {
-                _controller.mergeAll(-3);
-            }
-
-            if (ci.Any(x => x.id == _character.inventory.boots.id))
-            {
-                _controller.mergeAll(-4);
-            }
-
-            if (ci.Any(x => x.id == _character.inventory.weapon.id))
-            {
-                _controller.mergeAll(-5);
-            }
-
-            if (_controller.weapon2Unlocked())
-            {
-                if (ci.Any(x => x.id == _character.inventory.weapon2.id))
-                {
-                    _controller.mergeAll(-6);
-                }
-            }
-
-            //Boost Accessories
-            for (var i = 10000; _controller.accessoryID(i) < _controller.accessorySpaces(); i++)
-            {
-                if (ci.Any(x => x.id == _character.inventory.accs[_controller.accessoryID(i)].id))
-                {
-                    _controller.mergeAll(i);
-                }
-            }
+            foreach (var item in _character.inventory.GetConvertedEquips().ToArray())
+                MergeNativeItem(item);
         }
 
         internal void MergeBoosts(ih[] ci)
@@ -464,8 +425,20 @@ namespace NGUInjector.Managers
             {
                 if (ci.Count(x => x.id == target.id) <= 1) continue;
                 Log($"Merging {target.name} in slot {target.slot}");
-                _controller.mergeAll(target.slot);
+                MergeNativeItem(target);
             }
+        }
+
+        private void MergeNativeItem(ih target)
+        {
+            for (var i = 0; i < _character.inventory.inventory.Count; i++)
+                if (Main.reference?.RunInventoryLeaf(ItemActionKind.Merge, target) != true) break;
+        }
+
+        private void BoostNativeItem(ih target)
+        {
+            for (var i = 0; i < 40 * _character.inventory.inventory.Count && NeedsAnyBoost(target); i++)
+                if (Main.reference?.RunInventoryLeaf(ItemActionKind.Boost, target) != true) break;
         }
 
         private string SanitizeName(string name)
@@ -480,7 +453,6 @@ namespace NGUInjector.Managers
 
         internal void ManageQuestItems(ih[] ci)
         {
-            var curPage = (int)Math.Floor((double)_controller.inventory[0].id / 60);
             //Merge quest items first
             var toMerge = ci.Where(x =>
                 x.id >= 278 && x.id <= 287 && !_character.inventory.inventory[x.slot].removable &&
@@ -490,7 +462,7 @@ namespace NGUInjector.Managers
             {
                 if (ci.Count(x => x.id == target.id) <= 1) continue;
                 Log($"Merging {SanitizeName(target.name)} in slot {target.slot}");
-                _controller.mergeAll(target.slot);
+                MergeNativeItem(target);
             }
 
             //Consume quest items that dont need to be merged
@@ -501,12 +473,8 @@ namespace NGUInjector.Managers
                 Log($"Turning in {questItems.Length} quest items");
             foreach (var target in questItems)
             {
-                var newSlot = ChangePage(target.slot);
-                var ic = _controller.inventory[newSlot];
-                typeof(ItemController).GetMethod("consumeItem", BindingFlags.NonPublic | BindingFlags.Instance)
-                    ?.Invoke(ic, null);
+                Main.reference?.RunInventoryLeaf(ItemActionKind.Consume, target);
             }
-            _controller.changePage(curPage);
         }
 
         internal void MergeInventory(ih[] ci)
@@ -522,7 +490,7 @@ namespace NGUInjector.Managers
                 var target = item.MaxItem();
 
                 Log($"Merging {SanitizeName(target.name)} in slot {target.slot}");
-                _controller.mergeAll(target.slot);
+                MergeNativeItem(target);
             }
         }
 
@@ -532,32 +500,27 @@ namespace NGUInjector.Managers
             {
                 var guffId = _character.inventory.macguffins[id].id;
                 if (ci.Any(x => x.id == guffId))
-                    _controller.mergeAll(_controller.globalMacguffinID(id));
+                    MergeNativeItem(_character.inventory.macguffins[id].GetInventoryHelper(_controller.globalMacguffinID(id)));
             }
 
             var invGuffs = ci.Where(x => _guffs.Contains(x.id)).GroupBy(x => x.id).Where(x => x.Count() > 1);
             foreach (var guff in invGuffs)
             {
                 var target = guff.MaxItem();
-                _controller.mergeAll(target.slot);
+                MergeNativeItem(target);
             }
         }
 
         internal void ManageConvertibles(ih[] ci)
         {
-            var curPage = (int)Math.Floor((double)_controller.inventory[0].id / 60);
             var grouped = ci.Where(x => _convertibles.Contains(x.id));
             foreach (var item in grouped)
             {
                 if (item.level != 100) continue;
                 var temp = _character.inventory.inventory[item.slot];
                 if (!temp.removable) continue;
-                var newSlot = ChangePage(item.slot);
-                var ic = _controller.inventory[newSlot];
-                typeof(ItemController).GetMethod("consumeItem", BindingFlags.NonPublic | BindingFlags.Instance)
-                    ?.Invoke(ic, null);
+                Main.reference?.RunInventoryLeaf(ItemActionKind.Consume, item);
             }
-            _controller.changePage(curPage);
         }
 
         internal void ShowBoostProgress(ih[] boostSlots)
@@ -658,19 +621,19 @@ namespace NGUInjector.Managers
                     //Unlock level 100 boosts
                     if (locked.level == 100)
                     {
-                        _character.inventory.inventory[locked.slot].removable = true;
+                        Main.reference?.RequestUnlockBoost(locked);
                         continue;
                     }
 
                     if (locked.id <= 13)
                     {
-                        _controller.selectAutoPowerTransform();
+                        Main.reference?.RequestBoostTransform(1);
                     }else if (locked.id <= 26)
                     {
-                        _controller.selectAutoToughTransform();
+                        Main.reference?.RequestBoostTransform(2);
                     }else if (locked.id <= 39)
                     {
-                        _controller.selectAutoSpecialTransform();
+                        Main.reference?.RequestBoostTransform(3);
                     }
                 }
 
@@ -686,19 +649,19 @@ namespace NGUInjector.Managers
 
             if (needed.Power > 0)
             {
-                _controller.selectAutoPowerTransform();
+                Main.reference?.RequestBoostTransform(1);
                 return;
             }
 
             if (needed.Toughness > 0)
             {
-                _controller.selectAutoToughTransform();
+                Main.reference?.RequestBoostTransform(2);
                 return;
             }
 
             if (needed.Special > 0)
             {
-                _controller.selectAutoSpecialTransform();
+                Main.reference?.RequestBoostTransform(3);
                 return;
             }
 
@@ -714,29 +677,29 @@ namespace NGUInjector.Managers
                 {
                     if (cube.Power > cube.Toughness)
                     {
-                        _controller.selectAutoToughTransform();
+                        Main.reference?.RequestBoostTransform(2);
                     }
                     else if (cube.Toughness > cube.Power)
                     {
-                        _controller.selectAutoPowerTransform();
+                        Main.reference?.RequestBoostTransform(1);
                     }
                     else
                     {
-                        _controller.selectAutoPowerTransform();
+                        Main.reference?.RequestBoostTransform(1);
                     }
                 }else if (Settings.CubePriority == 2)
                 {
-                    _controller.selectAutoPowerTransform();
+                    Main.reference?.RequestBoostTransform(1);
                 }
                 else
                 {
-                    _controller.selectAutoToughTransform();
+                    Main.reference?.RequestBoostTransform(2);
                 }
                 
                 return;
             }
 
-            _controller.selectAutoNoneTransform();
+            Main.reference?.RequestBoostTransform(0);
         }
 
         #region Filtering
@@ -775,7 +738,7 @@ namespace NGUInjector.Managers
             if (id >= 278 && id <= 287)
                 return;
 
-            _character.inventory.itemList.itemFiltered[id] = true;
+            Main.reference?.RequestItemFilter(id);
         }
 
         void FilterEquip(Equipment e)

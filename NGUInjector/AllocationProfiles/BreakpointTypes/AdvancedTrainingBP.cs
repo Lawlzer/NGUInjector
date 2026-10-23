@@ -23,31 +23,6 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
                 target;
         }
 
-        internal override bool Allocate()
-        {
-            SetInput(CalculateATCap());
-            switch (Index)
-            {
-                case 0:
-                    Character.advancedTrainingController.defense.addEnergy();
-                    break;
-                case 1:
-                    Character.advancedTrainingController.attack.addEnergy();
-                    break;
-                case 2:
-                    Character.advancedTrainingController.block.addEnergy();
-                    break;
-                case 3:
-                    Character.advancedTrainingController.wandoosEnergy.addEnergy();
-                    break;
-                case 4:
-                    Character.advancedTrainingController.wandoosMagic.addEnergy();
-                    break;
-            }
-
-            return true;
-        }
-
         protected override bool CorrectResourceType()
         {
             return Type == ResourceType.Energy;

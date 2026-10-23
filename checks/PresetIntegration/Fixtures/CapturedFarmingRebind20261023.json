@@ -1,0 +1,2391 @@
+{
+  "checkpoint" : {
+    "version" : 2,
+    "plan" : "24hr",
+    "generation" : "3605c9de98b44e6a9deba19817cf2ef8",
+    "rebirth" : "230",
+    "origin" : 2216314.5006490764,
+    "elapsed" : 48589.146272977479,
+    "total" : 2264903.6469226787,
+    "fightEntry" : "24hr:24hr:3:3605c9de98b44e6a9deba19817cf2ef8:4",
+    "scheduler" : {
+      "version" : 2,
+      "structure" : "4:24hr|3|1|3|2:3000:3000|0",
+      "timing" : "86400|3600|3600:1|AT|1",
+      "stage" : 3,
+      "entry" : "4",
+      "cycle" : 0,
+      "enteredAt" : 26589.820210692269,
+      "stageElapsed" : 21999.32606228521,
+      "expectedEnd" : 86400,
+      "lastElapsed" : 48589.146272977479,
+      "lastHeartbeat" : 1914.1237316,
+      "finished" : false,
+      "reason" : "Flexible wall-clock allocation",
+      "lastOverride" : "",
+      "lastOverrideAt" : 0,
+      "autoAugmentsCompleted" : false,
+      "autoAtCompleted" : false,
+      "autoWandoosStarted" : false,
+      "autoEnergyPool" : null,
+      "autoMagicPool" : null,
+      "autoCleanupRecoveryRequired" : false,
+      "durations" : [
+        3600,
+        3600,
+        0,
+        59810.179789307731
+      ],
+      "earned" : [
+        3585.09156828529,
+        0,
+        0,
+        0
+      ],
+      "completed" : [
+        true,
+        true,
+        true,
+        false
+      ],
+      "applied" : [
+        3585.09156828529,
+        0,
+        5338.9393000267082,
+        15191.679843401602
+      ],
+      "elapsedByStage" : [
+        17152.98483541116,
+        3598.8713889627834,
+        5837.9639863183256,
+        21999.32606228521
+      ],
+      "visits" : [
+        1,
+        1,
+        1,
+        1
+      ],
+      "skipped" : [
+        false,
+        false,
+        false,
+        false
+      ]
+    },
+    "selectedPolicy" : {
+      "version" : 1,
+      "schema" : "selected-preset-policy-v1",
+      "acquisition" : "3c2748bd93c74f578553dcee8f3b09a2",
+      "owner" : "stage:24hr:24hr:3:3605c9de98b44e6a9deba19817cf2ef8:4:0",
+      "plan" : "24hr",
+      "generation" : "3605c9de98b44e6a9deba19817cf2ef8",
+      "entry" : "4",
+      "rebirth" : "230",
+      "origin" : 2216314.5006490764,
+      "elapsed" : 47112.150061723034,
+      "total" : 2263426.6507109604,
+      "definition" : "{\"AdvancedTrainingWeights\":[1,1,0,0,0],\"AdventureDynamicWeight\":25,\"BeardPriority\":[1,3,5,6],\"BeardRotation\":[2,4,0],\"DiggerBudgetPercent\":75,\"DiggerWeights\":[50,0,0,50,100,25,25,25,25,10,0,10],\"EnergyPriorities\":[\"NGU\"],\"Id\":\"preset_ecf91ea85a2142d3ab379c42fc50b341\",\"MagicBloodPercent\":-1,\"MagicPriorities\":[\"NGU\"],\"MinimumPower\":0,\"MinimumToughness\":0,\"ResourcePrioritiesReviewed\":true,\"SupportMode\":\"planned\",\"SwapSeconds\":5,\"Weights\":[100,20,0,20,0,0,0,0,0,0,0,0,0,0],\"Zone\":-1}",
+      "preset" : {
+        "AdvancedTrainingWeights" : [
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "AutoUpdate" : true,
+        "BeardPriority" : [
+          1,
+          3,
+          5,
+          6
+        ],
+        "BeardRotation" : [
+          2,
+          4,
+          0
+        ],
+        "DiggerBudgetPercent" : 75,
+        "DiggerWeights" : [
+          50,
+          0,
+          0,
+          50,
+          100,
+          25,
+          25,
+          25,
+          25,
+          10,
+          0,
+          10
+        ],
+        "Id" : "preset_ecf91ea85a2142d3ab379c42fc50b341",
+        "AdventureDynamicWeight" : 25,
+        "MagicBloodPercent" : -1,
+        "MinimumPower" : 0,
+        "MinimumToughness" : 0,
+        "Name" : "NGU Energy",
+        "SupportMode" : "planned",
+        "SwapSeconds" : 5,
+        "Weights" : [
+          100,
+          20,
+          0,
+          20,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "Zone" : -1,
+        "EnergyPriorities" : [
+          "NGU"
+        ],
+        "MagicPriorities" : [
+          "NGU"
+        ],
+        "ResourcePrioritiesReviewed" : true
+      },
+      "executionPreset" : {
+        "AdvancedTrainingWeights" : [
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "AutoUpdate" : true,
+        "BeardPriority" : [
+          1,
+          3,
+          5,
+          6
+        ],
+        "BeardRotation" : [
+          2,
+          4,
+          0
+        ],
+        "DiggerBudgetPercent" : 75,
+        "DiggerWeights" : [
+          50,
+          0,
+          0,
+          50,
+          100,
+          25,
+          25,
+          25,
+          25,
+          10,
+          0,
+          10
+        ],
+        "Id" : "preset_ecf91ea85a2142d3ab379c42fc50b341",
+        "MagicBloodPercent" : -1,
+        "MinimumPower" : 0,
+        "MinimumToughness" : 0,
+        "Name" : "NGU Energy",
+        "SupportMode" : "planned",
+        "SwapSeconds" : 5,
+        "Weights" : [
+          100,
+          20,
+          0,
+          45,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "Zone" : -1,
+        "ResourcePrioritiesReviewed" : true,
+        "MagicPriorities" : [
+          "NGU"
+        ],
+        "EnergyPriorities" : [
+          "NGU"
+        ]
+      },
+      "horizon" : 49822,
+      "adventureTaskKey" : "0:-1:0:0:16:[{\"Enabled\":true,\"MinPower\":0,\"MinToughness\":0,\"MinRegen\":0,\"Mode\":0,\"Zone\":0}]",
+      "adventureTask" : "Rule 1: ITOPOD",
+      "stage" : {
+        "completionMode" : 0,
+        "power" : "0",
+        "toughness" : "0"
+      },
+      "equipment" : {
+        "version" : 1,
+        "materialSchema" : "equipment-primitives-v1",
+        "acquisition" : "3c2748bd93c74f578553dcee8f3b09a2",
+        "equipment" : [
+          {
+            "targetSlot" : -1,
+            "sourceSlotHint" : -1,
+            "id" : 150,
+            "material" : "bossRequired=100;capAttack=1000;capDefense=22000;curAttack=1070;curDefense=23540;id=150;level=7;numSpec=0;path=;removable=True;spec1Cap=8500;spec1Cur=9095;spec1Type=EnergyCap;spec2Cap=7500;spec2Cur=8025;spec2Type=EnergyPower2;spec3Cap=2000;spec3Cur=2140;spec3Type=MagicPower2;type=Head;unique=True"
+          },
+          {
+            "targetSlot" : -2,
+            "sourceSlotHint" : -2,
+            "id" : 151,
+            "material" : "bossRequired=100;capAttack=1000;capDefense=23000;curAttack=1130;curDefense=25990;id=151;level=13;numSpec=0;path=;removable=True;spec1Cap=8000;spec1Cur=9040;spec1Type=EnergyPower2;spec2Cap=6000;spec2Cur=6780;spec2Type=EnergyPerBar2;spec3Cap=3000;spec3Cur=3390;spec3Type=MagicCap;type=Chest;unique=True"
+          },
+          {
+            "targetSlot" : -3,
+            "sourceSlotHint" : -3,
+            "id" : 124,
+            "material" : "bossRequired=82;capAttack=300;capDefense=2600;curAttack=600;curDefense=5200;id=124;level=100;numSpec=0;path=;removable=True;spec1Cap=3600;spec1Cur=7200;spec1Type=EnergyCap;spec2Cap=900;spec2Cur=1800;spec2Type=EnergyPower2;spec3Cap=0;spec3Cur=0;spec3Type=None;type=Legs;unique=True"
+          },
+          {
+            "targetSlot" : -4,
+            "sourceSlotHint" : -4,
+            "id" : 153,
+            "material" : "bossRequired=100;capAttack=1000;capDefense=24000;curAttack=1110;curDefense=26640;id=153;level=11;numSpec=0;path=;removable=True;spec1Cap=13000;spec1Cur=14430;spec1Type=Wandoos98;spec2Cap=6000;spec2Cur=6660;spec2Type=NGU;spec3Cap=0;spec3Cur=0;spec3Type=None;type=Boots;unique=True"
+          },
+          {
+            "targetSlot" : -5,
+            "sourceSlotHint" : -5,
+            "id" : 159,
+            "material" : "bossRequired=100;capAttack=170000;capDefense=12000;curAttack=171700;curDefense=12120;id=159;level=1;numSpec=0;path=;removable=True;spec1Cap=1000000;spec1Cur=1010000;spec1Type=AllPower;spec2Cap=1000000;spec2Cur=1010000;spec2Type=AllPerBar;spec3Cap=1000000;spec3Cur=1005804.81;spec3Type=AllCap;type=Weapon;unique=True"
+          },
+          {
+            "targetSlot" : 10000,
+            "sourceSlotHint" : 10000,
+            "id" : 116,
+            "material" : "bossRequired=82;capAttack=0;capDefense=82;curAttack=0;curDefense=164;id=116;level=100;numSpec=0;path=;removable=True;spec1Cap=6000;spec1Cur=12000;spec1Type=NGU;spec2Cap=1082;spec2Cur=2164;spec2Type=MagicPower2;spec3Cap=200;spec3Cur=400;spec3Type=GoldDropAmount;type=Accessory;unique=True"
+          },
+          {
+            "targetSlot" : 10001,
+            "sourceSlotHint" : 10001,
+            "id" : 139,
+            "material" : "bossRequired=100;capAttack=1000;capDefense=1000;curAttack=2000;curDefense=2000;id=139;level=100;numSpec=0;path=;removable=True;spec1Cap=2500;spec1Cur=5000;spec1Type=EnergyPower2;spec2Cap=1200;spec2Cur=2400;spec2Type=EnergyPerBar2;spec3Cap=4000;spec3Cur=8000;spec3Type=EnergyCap;type=Accessory;unique=True"
+          },
+          {
+            "targetSlot" : 10002,
+            "sourceSlotHint" : 10002,
+            "id" : 138,
+            "material" : "bossRequired=100;capAttack=1000;capDefense=1000;curAttack=2000;curDefense=2000;id=138;level=100;numSpec=0;path=;removable=True;spec1Cap=5000;spec1Cur=10000;spec1Type=NGU;spec2Cap=5000;spec2Cur=10000;spec2Type=Wandoos98;spec3Cap=5000;spec3Cur=10000;spec3Type=AdvTraining;type=Accessory;unique=True"
+          },
+          {
+            "targetSlot" : 10003,
+            "sourceSlotHint" : 10003,
+            "id" : 440,
+            "material" : "bossRequired=82;capAttack=4000;capDefense=4000;curAttack=8000;curDefense=8000;id=440;level=100;numSpec=0;path=;removable=True;spec1Cap=1600;spec1Cur=3200;spec1Type=EnergyPower2;spec2Cap=1000;spec2Cur=2000;spec2Type=EnergyPerBar2;spec3Cap=5000;spec3Cur=10000;spec3Type=EnergyCap;type=Accessory;unique=True"
+          },
+          {
+            "targetSlot" : 10004,
+            "sourceSlotHint" : 10004,
+            "id" : 109,
+            "material" : "bossRequired=82;capAttack=0;capDefense=0;curAttack=0;curDefense=0;id=109;level=100;numSpec=0;path=;removable=True;spec1Cap=1000;spec1Cur=2000;spec1Type=EnergyPower2;spec2Cap=1000;spec2Cur=2000;spec2Type=MagicPower2;spec3Cap=0;spec3Cur=0;spec3Type=None;type=Accessory;unique=True"
+          },
+          {
+            "targetSlot" : 10005,
+            "sourceSlotHint" : 10005,
+            "id" : 148,
+            "material" : "bossRequired=100;capAttack=8000;capDefense=8000;curAttack=8720;curDefense=8720;id=148;level=9;numSpec=0;path=;removable=True;spec1Cap=4500;spec1Cur=4905;spec1Type=EnergyPower2;spec2Cap=3500;spec2Cur=3815;spec2Type=MagicPower2;spec3Cap=10000;spec3Cur=10900;spec3Type=Beards;type=Accessory;unique=True"
+          },
+          {
+            "targetSlot" : 10006,
+            "sourceSlotHint" : 10006,
+            "id" : 196,
+            "material" : "bossRequired=0;capAttack=420;capDefense=420;curAttack=491;curDefense=491;id=196;level=17;numSpec=0;path=;removable=True;spec1Cap=100;spec1Cur=117;spec1Type=GoldDropAmount;spec2Cap=400000;spec2Cur=468000;spec2Type=NGU2;spec3Cap=0;spec3Cur=0;spec3Type=None;type=Accessory;unique=True"
+          }
+        ]
+      },
+      "energyNguWeights" : [
+        1,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "magicNguWeights" : [
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "normalization" : [
+        0.052627353378025772,
+        0.0034322186985668982,
+        0,
+        113.82524405917611,
+        0.93634997938283915,
+        0,
+        0,
+        0,
+        0,
+        0,
+        7558545,
+        4621830.5,
+        162470189,
+        24270446
+      ],
+      "references" : [
+        {
+          "objective" : "energyNgu",
+          "key" : "focus-energyNgu",
+          "production" : 0.052627353378025772
+        },
+        {
+          "objective" : "magicNgu",
+          "key" : "focus-magicNgu",
+          "production" : 0.0034322186985668982
+        },
+        {
+          "objective" : "blood",
+          "key" : "focus-energyNgu",
+          "production" : 0
+        },
+        {
+          "objective" : "pp",
+          "key" : "focus-blood",
+          "production" : 113.82524405917611
+        },
+        {
+          "objective" : "boosts",
+          "key" : "focus-blood",
+          "production" : 0.93634997938283915
+        },
+        {
+          "objective" : "zone",
+          "key" : "focus-energyNgu",
+          "production" : 0
+        },
+        {
+          "objective" : "timeMachine",
+          "key" : "focus-energyNgu",
+          "production" : 0
+        },
+        {
+          "objective" : "augments",
+          "key" : "focus-energyNgu",
+          "production" : 0
+        },
+        {
+          "objective" : "wandoos",
+          "key" : "focus-energyNgu",
+          "production" : 0
+        },
+        {
+          "objective" : "advancedTraining",
+          "key" : "focus-energyNgu",
+          "production" : 0
+        },
+        {
+          "objective" : "adventurePower",
+          "key" : "focus-energyNgu",
+          "production" : 7558545
+        },
+        {
+          "objective" : "adventureToughness",
+          "key" : "focus-energyNgu",
+          "production" : 4621830.5
+        },
+        {
+          "objective" : "energyCap",
+          "key" : "focus-energyNgu",
+          "production" : 162470189
+        },
+        {
+          "objective" : "magicCap",
+          "key" : "focus-magicNgu",
+          "production" : 24270446
+        }
+      ],
+      "decision" : {
+        "key" : "current",
+        "label" : "Current gear / planned support",
+        "bloodPercent" : 0,
+        "ritual" : -1,
+        "zone" : 1000,
+        "floor" : 196,
+        "regularEligibilityZone" : 0,
+        "boostEligibilityZone" : 0,
+        "support" : {
+          "beards" : [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "diggerWeights" : [
+            50,
+            0,
+            0,
+            50,
+            100,
+            25,
+            25,
+            25,
+            25,
+            10,
+            0,
+            10
+          ],
+          "diggers" : [
+            {
+              "id" : 0,
+              "level" : "40"
+            },
+            {
+              "id" : 3,
+              "level" : "40"
+            },
+            {
+              "id" : 4,
+              "level" : "18"
+            },
+            {
+              "id" : 5,
+              "level" : "15"
+            },
+            {
+              "id" : 6,
+              "level" : "3"
+            },
+            {
+              "id" : 7,
+              "level" : "3"
+            }
+          ]
+        },
+        "activities" : {
+          "os" : 1,
+          "augmentId" : -1,
+          "fixedLegacyAmounts" : [
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0"
+          ]
+        }
+      }
+    }
+  },
+  "plan" : {
+    "ActiveGoalPresetIndex" : 0,
+    "ActivePresetId" : "",
+    "AutoActivateFruits" : true,
+    "AutoIronPillEnabled" : true,
+    "AutoRebirthEnabled" : true,
+    "FightScoreMode" : 0,
+    "GearGoal" : 0,
+    "GoalPresets" : [
+      {
+        "GearGoal" : 0,
+        "Name" : "Generated"
+      }
+    ],
+    "LoadoutPresets" : [
+      {
+        "BeardPriority" : [
+        ],
+        "DiggerBudgetPercent" : 75,
+        "DiggerWeights" : [
+        ],
+        "HorizonSeconds" : 7200,
+        "Id" : "balanced-energy-magic",
+        "MagicBloodPercent" : 0,
+        "MinimumPower" : 0,
+        "MinimumToughness" : 0,
+        "Name" : "Energy + Magic NGU",
+        "SupportMode" : "planned",
+        "SwapSeconds" : 5,
+        "Weights" : [
+          1,
+          1,
+          0,
+          0.1,
+          0,
+          0
+        ],
+        "Zone" : -1
+      },
+      {
+        "BeardPriority" : [
+        ],
+        "DiggerBudgetPercent" : 75,
+        "DiggerWeights" : [
+        ],
+        "HorizonSeconds" : 3600,
+        "Id" : "balanced-energy-pp",
+        "MagicBloodPercent" : 0,
+        "MinimumPower" : 0,
+        "MinimumToughness" : 0,
+        "Name" : "Energy NGU + ITOPOD PP",
+        "SupportMode" : "planned",
+        "SwapSeconds" : 5,
+        "Weights" : [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0
+        ],
+        "Zone" : -1
+      },
+      {
+        "BeardPriority" : [
+        ],
+        "DiggerBudgetPercent" : 75,
+        "DiggerWeights" : [
+        ],
+        "HorizonSeconds" : 3600,
+        "Id" : "balanced-energy-boosts",
+        "MagicBloodPercent" : 0,
+        "MinimumPower" : 0,
+        "MinimumToughness" : 0,
+        "Name" : "Energy NGU + boosts",
+        "SupportMode" : "planned",
+        "SwapSeconds" : 5,
+        "Weights" : [
+          1,
+          0,
+          0,
+          0,
+          1,
+          0
+        ],
+        "Zone" : -1
+      }
+    ],
+    "Name" : "24hr",
+    "NumberClimbEnabled" : false,
+    "NumberClimbMinSeconds" : 0,
+    "NumberClimbMultiplierTarget" : 1,
+    "NumberMultiplierTarget" : 1,
+    "NumberTriggerEnabled" : true,
+    "PrepRequireMaxedFruit" : false,
+    "PresetMigrationIssues" : [
+      "loadout:balanced-energy-magic: imported preset 'import_f2018e48a72d2044a3c1f70f191584ac7d1f9cb967ef3cd76b5b043d' was deleted; retained inline.",
+      "loadout:balanced-energy-pp: imported preset 'import_17492939ca52972e5869d16857a0a809e6b92f73fc6c7d05cd7d510f' was deleted; retained inline.",
+      "loadout:balanced-energy-boosts: imported preset 'import_9150311648125564724a294c6b404bc6dabfd0039cc394b195e8097c' was deleted; retained inline.",
+      "ActivePresetId: legacy gear goal 0 has no equivalent preset; retained inline.",
+      "stage: imported preset 'import_2e37327d29d562f05dad8868a4c0e1f47fcfd089333e8c039dd7242c' was deleted; retained inline.",
+      "Stages[0].PresetId: explicit conversion required to use weighted preset; legacy cap/overflow allocation retained inline.",
+      "Stages[1].PresetId: legacy priorities, gear goal, execution, fight or cap semantics have no equivalent standard preset; retained inline."
+    ],
+    "RebirthHistory" : [
+      {
+        "TimestampLocal" : "2026-10-22 14:48:04",
+        "RebirthSeconds" : 86440.773055593862,
+        "NumberBefore" : 6.1553155691221483E+105,
+        "NumberAfter" : 3.555042239453107E+109,
+        "NumberMultiplier" : 5775.5645499100156,
+        "BossId" : 162,
+        "Reason" : "NUMBER x5775.565"
+      },
+      {
+        "TimestampLocal" : "2026-10-21 14:42:29",
+        "RebirthSeconds" : 86447.554981580644,
+        "NumberBefore" : 3.8114646504377444E+103,
+        "NumberAfter" : 6.1553155691221483E+105,
+        "NumberMultiplier" : 161.4947568361998,
+        "BossId" : 156,
+        "Reason" : "NUMBER x161.495"
+      },
+      {
+        "TimestampLocal" : "2026-10-20 14:24:26",
+        "RebirthSeconds" : 86441.010785640727,
+        "NumberBefore" : 1.7619657732517446E+100,
+        "NumberAfter" : 3.8114646504377444E+103,
+        "NumberMultiplier" : 2163.1888134827996,
+        "BossId" : 150,
+        "Reason" : "NUMBER x2163.189"
+      },
+      {
+        "TimestampLocal" : "2026-10-19 14:16:28",
+        "RebirthSeconds" : 86448.950094340718,
+        "NumberBefore" : 2.7976543303489667E+97,
+        "NumberAfter" : 1.7619657732517446E+100,
+        "NumberMultiplier" : 629.80109949178927,
+        "BossId" : 149,
+        "Reason" : "NUMBER x629.801"
+      },
+      {
+        "TimestampLocal" : "2026-10-18 13:59:01",
+        "RebirthSeconds" : 86423.269912840246,
+        "NumberBefore" : 1.0713011343234219E+94,
+        "NumberAfter" : 2.7976543303489667E+97,
+        "NumberMultiplier" : 2611.4546514653134,
+        "BossId" : 143,
+        "Reason" : "time 24:00:23"
+      },
+      {
+        "TimestampLocal" : "2026-10-17 13:58:36",
+        "RebirthSeconds" : 97002.574707205538,
+        "NumberBefore" : 1.3848722764827654E+88,
+        "NumberAfter" : 1.0713011343234219E+94,
+        "NumberMultiplier" : 773573.96239042562,
+        "BossId" : 139,
+        "Reason" : "time 26:56:42"
+      },
+      {
+        "TimestampLocal" : "2026-10-16 11:03:14",
+        "RebirthSeconds" : 86944.910519854617,
+        "NumberBefore" : 1.548185290699475E+82,
+        "NumberAfter" : 1.3848722764827654E+88,
+        "NumberMultiplier" : 894513.26323936053,
+        "BossId" : 128,
+        "Reason" : "time 24:09:04"
+      },
+      {
+        "TimestampLocal" : "2026-10-15 10:54:12",
+        "RebirthSeconds" : 141116.83129215264,
+        "NumberBefore" : 1.1347418454576119E+74,
+        "NumberAfter" : 1.548185290699475E+82,
+        "NumberMultiplier" : 136435022.37067252,
+        "BossId" : 120,
+        "Reason" : "time 39:11:56"
+      }
+    ],
+    "StageDurationSeconds" : 83640,
+    "StageLoopStartIndex" : 3,
+    "StageSchedulerEnabled" : true,
+    "Stages" : [
+      {
+        "BlackBarLookaheadSeconds" : 5,
+        "CompletionMode" : 0,
+        "DurationSeconds" : 3600,
+        "DurationUnit" : "min",
+        "EnergyFocus" : 1,
+        "EnergyPriorities" : [
+          "TM",
+          "NGU",
+          "WAN",
+          "AUG",
+          "AT"
+        ],
+        "ExecutionMode" : 0,
+        "FightOnEntry" : false,
+        "GearGoal" : 5,
+        "MagicFocus" : 1,
+        "MagicPriorities" : [
+          "TM",
+          "RIT",
+          "NGU",
+          "WAN"
+        ],
+        "Name" : "Time Machine",
+        "Percent" : 1,
+        "PresetId" : "",
+        "TargetAdvancedTrainingPower" : "0",
+        "TargetAdvancedTrainingToughness" : "0",
+        "AdventureDynamicWeight" : 0
+      },
+      {
+        "BlackBarLookaheadSeconds" : 5,
+        "CompletionMode" : 0,
+        "DurationSeconds" : 3600,
+        "DurationUnit" : "min",
+        "EnergyFocus" : 2,
+        "EnergyPriorities" : [
+          "AUG",
+          "NGU",
+          "WAN",
+          "TM",
+          "AT"
+        ],
+        "ExecutionMode" : 1,
+        "FightOnEntry" : true,
+        "GearGoal" : 10,
+        "MagicFocus" : 4,
+        "MagicPriorities" : [
+          "RIT",
+          "NGU",
+          "WAN",
+          "TM"
+        ],
+        "Name" : "Augments + Wandoos",
+        "AdventureDynamicWeight" : 15,
+        "Percent" : 1,
+        "PresetId" : "",
+        "TargetAdvancedTrainingPower" : "0",
+        "TargetAdvancedTrainingToughness" : "0"
+      },
+      {
+        "BlackBarLookaheadSeconds" : 5,
+        "CompletionMode" : 1,
+        "DurationSeconds" : 0,
+        "DurationUnit" : "min",
+        "EnergyFocus" : 7,
+        "EnergyPriorities" : [
+          "AT",
+          "NGU",
+          "WAN",
+          "TM",
+          "AUG"
+        ],
+        "ExecutionMode" : 0,
+        "FightOnEntry" : true,
+        "GearGoal" : 11,
+        "MagicFocus" : 4,
+        "MagicPriorities" : [
+          "RIT",
+          "NGU",
+          "WAN",
+          "TM"
+        ],
+        "Name" : "AT Adventure",
+        "Percent" : 1,
+        "PresetId" : "builtin_atAdventure",
+        "TargetAdvancedTrainingPower" : "3000",
+        "TargetAdvancedTrainingToughness" : "3000",
+        "AdventureDynamicWeight" : 0
+      },
+      {
+        "BlackBarLookaheadSeconds" : 5,
+        "CompletionMode" : 0,
+        "DurationSeconds" : 0,
+        "DurationUnit" : "%",
+        "EnergyFocus" : 5,
+        "EnergyPriorities" : [
+          "NGU",
+          "WAN",
+          "TM",
+          "AUG",
+          "AT"
+        ],
+        "ExecutionMode" : 0,
+        "FightOnEntry" : true,
+        "GearGoal" : 2,
+        "MagicFocus" : 6,
+        "MagicPriorities" : [
+          "NGU",
+          "RIT",
+          "WAN",
+          "TM"
+        ],
+        "Name" : "NGU Energy",
+        "Percent" : 1,
+        "PresetId" : "preset_ecf91ea85a2142d3ab379c42fc50b341",
+        "TargetAdvancedTrainingPower" : "0",
+        "TargetAdvancedTrainingToughness" : "0",
+        "AdventureDynamicWeight" : 0
+      }
+    ],
+    "TimeTriggerEnabled" : true,
+    "TimeTriggerSeconds" : 86400,
+    "TriggerMode" : 1,
+    "Version" : 17,
+    "IronPillMinWorth" : 0,
+    "IronPillSaveSeconds" : 900
+  },
+  "presetLibrary" : {
+    "MigrationReceipts" : {
+      "ddfdf7c267556f6441af54d92edd0001dc080507da891a747a19be0ccf40d66e" : {
+        "PresetId" : "import_ddfdf7c267556f6441af54d92edd0001dc080507da891a747a19be0c",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "active"
+      },
+      "da1fa41899004f453663740ddb385b633031231f65a40c4e53049ea5d35d61da" : {
+        "PresetId" : "import_da1fa41899004f453663740ddb385b633031231f65a40c4e53049ea5",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "stage"
+      },
+      "6452b3bb5f05ba7c14d3012d97ef9d59324ee81063aa393e0a45d13e95b224d1" : {
+        "PresetId" : "import_6452b3bb5f05ba7c14d3012d97ef9d59324ee81063aa393e0a45d13e",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "stage"
+      },
+      "b7f8df75dc9c03d3b39894109687e72e624898865310c618fa5a3914c8547555" : {
+        "PresetId" : "import_b7f8df75dc9c03d3b39894109687e72e624898865310c618fa5a3914",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "stage"
+      },
+      "8e8a1a425c12b8149f2d3308e8434db5b848559895fa57108889c336494ee2e9" : {
+        "PresetId" : "import_8e8a1a425c12b8149f2d3308e8434db5b848559895fa57108889c336",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-magic"
+      },
+      "ed62865dbfdd4c288faf43542a495711e97551d6003a7ac21fb5853543d1a135" : {
+        "PresetId" : "import_ed62865dbfdd4c288faf43542a495711e97551d6003a7ac21fb58535",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-pp"
+      },
+      "ddf90645d2f23091b86fea7213eea131935737dc7479d1aeb702cd1061c5fbb0" : {
+        "PresetId" : "import_ddf90645d2f23091b86fea7213eea131935737dc7479d1aeb702cd10",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-boosts"
+      },
+      "7dcb766780b85c7fc013aa57c47303a4985631af29bd963f1060c94f038ca072" : {
+        "PresetId" : "import_7dcb766780b85c7fc013aa57c47303a4985631af29bd963f1060c94f",
+        "Source" : "24hr",
+        "Kind" : "stage"
+      },
+      "7bccd33f1aea7d0bd5993f88a29e26dc40a1f1675b90a8943a3a57a07ca2483b" : {
+        "PresetId" : "import_7bccd33f1aea7d0bd5993f88a29e26dc40a1f1675b90a8943a3a57a0",
+        "Source" : "24hr",
+        "Kind" : "stage"
+      },
+      "e0e0342dc342775dba533baf00ced139bdb6c03ba18647e5bd5698852d7bd0f7" : {
+        "PresetId" : "import_e0e0342dc342775dba533baf00ced139bdb6c03ba18647e5bd569885",
+        "Source" : "default",
+        "Kind" : "stage"
+      },
+      "80c6c79418a0743c42a329f3627b01d3e8bfbe5134422e6c3b1a43eb4c7544dc" : {
+        "PresetId" : "import_80c6c79418a0743c42a329f3627b01d3e8bfbe5134422e6c3b1a43eb",
+        "Source" : "default",
+        "Kind" : "stage"
+      },
+      "6fd45f142b1d2bea5c6c5fe68e8bbc77b32886cb5da060fb6c9e2269c9e47e18" : {
+        "PresetId" : "import_6fd45f142b1d2bea5c6c5fe68e8bbc77b32886cb5da060fb6c9e2269",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      },
+      "0864aad9b7dce431a7402c111f9c6ad348f57b2f18ed1c90cb9411bb7661df2f" : {
+        "PresetId" : "import_0864aad9b7dce431a7402c111f9c6ad348f57b2f18ed1c90cb9411bb",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      },
+      "26954a8bd2be3c1b24b365982e6e4e3b660af6b9ac74a1ef28e2b83c1c93560c" : {
+        "PresetId" : "import_26954a8bd2be3c1b24b365982e6e4e3b660af6b9ac74a1ef28e2b83c",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      },
+      "efae5cbcdab69bae83fefd600c9c72c588aa45eb608ad35a6df157d014842ad9" : {
+        "PresetId" : "import_efae5cbcdab69bae83fefd600c9c72c588aa45eb608ad35a6df157d0",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      },
+      "22b164bad03288a60c1eaf3d87b49e122e87171f4e9c3152e991ac32cf7af795" : {
+        "PresetId" : "import_22b164bad03288a60c1eaf3d87b49e122e87171f4e9c3152e991ac32",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-magic"
+      },
+      "1e5458fbccc301ca87626811d49568e04be94a58f7b4f804fdab6e5679231f06" : {
+        "PresetId" : "import_1e5458fbccc301ca87626811d49568e04be94a58f7b4f804fdab6e56",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-pp"
+      },
+      "dac6afe61ad3bddb85e0d37663762a1c50f137882b536a896e7e3bd1e1140974" : {
+        "PresetId" : "import_dac6afe61ad3bddb85e0d37663762a1c50f137882b536a896e7e3bd1",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-boosts"
+      },
+      "cfe85b87898d97ee1ea85728d797087474936ccf6722ce9d6a1a93459b63ed59" : {
+        "PresetId" : "import_cfe85b87898d97ee1ea85728d797087474936ccf6722ce9d6a1a9345",
+        "Source" : "24hr",
+        "Kind" : "stage"
+      },
+      "6a3e53f5163594d56b1036078db2ee3f441a9cea50f984d7848672a17ce60194" : {
+        "PresetId" : "import_6a3e53f5163594d56b1036078db2ee3f441a9cea50f984d7848672a1",
+        "Source" : "24hr",
+        "Kind" : "stage"
+      },
+      "7bb1bf4d06062b1d04de40d2f03634f0b4b20bb085cb9b4fd4ccb406d5a01094" : {
+        "PresetId" : "import_7bb1bf4d06062b1d04de40d2f03634f0b4b20bb085cb9b4fd4ccb406",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-magic"
+      },
+      "f186c5ec0b03abfab34433bba646e33827aee46ab97061733a36da4983bd5286" : {
+        "PresetId" : "import_f186c5ec0b03abfab34433bba646e33827aee46ab97061733a36da49",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-pp"
+      },
+      "2e2241686b89e9b53f6e3e6cfcbec2f6efe531fcf079444bb7743cbc8ecbc4ee" : {
+        "PresetId" : "import_2e2241686b89e9b53f6e3e6cfcbec2f6efe531fcf079444bb7743cbc",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-boosts"
+      },
+      "419f446a9fd4a7441c0f6a3a925cab62a3f2fdb9a69f1f68d3226bca808ff21e" : {
+        "PresetId" : "import_419f446a9fd4a7441c0f6a3a925cab62a3f2fdb9a69f1f68d3226bca",
+        "Source" : "24hr",
+        "Kind" : "stage"
+      },
+      "7468697002a68c1e6cae5fdc8f7bbbdd9a0415c2327239f684d1d898e89638cd" : {
+        "PresetId" : "import_7468697002a68c1e6cae5fdc8f7bbbdd9a0415c2327239f684d1d898",
+        "Source" : "24hr",
+        "Kind" : "stage"
+      },
+      "f2018e48a72d2044a3c1f70f191584ac7d1f9cb967ef3cd76b5b043d1aea8b9f" : {
+        "PresetId" : "import_f2018e48a72d2044a3c1f70f191584ac7d1f9cb967ef3cd76b5b043d",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-magic"
+      },
+      "17492939ca52972e5869d16857a0a809e6b92f73fc6c7d05cd7d510f000fdfaa" : {
+        "PresetId" : "import_17492939ca52972e5869d16857a0a809e6b92f73fc6c7d05cd7d510f",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-pp"
+      },
+      "9150311648125564724a294c6b404bc6dabfd0039cc394b195e8097c86a85287" : {
+        "PresetId" : "import_9150311648125564724a294c6b404bc6dabfd0039cc394b195e8097c",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-boosts"
+      },
+      "2e37327d29d562f05dad8868a4c0e1f47fcfd089333e8c039dd7242c677ec37d" : {
+        "PresetId" : "import_2e37327d29d562f05dad8868a4c0e1f47fcfd089333e8c039dd7242c",
+        "Source" : "24hr",
+        "Kind" : "stage"
+      },
+      "165ef7f7d85b84aa615656d887781f86090343bc0b5505ea62e7d55cffd3fcb1" : {
+        "PresetId" : "import_165ef7f7d85b84aa615656d887781f86090343bc0b5505ea62e7d55c",
+        "Source" : "24hr",
+        "Kind" : "stage"
+      },
+      "1b43ff09c99b0562a9e40deae32257e92c59531bb9c24d85f1b166b6bb9f70ee" : {
+        "PresetId" : "import_ddfdf7c267556f6441af54d92edd0001dc080507da891a747a19be0c",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "active"
+      },
+      "3a122e5ae5896a7a9b666f2c8d0f07cb2adde8bb10d2e3b04d814ad8d8e59d54" : {
+        "PresetId" : "import_da1fa41899004f453663740ddb385b633031231f65a40c4e53049ea5",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "stage"
+      },
+      "1cf69a1630016c56c1103b96b7ea0e1292f0fde739df053ca3d7507386fd8c68" : {
+        "PresetId" : "import_6452b3bb5f05ba7c14d3012d97ef9d59324ee81063aa393e0a45d13e",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "stage"
+      },
+      "5f04b82ade4df3f8e59e9e9d27f70e1a75002a78cfbcc134845a3c3e77b73a9d" : {
+        "PresetId" : "import_b7f8df75dc9c03d3b39894109687e72e624898865310c618fa5a3914",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "stage"
+      },
+      "02631bba45ce2b9e517f23d31b270e04090380080f6b9fcb3d1fdf59f63cdbcf" : {
+        "PresetId" : "import_f2018e48a72d2044a3c1f70f191584ac7d1f9cb967ef3cd76b5b043d",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-magic"
+      },
+      "5e9fa7a333f86632fc2be509035b02efe71d69bd86b9ab45c7e825d0c060c976" : {
+        "PresetId" : "import_17492939ca52972e5869d16857a0a809e6b92f73fc6c7d05cd7d510f",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-pp"
+      },
+      "fd828e70219f940cb84ff090992faaa3be2dc9ba68bd629ee8dcf5b68c36908b" : {
+        "PresetId" : "import_9150311648125564724a294c6b404bc6dabfd0039cc394b195e8097c",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-boosts"
+      },
+      "c0513effa362398fbac11706ca91d034fdcb2509da59dd3ec7a59bbb894e5ec8" : {
+        "PresetId" : "import_2e37327d29d562f05dad8868a4c0e1f47fcfd089333e8c039dd7242c",
+        "Source" : "24hr",
+        "Kind" : "stage"
+      },
+      "9b635d9203fb6bdcd03b0a21cacc07834843e4c5a78f6245d79bc04d59186af5" : {
+        "PresetId" : "import_e0e0342dc342775dba533baf00ced139bdb6c03ba18647e5bd569885",
+        "Source" : "default",
+        "Kind" : "stage"
+      },
+      "47efa549a24909ed7da047ed07d0f194e07e35f03b6bc4f38d554a2c43bacc7a" : {
+        "PresetId" : "import_80c6c79418a0743c42a329f3627b01d3e8bfbe5134422e6c3b1a43eb",
+        "Source" : "default",
+        "Kind" : "stage"
+      },
+      "7d128b91b83e9dc1079fd1db6dcc8068c0a71a858c5cf573c922576710b96805" : {
+        "PresetId" : "import_6fd45f142b1d2bea5c6c5fe68e8bbc77b32886cb5da060fb6c9e2269",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      },
+      "f5460e2bf789442d7e51cc843ac10c695bacd756bf8423955a30ec3757386765" : {
+        "PresetId" : "import_0864aad9b7dce431a7402c111f9c6ad348f57b2f18ed1c90cb9411bb",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      },
+      "d0986e137492da95d25eb70d9b74477e3349378c722d28ff5f4e568c0bacc05d" : {
+        "PresetId" : "import_26954a8bd2be3c1b24b365982e6e4e3b660af6b9ac74a1ef28e2b83c",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      },
+      "d19aa42f30a3d77148fad945bd7cadbe0e8720270cebd42b3a36b0d19bf6a596" : {
+        "PresetId" : "import_efae5cbcdab69bae83fefd600c9c72c588aa45eb608ad35a6df157d0",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      },
+      "8e534de36f2f345c942be39ca5f882e188ec6da43707fb2245d166d55a71e642" : {
+        "PresetId" : "import_ddfdf7c267556f6441af54d92edd0001dc080507da891a747a19be0c",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "active"
+      },
+      "b85bee1fcd5fa17d117a525cc63881d319c0e06a0ce0b2560ebe32340dc2d4c9" : {
+        "PresetId" : "import_da1fa41899004f453663740ddb385b633031231f65a40c4e53049ea5",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "stage"
+      },
+      "3fa2fe96cf1bcac4d2b912af1101fe49bf0e374d0b3cbdc26132a9346a72f904" : {
+        "PresetId" : "import_6452b3bb5f05ba7c14d3012d97ef9d59324ee81063aa393e0a45d13e",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "stage"
+      },
+      "da5013d45a8002f78a2da827a4c06809331ea0b2cfb8074b009e33ee53647f4a" : {
+        "PresetId" : "import_b7f8df75dc9c03d3b39894109687e72e624898865310c618fa5a3914",
+        "Source" : "1h-3m-rebirth",
+        "Kind" : "stage"
+      },
+      "a81b97f4959a372cc653fa91775680f31c3437f88e903c80a6fb249ea0e60c3c" : {
+        "PresetId" : "import_f2018e48a72d2044a3c1f70f191584ac7d1f9cb967ef3cd76b5b043d",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-magic"
+      },
+      "1f846af1f1a6af57eea06ee8fee5cc38c2bd7248f0382ee7503c077a0d9a9c94" : {
+        "PresetId" : "import_17492939ca52972e5869d16857a0a809e6b92f73fc6c7d05cd7d510f",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-pp"
+      },
+      "144955d084ad472cb81ab8281e7f85d1410f9610994467a06e7174bfca0ff563" : {
+        "PresetId" : "import_9150311648125564724a294c6b404bc6dabfd0039cc394b195e8097c",
+        "Source" : "24hr",
+        "Kind" : "loadout:balanced-energy-boosts"
+      },
+      "74785fe81271ae68db41dd3afff9ea715719f6eb6d5e03ae325433c591efdf0d" : {
+        "PresetId" : "import_2e37327d29d562f05dad8868a4c0e1f47fcfd089333e8c039dd7242c",
+        "Source" : "24hr",
+        "Kind" : "stage"
+      },
+      "615d657a72a4a2392d414d7e5fe42d4d877f20ea36829b2ab09c766ea610817e" : {
+        "PresetId" : "import_e0e0342dc342775dba533baf00ced139bdb6c03ba18647e5bd569885",
+        "Source" : "default",
+        "Kind" : "stage"
+      },
+      "4912899376164076b56760c3c87d5a8b10070ca672809214c6fcfacd521c5cea" : {
+        "PresetId" : "import_80c6c79418a0743c42a329f3627b01d3e8bfbe5134422e6c3b1a43eb",
+        "Source" : "default",
+        "Kind" : "stage"
+      },
+      "770f05d10eb97618468b2744fc2c2e1adbb66ca69d59c09f29278402725cdd1a" : {
+        "PresetId" : "import_6fd45f142b1d2bea5c6c5fe68e8bbc77b32886cb5da060fb6c9e2269",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      },
+      "82eee934da43598d7df03c586a8035f943dd4dd2108432b225c24bde1dc0e197" : {
+        "PresetId" : "import_0864aad9b7dce431a7402c111f9c6ad348f57b2f18ed1c90cb9411bb",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      },
+      "6c36146a70bdaf3cbb2fae27ccc5c4c3decd65af019757c7741d6856960c79fe" : {
+        "PresetId" : "import_26954a8bd2be3c1b24b365982e6e4e3b660af6b9ac74a1ef28e2b83c",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      },
+      "701cec52c23e4048fea8d91aeca83f27b3f6ed29673fdbfcd3811564412c1127" : {
+        "PresetId" : "import_efae5cbcdab69bae83fefd600c9c72c588aa45eb608ad35a6df157d0",
+        "Source" : "infinite",
+        "Kind" : "stage"
+      }
+    },
+    "Presets" : [
+      {
+        "AdvancedTrainingWeights" : [
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "AutoUpdate" : true,
+        "BeardPriority" : [
+        ],
+        "DiggerBudgetPercent" : 75,
+        "DiggerWeights" : [
+        ],
+        "Id" : "builtin_atAdventure",
+        "MagicBloodPercent" : -1,
+        "MinimumPower" : 0,
+        "MinimumToughness" : 0,
+        "Name" : "AT Adventure",
+        "SupportMode" : "planned",
+        "SwapSeconds" : 5,
+        "Weights" : [
+          0,
+          0,
+          25,
+          15,
+          0,
+          0,
+          0,
+          0,
+          0,
+          100,
+          0,
+          0,
+          0,
+          0
+        ],
+        "Zone" : -1
+      },
+      {
+        "AdvancedTrainingWeights" : [
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "AutoUpdate" : true,
+        "BeardPriority" : [
+        ],
+        "DiggerBudgetPercent" : 75,
+        "DiggerWeights" : [
+        ],
+        "Id" : "import_7dcb766780b85c7fc013aa57c47303a4985631af29bd963f1060c94f",
+        "MagicBloodPercent" : -1,
+        "MinimumPower" : 0,
+        "MinimumToughness" : 0,
+        "Name" : "Time Machine",
+        "SupportMode" : "current",
+        "SwapSeconds" : 5,
+        "Weights" : [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "Zone" : -1
+      },
+      {
+        "AdvancedTrainingWeights" : [
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "AutoUpdate" : true,
+        "BeardPriority" : [
+          1,
+          3,
+          5,
+          6
+        ],
+        "BeardRotation" : [
+          2,
+          4,
+          0
+        ],
+        "DiggerBudgetPercent" : 75,
+        "DiggerWeights" : [
+          50,
+          0,
+          0,
+          50,
+          100,
+          25,
+          25,
+          25,
+          25,
+          10,
+          0,
+          10
+        ],
+        "Id" : "preset_ecf91ea85a2142d3ab379c42fc50b341",
+        "AdventureDynamicWeight" : 25,
+        "MagicBloodPercent" : -1,
+        "MinimumPower" : 0,
+        "MinimumToughness" : 0,
+        "Name" : "NGU Energy",
+        "SupportMode" : "planned",
+        "SwapSeconds" : 5,
+        "Weights" : [
+          100,
+          20,
+          0,
+          20,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "Zone" : -1,
+        "ResourcePrioritiesReviewed" : true,
+        "MagicPriorities" : [
+          "NGU"
+        ],
+        "EnergyPriorities" : [
+          "NGU"
+        ]
+      },
+      {
+        "Weights" : [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0
+        ],
+        "AutoUpdate" : true,
+        "AdvancedTrainingWeights" : [
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "MagicBloodPercent" : -1,
+        "SupportMode" : "current",
+        "DiggerBudgetPercent" : 75,
+        "Zone" : -1,
+        "MinimumPower" : 0,
+        "MinimumToughness" : 0,
+        "SwapSeconds" : 5,
+        "BeardPriority" : [
+          1,
+          3,
+          5,
+          6
+        ],
+        "DiggerWeights" : [
+        ],
+        "Id" : "builtin_energyCap",
+        "Name" : "Energy Cap",
+        "BeardRotation" : [
+          0,
+          2,
+          4
+        ]
+      },
+      {
+        "Weights" : [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          1
+        ],
+        "AutoUpdate" : true,
+        "AdvancedTrainingWeights" : [
+          1,
+          1,
+          0,
+          0,
+          0
+        ],
+        "MagicBloodPercent" : -1,
+        "SupportMode" : "current",
+        "DiggerBudgetPercent" : 75,
+        "Zone" : -1,
+        "MinimumPower" : 0,
+        "MinimumToughness" : 0,
+        "SwapSeconds" : 5,
+        "BeardPriority" : [
+          1,
+          3,
+          5,
+          6
+        ],
+        "DiggerWeights" : [
+        ],
+        "Id" : "builtin_magicCap",
+        "Name" : "Magic Cap",
+        "BeardRotation" : [
+          0,
+          2,
+          4
+        ]
+      }
+    ],
+    "Version" : 1,
+    "CapPresetsAdded" : true
+  },
+  "settings" : {
+    "_customAdventureMode" : 0,
+    "_customAdventureZone" : 16,
+    "_customAdventureEnabled" : true,
+    "_customAdventureRules" : [
+      {
+        "Enabled" : true,
+        "MinPower" : 0,
+        "MinToughness" : 0,
+        "MinRegen" : 0,
+        "Mode" : 0,
+        "Zone" : 0
+      }
+    ]
+  },
+  "checkpointSha256" : "A2A14EEED815C2B6E9CF68769ED83AC71A2C61E86E740C0F1EC22418A05ED778",
+  "native" : {
+    "inventory" : {
+      "head" : {
+        "id" : 150,
+        "type" : 0,
+        "bossRequired" : 100,
+        "capAttack" : 1000,
+        "curAttack" : 1070,
+        "capDefense" : 22000,
+        "curDefense" : 23540,
+        "spec1Type" : 20,
+        "spec1Cur" : 9095,
+        "spec1Cap" : 8500,
+        "spec2Type" : 16,
+        "spec2Cur" : 8025,
+        "spec2Cap" : 7500,
+        "spec3Type" : 17,
+        "spec3Cur" : 2140,
+        "spec3Cap" : 2000,
+        "removable" : true,
+        "level" : 7
+      },
+      "chest" : {
+        "id" : 151,
+        "type" : 1,
+        "bossRequired" : 100,
+        "capAttack" : 1000,
+        "curAttack" : 1130,
+        "capDefense" : 23000,
+        "curDefense" : 25990,
+        "spec1Type" : 16,
+        "spec1Cur" : 9040,
+        "spec1Cap" : 8000,
+        "spec2Type" : 18,
+        "spec2Cur" : 6780,
+        "spec2Cap" : 6000,
+        "spec3Type" : 21,
+        "spec3Cur" : 3390,
+        "spec3Cap" : 3000,
+        "removable" : true,
+        "level" : 13
+      },
+      "legs" : {
+        "id" : 124,
+        "type" : 2,
+        "bossRequired" : 82,
+        "capAttack" : 300,
+        "curAttack" : 600,
+        "capDefense" : 2600,
+        "curDefense" : 5200,
+        "spec1Type" : 20,
+        "spec1Cur" : 7200,
+        "spec1Cap" : 3600,
+        "spec2Type" : 16,
+        "spec2Cur" : 1800,
+        "spec2Cap" : 900,
+        "spec3Type" : 0,
+        "spec3Cur" : 0,
+        "spec3Cap" : 0,
+        "removable" : true,
+        "level" : 100
+      },
+      "boots" : {
+        "id" : 153,
+        "type" : 3,
+        "bossRequired" : 100,
+        "capAttack" : 1000,
+        "curAttack" : 1110,
+        "capDefense" : 24000,
+        "curDefense" : 26640,
+        "spec1Type" : 12,
+        "spec1Cur" : 14430,
+        "spec1Cap" : 13000,
+        "spec2Type" : 22,
+        "spec2Cur" : 6660,
+        "spec2Cap" : 6000,
+        "spec3Type" : 0,
+        "spec3Cur" : 0,
+        "spec3Cap" : 0,
+        "removable" : true,
+        "level" : 11
+      },
+      "weapon" : {
+        "id" : 159,
+        "type" : 4,
+        "bossRequired" : 100,
+        "capAttack" : 170000,
+        "curAttack" : 171700,
+        "capDefense" : 12000,
+        "curDefense" : 12120,
+        "spec1Type" : 27,
+        "spec1Cur" : 1010000,
+        "spec1Cap" : 1000000,
+        "spec2Type" : 28,
+        "spec2Cur" : 1010000,
+        "spec2Cap" : 1000000,
+        "spec3Type" : 29,
+        "spec3Cur" : 1005804.8125,
+        "spec3Cap" : 1000000,
+        "removable" : true,
+        "level" : 1
+      },
+      "weapon2" : {
+        "id" : 0,
+        "type" : 9,
+        "bossRequired" : -1,
+        "capAttack" : 0,
+        "curAttack" : 0,
+        "capDefense" : 0,
+        "curDefense" : 0,
+        "spec1Type" : 0,
+        "spec1Cur" : 0,
+        "spec1Cap" : 0,
+        "spec2Type" : 0,
+        "spec2Cur" : 0,
+        "spec2Cap" : 0,
+        "spec3Type" : 0,
+        "spec3Cur" : 0,
+        "spec3Cap" : 0,
+        "removable" : true,
+        "level" : 0
+      },
+      "accs" : [
+        {
+          "id" : 116,
+          "type" : 5,
+          "bossRequired" : 82,
+          "capAttack" : 0,
+          "curAttack" : 0,
+          "capDefense" : 82,
+          "curDefense" : 164,
+          "spec1Type" : 22,
+          "spec1Cur" : 12000,
+          "spec1Cap" : 6000,
+          "spec2Type" : 17,
+          "spec2Cur" : 2164,
+          "spec2Cap" : 1082,
+          "spec3Type" : 7,
+          "spec3Cur" : 400,
+          "spec3Cap" : 200,
+          "removable" : true,
+          "level" : 100
+        },
+        {
+          "id" : 139,
+          "type" : 5,
+          "bossRequired" : 100,
+          "capAttack" : 1000,
+          "curAttack" : 2000,
+          "capDefense" : 1000,
+          "curDefense" : 2000,
+          "spec1Type" : 16,
+          "spec1Cur" : 5000,
+          "spec1Cap" : 2500,
+          "spec2Type" : 18,
+          "spec2Cur" : 2400,
+          "spec2Cap" : 1200,
+          "spec3Type" : 20,
+          "spec3Cur" : 8000,
+          "spec3Cap" : 4000,
+          "removable" : true,
+          "level" : 100
+        },
+        {
+          "id" : 138,
+          "type" : 5,
+          "bossRequired" : 100,
+          "capAttack" : 1000,
+          "curAttack" : 2000,
+          "capDefense" : 1000,
+          "curDefense" : 2000,
+          "spec1Type" : 22,
+          "spec1Cur" : 10000,
+          "spec1Cap" : 5000,
+          "spec2Type" : 12,
+          "spec2Cur" : 10000,
+          "spec2Cap" : 5000,
+          "spec3Type" : 13,
+          "spec3Cur" : 10000,
+          "spec3Cap" : 5000,
+          "removable" : true,
+          "level" : 100
+        },
+        {
+          "id" : 440,
+          "type" : 5,
+          "bossRequired" : 82,
+          "capAttack" : 4000,
+          "curAttack" : 8000,
+          "capDefense" : 4000,
+          "curDefense" : 8000,
+          "spec1Type" : 16,
+          "spec1Cur" : 3200,
+          "spec1Cap" : 1600,
+          "spec2Type" : 18,
+          "spec2Cur" : 2000,
+          "spec2Cap" : 1000,
+          "spec3Type" : 20,
+          "spec3Cur" : 10000,
+          "spec3Cap" : 5000,
+          "removable" : true,
+          "level" : 100
+        },
+        {
+          "id" : 109,
+          "type" : 5,
+          "bossRequired" : 82,
+          "capAttack" : 0,
+          "curAttack" : 0,
+          "capDefense" : 0,
+          "curDefense" : 0,
+          "spec1Type" : 16,
+          "spec1Cur" : 2000,
+          "spec1Cap" : 1000,
+          "spec2Type" : 17,
+          "spec2Cur" : 2000,
+          "spec2Cap" : 1000,
+          "spec3Type" : 0,
+          "spec3Cur" : 0,
+          "spec3Cap" : 0,
+          "removable" : true,
+          "level" : 100
+        },
+        {
+          "id" : 148,
+          "type" : 5,
+          "bossRequired" : 100,
+          "capAttack" : 8000,
+          "curAttack" : 8720,
+          "capDefense" : 8000,
+          "curDefense" : 8720,
+          "spec1Type" : 16,
+          "spec1Cur" : 4905,
+          "spec1Cap" : 4500,
+          "spec2Type" : 17,
+          "spec2Cur" : 3815,
+          "spec2Cap" : 3500,
+          "spec3Type" : 26,
+          "spec3Cur" : 10900,
+          "spec3Cap" : 10000,
+          "removable" : true,
+          "level" : 9
+        },
+        {
+          "id" : 196,
+          "type" : 5,
+          "bossRequired" : 0,
+          "capAttack" : 420,
+          "curAttack" : 491,
+          "capDefense" : 420,
+          "curDefense" : 491,
+          "spec1Type" : 7,
+          "spec1Cur" : 117,
+          "spec1Cap" : 100,
+          "spec2Type" : 39,
+          "spec2Cur" : 468000,
+          "spec2Cap" : 400000,
+          "spec3Type" : 0,
+          "spec3Cur" : 0,
+          "spec3Cap" : 0,
+          "removable" : true,
+          "level" : 17
+        }
+      ],
+      "cubePower" : 8120.4833984375,
+      "cubeToughness" : 8119.5302734375
+    },
+    "beards" : {
+      "beards" : [
+        {
+          "progress" : 0.494234561920166,
+          "active" : false,
+          "beardLevel" : 119,
+          "permLevel" : 561,
+          "bankedLevel" : 0
+        },
+        {
+          "progress" : 0.32638916373252869,
+          "active" : true,
+          "beardLevel" : 450,
+          "permLevel" : 1342,
+          "bankedLevel" : 0
+        },
+        {
+          "progress" : 0.61108922958374023,
+          "active" : true,
+          "beardLevel" : 63,
+          "permLevel" : 343,
+          "bankedLevel" : 0
+        },
+        {
+          "progress" : 0.43446087837219238,
+          "active" : true,
+          "beardLevel" : 246,
+          "permLevel" : 989,
+          "bankedLevel" : 0
+        },
+        {
+          "progress" : 0.60260438919067383,
+          "active" : true,
+          "beardLevel" : 30,
+          "permLevel" : 0,
+          "bankedLevel" : 0
+        },
+        {
+          "progress" : 0.065930508077144623,
+          "active" : true,
+          "beardLevel" : 142,
+          "permLevel" : 728,
+          "bankedLevel" : 0
+        },
+        {
+          "progress" : 0,
+          "active" : false,
+          "beardLevel" : 0,
+          "permLevel" : 4,
+          "bankedLevel" : 0
+        }
+      ],
+      "activeBeards" : [
+        3,
+        5,
+        1,
+        4,
+        2
+      ],
+      "capBeards" : 1,
+      "energyBeardCount" : 3,
+      "magicBeardCount" : 2,
+      "disabled" : false,
+      "transferredBankedLevels" : true
+    },
+    "diggers" : {
+      "diggers" : [
+        {
+          "curLevel" : 40,
+          "maxLevel" : 48,
+          "active" : true,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        },
+        {
+          "curLevel" : 44,
+          "maxLevel" : 48,
+          "active" : false,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        },
+        {
+          "curLevel" : 43,
+          "maxLevel" : 48,
+          "active" : false,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        },
+        {
+          "curLevel" : 40,
+          "maxLevel" : 48,
+          "active" : true,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        },
+        {
+          "curLevel" : 18,
+          "maxLevel" : 23,
+          "active" : true,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        },
+        {
+          "curLevel" : 15,
+          "maxLevel" : 22,
+          "active" : true,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        },
+        {
+          "curLevel" : 3,
+          "maxLevel" : 10,
+          "active" : true,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        },
+        {
+          "curLevel" : 3,
+          "maxLevel" : 10,
+          "active" : true,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        },
+        {
+          "curLevel" : 0,
+          "maxLevel" : 0,
+          "active" : false,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        },
+        {
+          "curLevel" : 0,
+          "maxLevel" : 0,
+          "active" : false,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        },
+        {
+          "curLevel" : 0,
+          "maxLevel" : 0,
+          "active" : false,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        },
+        {
+          "curLevel" : 0,
+          "maxLevel" : 0,
+          "active" : false,
+          "cooldown" : {
+            "totalseconds" : 0,
+            "seconds" : 0,
+            "minutes" : 0,
+            "hours" : 0,
+            "days" : 0
+          }
+        }
+      ],
+      "activeDiggers" : [
+        0,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "loadoutDiggers" : [
+      ]
+    },
+    "NGU" : {
+      "skills" : [
+        {
+          "progress" : 0.025295296683907509,
+          "level" : 3399,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 41200471,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.53056132793426514,
+          "level" : 3390,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 41200470,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.13476160168647766,
+          "level" : 1011,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.77121871709823608,
+          "level" : 3384,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 41200470,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.66668784618377686,
+          "level" : 4002,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.57394617795944214,
+          "level" : 3385,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 41200470,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.26610556244850159,
+          "level" : 163,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.82652252912521362,
+          "level" : 14,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.790338933467865,
+          "level" : 1,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0,
+          "level" : 0,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0,
+          "level" : 0,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        }
+      ],
+      "magicSkills" : [
+        {
+          "progress" : 0.10608328133821487,
+          "level" : 361,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 6450849,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.37718814611434937,
+          "level" : 184,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 6450848,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.32831543684005737,
+          "level" : 6,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.28759774565696716,
+          "level" : 3,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.85583764314651489,
+          "level" : 0,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.0858050212264061,
+          "level" : 0,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0.014302901923656464,
+          "level" : 0,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0,
+          "level" : 0,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0,
+          "level" : 0,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0,
+          "level" : 0,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        },
+        {
+          "progress" : 0,
+          "level" : 0,
+          "evilProgress" : 0,
+          "evilLevel" : 0,
+          "sadisticProgress" : 0,
+          "sadisticLevel" : 0,
+          "energy" : 0,
+          "magic" : 0,
+          "target" : 0,
+          "evilTarget" : 0,
+          "sadisticTarget" : 0
+        }
+      ],
+      "autoAdvance" : false,
+      "disabled" : false
+    },
+    "magic" : {
+      "capMagic" : 5502250,
+      "curMagic" : 12901697,
+      "idleMagic" : 0,
+      "magicBarSpeed" : 50,
+      "magicPerBar" : 107,
+      "magicGained" : 0,
+      "magicPower" : 134,
+      "magicBarProgress" : 0
+    },
+    "training" : {
+      "_attackCaps" : [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "_defenseCaps" : [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "evilAttackCaps" : [
+        250000,
+        1500000,
+        3000000,
+        5000000,
+        7000000,
+        10000000
+      ],
+      "evilDefenseCaps" : [
+        250000,
+        1500000,
+        3000000,
+        5000000,
+        7000000,
+        10000000
+      ],
+      "_attackTraining" : [
+        2419068,
+        2414068,
+        2404068,
+        2389068,
+        2369068,
+        2344068
+      ],
+      "_defenseTraining" : [
+        2419068,
+        2414069,
+        2404069,
+        2389070,
+        2369070,
+        2344071
+      ],
+      "_attackEnergy" : [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "_defenseEnergy" : [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "_totalAttackLevels" : 14339408,
+      "_totalDefenseLevels" : 14339417,
+      "_attackBarProgress" : [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "_defenseBarProgress" : [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "_trainFactor" : [
+        150,
+        1000,
+        2000,
+        10000,
+        50000,
+        200000
+      ],
+      "_hasAutoAdvance" : false,
+      "_autoAdvanceToggle" : true
+    },
+    "advancedTraining" : {
+      "training" : [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "level" : [
+        3000,
+        3000,
+        2,
+        1459,
+        1459,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "bankedLevel" : [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "energy" : [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "barProgress" : [
+        0,
+        0,
+        0,
+        0.956628143787384,
+        0.956628143787384,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "levelTarget" : [
+        3000,
+        3000,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "transferredBankedLevels" : true,
+      "autoAdvance" : false
+    },
+    "wandoos98" : {
+      "energyProgress" : 0,
+      "magicProgress" : 0.19476161897182465,
+      "bootupProgress" : 0,
+      "wandoosEnergy" : 0,
+      "wandoosMagic" : 0,
+      "energyLevel" : 0,
+      "magicLevel" : 37,
+      "baseEnergyTime" : 0,
+      "baseMagicTime" : 0,
+      "OSlevel" : 98,
+      "pitOSLevels" : 6,
+      "XLLevels" : 10,
+      "installed" : true,
+      "disabled" : false,
+      "bootupTime" : {
+        "totalseconds" : 3600,
+        "seconds" : 0,
+        "minutes" : 0,
+        "hours" : 1,
+        "days" : 0
+      },
+      "installTime" : {
+        "totalseconds" : 86400,
+        "seconds" : 0,
+        "minutes" : 0,
+        "hours" : 0,
+        "days" : 0
+      },
+      "os" : 1
+    },
+    "rebirthTime" : {
+      "totalseconds" : 48381.333441862153,
+      "seconds" : 21.33344186215254,
+      "minutes" : 0,
+      "hours" : 13,
+      "days" : 0
+    },
+    "totalPlaytime" : {
+      "totalseconds" : 2264695.834091478,
+      "seconds" : 55.8340914780274,
+      "minutes" : 0,
+      "hours" : 5,
+      "days" : 0
+    },
+    "energyPower" : 671,
+    "capEnergy" : 21504000,
+    "curEnergy" : 164801893,
+    "idleEnergy" : 0,
+    "realGold" : 3.5467763303683186E+24,
+    "attackMulti" : 3.555042239453107E+109,
+    "defenseMulti" : 3.555042239453107E+109,
+    "bossID" : 158,
+    "highestBoss" : 162,
+    "adventure" : {
+      "attack" : 5649,
+      "defense" : 5802,
+      "regen" : 218.47967529296875,
+      "attackSpeed" : 0.800000011920929,
+      "highestItopodLevel" : 260,
+      "zone" : 1000,
+      "autoattacking" : true
+    }
+  }
+}

@@ -1,26 +1,37 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
-  import type { JsonObject, JsonValue } from './api';
+  import type { JsonObject, JsonValue, PlanStageAction } from './api';
   import { equal, longTarget, object, reorderStages } from './model';
   import { stageFocuses } from './options';
-  import { changeStageCompletion, changeTimingMode, editDurationText, formatStageDuration, scheduleTiming, timingMode } from './stage-duration';
-  import { applyStagePreset, stageLabel, stagePresetIndex, stagePresets } from './stage-presets';
+  import { changeStageTiming, editDurationText, editFlexWeight, fixedSeconds, formatStageDuration, formatTime, scheduleTiming, type StageTimingKind } from './stage-duration';
+  import { applyStagePreset, automaticStageLabel, stageLabel, stagePresets, weightedStage } from './stage-presets';
+  import GlobalPresetSelect from './GlobalPresetSelect.svelte';
+  import { globalPresetRows, presetSupportsAtTargets } from './presets';
   import { matchingPlanProgress } from './stage-bar';
-  import { parsePlanProgress, planProgressDuration } from './plan-progress';
+  import { parsePlanProgress, planProgressDuration, stageHistoryDetails } from './plan-progress';
+  import { combatPrepReconciliationReason } from './controller';
+  import ActivityTiming from './ActivityTiming.svelte';
+  import { activityDuration, matchingStageActivityTiming } from './activity-timing';
+  import PriorityPicker from './PriorityPicker.svelte';
+  import { energyPriorityOptions, magicPriorityOptions } from './priority-options';
 
   export let plan: JsonObject;
+  export let presetLibrary: JsonObject | null = null;
   export let name = '';
   export let progress: JsonObject = {};
   export let connected = false;
   export let dirty = false;
   export let namespace = '';
   export let disabled = false;
+  export let stageActionReason = 'Manual stage controls are unavailable.';
+  export let onstageaction: ((action: PlanStageAction, stageIndex: number, expectedEntry: string) => Promise<void>) | undefined = undefined;
   export let onchange: (plan: JsonObject) => void;
   export let ondirty: (dirty: boolean) => void = () => {};
   const ids = new WeakMap<JsonObject, number>();
   let identities: { row: JsonObject; id: number }[] = [];
   let identityNamespace: string | undefined;
-  let drafts: Record<number, { text: string; dirty: boolean }> = {};
+  let drafts: Record<number, { text: string; dirty: boolean; ready?: boolean; error?: string }> = {};
+  const durationTimers = new Map<number, ReturnType<typeof setTimeout>>();
   let restoringDuration: number | null = null;
   let restoreVersion = 0;
   let serial = 0;
@@ -35,23 +46,37 @@
   let selected: number | null = null;
   let scrollFrame: number | undefined;
   let touchX: number | null = null;
-  $: rows = reconcile(plan, namespace);
+  $: durationScope = JSON.stringify([namespace, name, plan.Name ?? name]);
+  $: rows = reconcile(plan, durationScope);
+  $: if (!disabled && restoringDuration === null) {
+    for (const [key, draft] of Object.entries(drafts)) if (draft.ready) commitDuration(Number(key));
+  }
   $: if (drag && (drag.plan !== plan || drag.namespace !== namespace || disabled)) cancel();
   $: if (press && (press.plan !== plan || press.namespace !== namespace || disabled)) cancel();
   $: timing = readTiming(plan);
   $: durationDraftDirty = Object.values(drafts).some(draft => draft.dirty);
   $: ondirty(durationDraftDirty);
   $: live = parsePlanProgress(progress, connected);
+  $: combatPrep = object(progress.combatPrep);
+  $: cleanupPending = connected && combatPrep.schemaVersion === 1 && combatPrep.cleanupPending === true;
+  $: cleanupRecoveryRequired = connected && (progress.cleanupRecoveryRequired === true || combatPrep.cleanupRecoveryRequired === true);
+  $: recoveryReason = combatPrepReconciliationReason(progress);
   $: mapped = matchingPlanProgress(plan, name, progress, connected, dirty || durationDraftDirty);
+  $: selectedStageIndex = rows.findIndex(row => id(row) === selected);
+  $: skipToSelected = selectedStageIndex >= 0 && selectedStageIndex !== mapped?.activeStageIndex;
+  $: activityTiming = cleanupRecoveryRequired ? null : matchingStageActivityTiming(combatPrep, mapped);
+  $: timingInPanel = !!activityTiming && mapped?.activeStageIndex != null && selected === id(rows[mapped.activeStageIndex]);
   $: livePercent = mapped?.stageProgress === null || !mapped ? null : Math.round(mapped.stageProgress * 100);
-  onDestroy(cancel);
+  $: manualReason = disabled ? 'Another action is pending.' : cleanupPending || connected && combatPrep.active === true ? 'Combat prep still owns equipment and resources; normal stage allocation is blocked.' : cleanupRecoveryRequired ? recoveryReason : stageActionReason || (!onstageaction || !mapped || mapped.status !== 'running' || !mapped.stageEntry || mapped.activeStageIndex === null && (mapped.scheduleComplete !== true || (progress.activeStageIndex !== null && progress.activeStageIndex !== -1) || mapped.stages.some(stage => stage.state === 'unknown')) ? 'Wait for matching live stage telemetry with no pending edits.' : '');
+  $: currentStageReason = manualReason || (mapped?.activeStageIndex == null ? 'No current stage is selected. Set a stage as current first.' : '');
+  onDestroy(() => { cancel(); durationTimers.forEach(clearTimeout); durationTimers.clear(); });
 
   function id(row: JsonObject): number {
     if (!ids.has(row)) ids.set(row, ++serial);
     return ids.get(row)!;
   }
   function canonical(row: JsonObject): JsonObject {
-    const defaults: JsonObject = { Name: '', Percent: 100, DurationSeconds: 0, DurationUnit: '%', CompletionMode: 0, EnergyFocus: 0, MagicFocus: 0, GearGoal: -1, FightOnEntry: false, EnergyPriorities: [], MagicPriorities: [], BlackBarLookaheadSeconds: 5 };
+    const defaults: JsonObject = { Name: '', ExecutionMode: 0, AdventureDynamicWeight: 0, Percent: 100, DurationSeconds: 0, DurationUnit: '%', CompletionMode: 0, EnergyFocus: 0, MagicFocus: 0, GearGoal: -1, FightOnEntry: false, EnergyPriorities: [], MagicPriorities: [], BlackBarLookaheadSeconds: 5 };
     return {
       ...row,
       ...Object.fromEntries(Object.entries(defaults).map(([key, fallback]) => [key, row[key] ?? fallback])),
@@ -65,7 +90,7 @@
   }
   function reconcile(value: JsonObject, scope: string): JsonObject[] {
     const focused = typeof document === 'undefined' ? null : document.activeElement;
-    const focusedKey = typeof HTMLInputElement !== 'undefined' && focused instanceof HTMLInputElement && focused.getAttribute('aria-label') === 'Duration' && list?.contains(focused)
+    const focusedKey = typeof HTMLInputElement !== 'undefined' && focused instanceof HTMLInputElement && focused.hasAttribute('data-duration-key') && list?.contains(focused)
       ? Number(focused.closest('[data-stage]')?.getAttribute('data-stage')) : null;
     const nextRows = Array.isArray(value.Stages) ? value.Stages.map(object) : [];
     const sameScope = identityNamespace === scope;
@@ -96,6 +121,10 @@
       ids.set(entry.row, entry.id);
     }
     const retained = new Set(next.map(entry => entry.id));
+    for (const key of durationTimers.keys()) if (!retained.has(key)) {
+      clearTimeout(durationTimers.get(key));
+      durationTimers.delete(key);
+    }
     if (selected !== null && (!sameScope || !retained.has(selected))) selected = null;
     if (Object.entries(drafts).some(([key, draft]) => draft.dirty && !retained.has(Number(key)))) {
       error = sameScope ? 'Duration draft cancelled: its stage could not be identified safely after readback.' : 'Duration draft cancelled because the plan changed.';
@@ -109,7 +138,7 @@
       if (version !== restoreVersion || identityNamespace !== scope) return;
       // Moving keyed DOM nodes can blur an input in Chromium. That is not a user commit.
       if (document.activeElement === focused || document.activeElement === document.body) {
-        list?.querySelector<HTMLInputElement>(`[data-stage="${focusedKey}"] input[aria-label="Duration"]`)?.focus({ preventScroll: true });
+        list?.querySelector<HTMLInputElement>(`[data-stage="${focusedKey}"] input[data-duration-key]`)?.focus({ preventScroll: true });
       }
       restoringDuration = null;
     });
@@ -121,6 +150,13 @@
   function amount(value: JsonObject, index: number): string {
     try { return formatStageDuration(value, index); } catch { return ''; }
   }
+  function estimatedDuration(value: JsonObject, index: number): string {
+    try { return formatTime(scheduleTiming(value).seconds[index] ?? 0); } catch { return 'Unknown'; }
+  }
+  function editorAmount(value: JsonObject, index: number): string {
+    const row = (value.Stages as JsonObject[])[index];
+    return row.CompletionMode !== 1 && !fixedSeconds(row) ? String(row.Percent ?? 100) : amount(value, index);
+  }
   function segmentWeight(index: number): number {
     try {
       const timing = scheduleTiming(plan);
@@ -128,8 +164,9 @@
     } catch { return 1; }
   }
   function addStage(): void {
-    const timed = timingMode(plan) === 'time';
-    const row = applyStagePreset({ Percent: 10, DurationSeconds: timed ? 300 : 0, DurationUnit: timed ? 'min' : '%', CompletionMode: 0, TargetAdvancedTrainingPower: '0', TargetAdvancedTrainingToughness: '0', BlackBarLookaheadSeconds: 5 }, 0);
+    if (!globalPresetRows(presetLibrary).some(row => row.Id === plan.ActivePresetId)) { error = 'Choose an active saved global preset in Misc > Gear settings before adding an inherited stage.'; return; }
+    error = '';
+    const row = weightedStage({ Percent: 10, DurationSeconds: 300, DurationUnit: 'min' });
     const key = id(row);
     onchange({ ...plan, Stages: [...rows, row] });
     selected = key;
@@ -137,6 +174,10 @@
   function selectStage(key: number): void {
     if (suppressClick) return;
     selected = selected === key ? null : key;
+  }
+  function stageAction(action: PlanStageAction, stageIndex: number | null): void {
+    if (manualReason || !mapped?.stageEntry || stageIndex === null) return;
+    void onstageaction?.(action, stageIndex, mapped.stageEntry);
   }
   async function segmentKey(event: KeyboardEvent, row: JsonObject): Promise<void> {
     if (event.altKey) { keyboard(event, row); return; }
@@ -156,7 +197,11 @@
     // A field edit replaces its object, but must not replace the row's DOM identity.
     const nextRows = (next.Stages as JsonObject[]);
     if (nextRows.length === rows.length) nextRows.forEach((row, index) => {
-      if (!ids.has(row) && !rows.includes(row)) ids.set(row, id(rows[index]));
+      if (!ids.has(row) && !rows.includes(row)) {
+        const key = id(rows[index]);
+        ids.set(row, key);
+        identities = identities.map(entry => entry.id === key ? { row, id: key } : entry);
+      }
     });
     onchange(next);
   }
@@ -165,63 +210,95 @@
     if (index < 0) return;
     emit({ ...plan, Stages: rows.map(item => item === row ? { ...item, ...changes } : item) });
   }
-  function selectTiming(event: Event): void {
-    try {
-      if (Object.values(drafts).some(draft => draft.dirty)) throw new Error('Finish or cancel duration edits before changing timing mode.');
-      emit(changeTimingMode(plan, value(event) as 'time' | '%'));
-    } catch (err) {
-      error = (err as Error).message;
-      (event.currentTarget as HTMLSelectElement).value = timingMode(plan);
-    }
-  }
   function beginDuration(key: number): void {
     const index = rows.findIndex(row => id(row) === key);
-    if (index < 0 || identityNamespace !== namespace) return;
-    if (!drafts[key]) drafts = { ...drafts, [key]: { text: amount(plan, index), dirty: false } };
+    if (index < 0 || identityNamespace !== durationScope) return;
+    if (!drafts[key]) drafts = { ...drafts, [key]: { text: editorAmount(plan, index), dirty: false } };
   }
-  function selectPreset(row: JsonObject, event: Event): void {
-    const preset = Number(value(event));
-    if (row.CompletionMode === 1 && stagePresets[preset]?.label !== 'AT Adventure') {
-      error = 'AT power/toughness targets require AT Adventure. Change "Finish stage by" to Duration before choosing another preset.';
-      (event.currentTarget as HTMLSelectElement).value = String(stagePresetIndex(row));
+  function selectPreset(row: JsonObject, presetId: string): void {
+    const preset = globalPresetRows(presetLibrary).find(preset => preset.Id === (presetId === '@active' ? plan.ActivePresetId : presetId));
+    if (row.CompletionMode === 1 && !presetSupportsAtTargets(preset)) { error = 'AT targets require a saved global preset with Advanced Training weight and positive toughness/power ratios. Choose a compatible preset first.'; return; }
+    patch(row, { PresetId: presetId, ...(preset ? { Name: String(preset.Name) } : { Name: 'Plan active preset' }) });
+  }
+  function selectMode(row: JsonObject, event: Event): void {
+    if (row.CompletionMode === 1 && value(event) === '1') {
+      error = 'Choose Time or % of remaining before using the automatic total-budget mode.';
+      (event.currentTarget as HTMLSelectElement).value = String(row.ExecutionMode ?? 0);
       return;
     }
-    patch(row, applyStagePreset(row, preset));
+    patch(row, { ExecutionMode: numeric(event) });
   }
   function selectCompletion(row: JsonObject, event: Event): void {
     try {
-      const mode = Number(value(event));
-      const next = changeStageCompletion(plan, rows.indexOf(row), mode);
-      if (mode === 1) {
+      const selected = value(event);
+      const mode = selected === 'target' ? 1 : 0;
+      if (mode === 1 && row.PresetId && !presetSupportsAtTargets(globalPresetRows(presetLibrary).find(preset => preset.Id === (row.PresetId === '@active' ? plan.ActivePresetId : row.PresetId)))) throw new Error('AT targets require a saved global preset with Advanced Training weight and positive toughness/power ratios. Choose a compatible preset first.');
+      const next = changeStageTiming(plan, rows.indexOf(row), selected as StageTimingKind);
+      if (mode === 1 && !row.PresetId) {
         // P/T completion must allocate the training that can satisfy it.
         next.Stages = (next.Stages as JsonObject[]).map((item, index) => index === rows.indexOf(row) ? applyStagePreset(item, stagePresets.findIndex(preset => preset.label === 'AT Adventure')) : item);
-        discardDuration(id(row));
       }
+      discardDuration(id(row));
       emit(next);
     } catch (err) {
       error = (err as Error).message;
-      (event.currentTarget as HTMLSelectElement).value = String(row.CompletionMode ?? 0);
+      (event.currentTarget as HTMLSelectElement).value = row.CompletionMode === 1 ? 'target' : fixedSeconds(row) ? 'fixed' : 'flexible';
     }
   }
   function discardDuration(key: number): void {
+    clearTimeout(durationTimers.get(key));
+    durationTimers.delete(key);
     const { [key]: _, ...rest } = drafts;
     drafts = rest;
   }
+  function durationPlan(key: number, text: string): JsonObject {
+    const index = rows.findIndex(row => id(row) === key);
+    if (index < 0) throw new Error('Stage no longer exists.');
+    if (/\.\s*(?:%|s|m|min|h)?$/i.test(text)) throw new Error('Finish the decimal value before saving.');
+    return !fixedSeconds(rows[index]) ? editFlexWeight(plan, index, text) : editDurationText(plan, index, text);
+  }
+  function changeDuration(key: number, text: string): void {
+    if (disabled || identityNamespace !== durationScope || !identities.some(entry => entry.id === key)) return;
+    clearTimeout(durationTimers.get(key));
+    durationTimers.delete(key);
+    const draft = { text, dirty: true, ready: false, error: '' };
+    drafts = { ...drafts, [key]: draft };
+    try {
+      durationPlan(key, text);
+      const scope = durationScope;
+      durationTimers.set(key, setTimeout(() => {
+        durationTimers.delete(key);
+        if (scope === durationScope && identityNamespace === scope && drafts[key] === draft) {
+          drafts = { ...drafts, [key]: { ...draft, ready: true } };
+        }
+      }, 350));
+    } catch (err) { drafts = { ...drafts, [key]: { ...draft, error: (err as Error).message } }; }
+  }
   function commitDuration(key: number): void {
     if (restoringDuration === key) return;
+    clearTimeout(durationTimers.get(key));
+    durationTimers.delete(key);
     const draft = drafts[key];
     if (!draft?.dirty) { discardDuration(key); return; }
-    const index = rows.findIndex(row => id(row) === key);
-    if (index < 0 || identityNamespace !== namespace || disabled) return;
+    if (identityNamespace !== durationScope || !identities.some(entry => entry.id === key)) { discardDuration(key); return; }
+    if (disabled) { drafts = { ...drafts, [key]: { ...draft, ready: true } }; return; }
     try {
-      const next = editDurationText(plan, index, draft.text);
+      const next = durationPlan(key, draft.text);
       emit(next);
       discardDuration(key);
-    } catch (err) { error = (err as Error).message; }
+    } catch (err) { drafts = { ...drafts, [key]: { ...draft, ready: false, error: (err as Error).message } }; }
   }
   function durationKey(event: KeyboardEvent, key: number): void {
     if (event.key === 'Enter') { event.preventDefault(); commitDuration(key); }
     if (event.key === 'Escape') { event.preventDefault(); discardDuration(key); error = ''; }
+  }
+  async function blurDuration(event: FocusEvent): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const key = Number(input.dataset.durationKey), scope = durationScope;
+    if (restoringDuration === key) return;
+    // DOM removal blurs before teardown; keyed moves may also restore this input's focus.
+    await tick();
+    if (input.isConnected && document.activeElement !== input && scope === durationScope) commitDuration(key);
   }
   async function move(row: JsonObject, to: number): Promise<void> {
     const from = rows.indexOf(row);
@@ -329,7 +406,7 @@
 {#if error || timing}<p class="notice error" role="alert">{error || timing}</p>{/if}
 <div class="stage-workspace" bind:this={list}>
   <div class="bar-toolbar">
-    <label>Stage timing<select aria-label="Stage timing" value={timingMode(plan)} on:change={selectTiming} {disabled}><option value="time" disabled={Number(plan.Version) < 15}>Time (m / h)</option><option value="%">Percent (%)</option>{#if timingMode(plan) === 'mixed'}<option value="mixed" disabled>Mixed</option>{/if}</select></label>
+    <h3>Stages</h3>
     <button type="button" class="ghost" {disabled} on:click={addStage}>Add stage</button>
   </div>
   <div class="bar-scroll">
@@ -337,52 +414,92 @@
       {#each rows as row, index (id(row))}
         {@const key = id(row)}
         {@const state = mapped?.stages[index]?.state}
+         {@const history = stageHistoryDetails(mapped?.stages[index] ?? null, row.ExecutionMode === 1 ? 'elapsed' : row.CompletionMode === 1 ? 'target' : fixedSeconds(row) ? 'fixed' : 'flexible')}
         <li class="bar-segment" data-stage={key} class:selected={selected === key} class:current={state === 'current' && mapped?.status === 'running'} class:completed={state === 'completed'} class:dragging={drag?.row === row} class:insert-before={insertion === index} class:insert-after={insertion === rows.length && index === rows.length - 1} style:flex-grow={segmentWeight(index)} aria-current={state === 'current' ? 'step' : undefined}>
-          <button type="button" class="stage-select" data-select={key} draggable={false} aria-label={`Edit stage ${index + 1}: ${stageLabel(row)}`} aria-expanded={selected === key} aria-controls={`stage-panel-${key}`} aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown" title="Click to edit; drag left or right to reorder. Keyboard: Alt+Left / Alt+Right."
+          <button type="button" class="stage-select" data-select={key} draggable={false} aria-label={`Edit stage ${index + 1}: ${stageLabel(row)}`} aria-expanded={selected === key} aria-controls={`stage-panel-${key}`} aria-describedby={`stage-history-${key}`} aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown" title={`${history}\nClick to edit; drag left or right to reorder. Keyboard: Alt+Left / Alt+Right.`}
             on:click={() => selectStage(key)} on:keydown={event => segmentKey(event, row)}
             on:pointerdown={event => pointerStart(event, row)} on:pointermove={pointerMove} on:pointerup={pointerEnd} on:pointercancel={pointerCancel} on:lostpointercapture={pointerCancel}>
-            <span class="segment-top"><span>{index + 1}</span>{#if plan.StageLoopStartIndex === index}<span class="loop" aria-label="Loop start">Repeat</span>{/if}{#if state === 'current'}<span>{mapped?.status === 'running' ? 'Current' : mapped?.status}</span>{/if}</span>
+              <span class="segment-top"><span>{index + 1}</span>{#if plan.StageLoopStartIndex === index}<span class="loop" aria-label="Loop start">Repeat</span>{/if}{#if state === 'current'}<span>{cleanupRecoveryRequired ? 'Reconciling' : cleanupPending ? 'Cleanup pending' : mapped?.status === 'running' ? mapped.scheduleComplete === true ? 'Sustaining' : 'Current' : mapped?.status}</span>{:else if state === 'completed'}<span>Completed</span>{:else if state === 'skipped'}<span>Skipped</span>{/if}</span>
             <strong>{stageLabel(row)}</strong>
-            <span class="segment-duration">{row.CompletionMode === 1 ? 'AT targets' : amount(plan, index)}{drafts[key]?.dirty ? ' *' : ''}</span>
+             <span class="segment-duration" title={row.ExecutionMode === 1 ? 'Total elapsed budget including AT, planning and setup' : row.CompletionMode === 1 ? 'Mandatory AT targets' : fixedSeconds(row) ? 'Fixed duration' : 'Estimated flexible share, not live time remaining'}>{row.CompletionMode === 1 ? 'AT targets' : fixedSeconds(row) ? `${amount(plan, index)}${row.ExecutionMode === 1 ? ' total budget' : ' fixed'}` : `${estimatedDuration(plan, index)}${row.ExecutionMode === 1 ? ' flexible budget' : ' flexible'}`}{drafts[key]?.dirty ? ' *' : ''}</span>
+             {#if row.CompletionMode !== 1 && !fixedSeconds(row)}<span class="segment-share">{amount(plan, index)} of remaining</span>{/if}
             <span class="runtime-fill" aria-hidden="true" style:width={`${state === 'completed' ? 100 : state === 'current' ? livePercent ?? 0 : 0}%`}></span>
           </button>
+          <span id={`stage-history-${key}`} class="sr-only">{history}</span>
         </li>
       {/each}
     </ol>
   </div>
-  {#if mapped && mapped.activeStageIndex !== null}
+  <div class="runtime-controls">
+  {#if cleanupRecoveryRequired}
+    <span class="live-note" role="status">{recoveryReason}</span>
+  {:else if cleanupPending}
+    <span class="live-note" role="status">Cleanup pending: combat prep still owns equipment and resources.</span>
+  {:else if mapped && mapped.activeStageIndex !== null}
     <div class="live-position">
-      <span>{mapped.status === 'running' ? 'Current' : mapped.status}: {mapped.activeStageIndex + 1}. {mapped.stages[mapped.activeStageIndex].name}</span>
-      <span>{livePercent === null ? 'Progress not reported' : `${livePercent}%`}{mapped.stageElapsedSeconds !== null ? ` / ${planProgressDuration(mapped.stageElapsedSeconds)} in stage` : ''}</span>
-      <div class="live-meter" role="progressbar" aria-label={`Stage ${mapped.activeStageIndex + 1} progress`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={livePercent ?? undefined} aria-valuetext={`${mapped.status}: ${mapped.stages[mapped.activeStageIndex].name}; ${livePercent === null ? 'progress not reported' : `${livePercent}% complete`}`}><span style:width={`${livePercent ?? 0}%`}></span></div>
+      <span>{mapped.status === 'running' ? mapped.scheduleComplete === true ? 'Sustaining' : 'Current' : mapped.status}: {mapped.activeStageIndex + 1}. {mapped.stages[mapped.activeStageIndex].name}</span>
+       <span title={mapped.stages[mapped.activeStageIndex].automatic ? 'Total elapsed budget used, including AT, planning and setup' : mapped.stages[mapped.activeStageIndex].timingKind === 'fixed' ? 'Applied training time in this stage' : 'Elapsed time in this stage'}>{livePercent === null ? '' : `${livePercent}%`}{mapped.stageElapsedSeconds !== null ? `${livePercent === null ? '' : ' / '}${planProgressDuration(mapped.stageElapsedSeconds)}` : ''}</span>
+      <div class="live-meter" role="progressbar" aria-label={`Stage ${mapped.activeStageIndex + 1} progress`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={livePercent ?? undefined} aria-valuetext={mapped.stages[mapped.activeStageIndex].presetBlocker || `${mapped.status}: ${mapped.stages[mapped.activeStageIndex].name}; ${livePercent === null ? 'progress not reported' : `${livePercent}% complete`}`}><span style:width={`${livePercent ?? 0}%`}></span></div>
+      {#if mapped.stages[mapped.activeStageIndex].presetBlocker}<span class="live-note preset-blocker" role="status">{mapped.stages[mapped.activeStageIndex].presetBlocker}</span>{/if}
+      {#if activityTiming?.current}<span class="activity-now">Now: {activityTiming.current.kind} / {activityDuration(activityTiming.current.elapsedSeconds)}</span>{/if}
     </div>
+  {:else if mapped?.status === 'disabled'}
+    <span class="live-note">Stages disabled</span>
+  {:else if mapped?.scheduleComplete === true}
+    <span class="live-note">Schedule complete</span>
   {:else if !live.showWaitingPlanProgress}
-    <p class="live-note">Runtime: {live.planName} / {live.status}. {live.planName !== name ? `Editing ${name}, not the running plan.` : 'Live position is separate while edits are pending or the runtime schedule differs.'}</p>
-  {:else}<p class="live-note">{connected ? 'Waiting for runtime progress. The plan is still editable.' : 'Offline editing. Live progress appears when connected.'}</p>{/if}
-  {#if live.reason && !live.showWaitingPlanProgress}<p class="live-note">{live.reason}</p>{/if}
-  {#if selected === null}<p class="selection-hint">Click a section to edit it. Drag it left or right to reorder.</p>{/if}
+    <span class="live-note" title={live.planName !== name ? `Running ${live.planName}` : 'Live stages differ from the editor or edits are pending.'}>{live.planName !== name ? 'Editing another plan' : 'Syncing live progress'}</span>
+  {:else}<span class="live-note">{connected ? 'Waiting for live progress' : 'Offline'}</span>{/if}
+  <div class="stage-actions" aria-label="Manual stage actions" title={manualReason || undefined}>
+    {#if skipToSelected}
+    <button type="button" class="ghost" disabled={!!manualReason} title={manualReason || `Continue from stage ${selectedStageIndex + 1} immediately. Earlier unfinished work is skipped; this stage and later stages restart.`} on:click={() => stageAction('set', selectedStageIndex)}>Skip to selected stage</button>
+    {:else}
+    <button type="button" class="ghost" disabled={!!currentStageReason} title={currentStageReason || 'Restart the reported current stage immediately, resetting its current-entry progress.'} on:click={() => stageAction('restart', mapped?.activeStageIndex ?? null)}>Restart current stage</button>
+    {/if}
+  </div>
+  </div>
+  {#if activityTiming && !timingInPanel}<ActivityTiming timing={activityTiming} showNow={false} />{/if}
+  {#if mapped && (mapped.status === 'paused' || mapped.status === 'interrupted') && mapped.reason}<p class="live-note" role="status">{mapped.reason}</p>{/if}
 
   {#each rows as row, index (id(row))}
     {@const key = id(row)}
+    {@const automatic = row.ExecutionMode === 1}
+    {@const flex = row.CompletionMode !== 1 && !fixedSeconds(row)}
+    {@const alreadyCurrent = mapped?.activeStageIndex === index && mapped?.stages[index]?.state === 'current'}
     <section id={`stage-panel-${key}`} class="stage-panel" data-stage={key} aria-label={`Stage ${index + 1} settings`} hidden={selected !== key} style:display={selected === key ? undefined : 'none'}>
       <div class="panel-heading"><div><p class="eyebrow">Stage {index + 1}</p><h4>{stageLabel(row)}</h4></div><button type="button" class="ghost" aria-label="Close stage settings" on:click={() => { selected = null; list.querySelector<HTMLButtonElement>(`[data-select="${key}"]`)?.focus(); }}>Close</button></div>
+      <div class="panel-tools">
+        <button type="button" class="ghost" disabled={!!manualReason || alreadyCurrent} title={manualReason || (alreadyCurrent ? 'This stage is already current; use Restart current stage to start it again.' : 'Make this stage current immediately. Jumping forward bypasses earlier required work.')} on:click={() => stageAction('set', index)}>Set as current stage</button>
+         <details class="stage-history"><summary>Runtime history</summary><p aria-label="Stage runtime history">{stageHistoryDetails(mapped?.stages[index] ?? null, automatic ? 'elapsed' : row.CompletionMode === 1 ? 'target' : fixedSeconds(row) ? 'fixed' : 'flexible')}</p></details>
+      </div>
+      {#if automatic}<ActivityTiming timing={alreadyCurrent ? activityTiming : null} showNow={false} />{/if}
       <div class="stage-fields">
-        <label>Focus preset<select class="preset" aria-label="Focus preset" title="Sets focuses, gear, and priority orders; keeps timing, targets, and Fight on entry." value={stagePresetIndex(row)} on:change={event => selectPreset(row, event)}><option value={-1} disabled>Custom</option>{#each stagePresets as preset, i}<option value={i}>{preset.label}</option>{/each}</select></label>
-        <label>Finish stage by<select value={row.CompletionMode ?? 0} on:change={event => selectCompletion(row, event)}><option value={0}>Duration</option><option value={1}>AT power/toughness targets</option></select></label>
+        <label>Stage mode<select aria-label="Stage mode" value={row.ExecutionMode === undefined ? 0 : row.ExecutionMode} on:change={event => selectMode(row, event)}><option value={0}>Standard</option><option value={1}>{automaticStageLabel}</option>{#if row.ExecutionMode !== undefined && row.ExecutionMode !== 0 && row.ExecutionMode !== 1}<option value={row.ExecutionMode} disabled>Unknown execution mode</option>{/if}</select></label>
+        {#if !automatic}
+        <GlobalPresetSelect library={presetLibrary} label="Focus preset" value={String(row.PresetId ?? '')} inherit activePresetId={String(plan.ActivePresetId ?? '')} legacy={!row.PresetId} {disabled} onchange={id => selectPreset(row, id)} />
+        {/if}
+        <label>Finish stage by<select value={row.CompletionMode === 1 ? 'target' : fixedSeconds(row) ? 'fixed' : 'flexible'} on:change={event => selectCompletion(row, event)}><option value="fixed">Time</option><option value="flexible">% of remaining</option>{#if !automatic || row.CompletionMode === 1}<option value="target" disabled={automatic}>Advanced training targets</option>{/if}</select><small class="weight-share">{automatic ? 'Time and remaining shares are total elapsed budgets, including AT, planning and setup.' : row.CompletionMode === 1 ? 'Finish when both Advanced Training targets are reached; not a timed stage.' : flex ? 'Share of the time budget left after fixed-time stages, divided by relative weights.' : 'Counts applied training time; preparation and allocation waits do not count.'}</small></label>
         {#if row.CompletionMode !== 1}
-          <label>Duration<input aria-label="Duration" data-duration-key={key} placeholder="25m, 2h, or 30%" type="text" spellcheck="false" value={drafts[key]?.text ?? amount(plan, index)} on:focus={event => beginDuration(Number(event.currentTarget.dataset.durationKey))} on:input={event => { const key = Number(event.currentTarget.dataset.durationKey); if (identities.some(entry => entry.id === key)) drafts = { ...drafts, [key]: { text: value(event), dirty: true } }; }} on:blur={event => commitDuration(Number(event.currentTarget.dataset.durationKey))} on:keydown={event => durationKey(event, Number(event.currentTarget.dataset.durationKey))} /></label>
+          <label>{flex ? 'Flexible weight' : automatic ? 'Total budget' : 'Duration'}<input aria-label={flex ? 'Flexible weight' : automatic ? 'Total budget' : 'Duration'} title={flex ? 'Relative share of flexible time; weights do not need to total 100.' : automatic ? 'Total elapsed budget including AT, planning and setup, e.g. 25m or 2h.' : 'Training time, e.g. 25m or 2h.'} data-duration-key={key} placeholder={flex ? '35' : '25m or 2h'} type="text" spellcheck="false" value={drafts[key]?.text ?? editorAmount(plan, index)} aria-invalid={!!drafts[key]?.error} aria-describedby={drafts[key]?.error ? `duration-error-${key}` : undefined} on:focus={event => beginDuration(Number(event.currentTarget.dataset.durationKey))} on:input={event => changeDuration(Number(event.currentTarget.dataset.durationKey), value(event))} on:blur={blurDuration} on:keydown={event => durationKey(event, Number(event.currentTarget.dataset.durationKey))} />{#if drafts[key]?.error}<small id={`duration-error-${key}`} class="notice error" role="alert">{drafts[key].error}</small>{/if}{#if flex}<small class="weight-share">{amount(plan, index)} of remaining time{automatic ? ' (total elapsed budget)' : ''}. Relative weight, not a literal percentage; weights do not need to total 100.</small>{/if}</label>
         {:else}
           <label>AT power target<input aria-label="AT power target" inputmode="numeric" value={String(row.TargetAdvancedTrainingPower ?? '0')} on:input={event => patch(row, { TargetAdvancedTrainingPower: value(event) })} /></label>
           <label>AT toughness target<input aria-label="AT toughness target" inputmode="numeric" value={String(row.TargetAdvancedTrainingToughness ?? '0')} on:input={event => patch(row, { TargetAdvancedTrainingToughness: value(event) })} /></label>
         {/if}
+        {#if automatic}
+          <label>Adventure weight<input aria-label="Adventure weight" type="number" inputmode="decimal" min="0" max="1000000" step="any" value={row.AdventureDynamicWeight === undefined ? 0 : row.AdventureDynamicWeight} {disabled} on:input={event => patch(row, { AdventureDynamicWeight: numeric(event) })} /></label>
+        {/if}
       </div>
-      <p class="muted">Focuses and gear identify the base preset. Energy and magic priority orders are editable without changing its name; selecting a preset resets both orders.</p>
+      {#if automatic}
+        <p class="live-note" title="Results are not guaranteed optimal.">Preparation counts toward the budget. Maximum 24 hours per automatic stage.</p>
+      {:else if !row.PresetId}
+      <p class="live-note">Choosing a preset replaces this stage's allocation and gear.</p>
       <div class="resource-fields">
-        <fieldset><legend>Energy</legend><label>Energy focus<select aria-label="Energy focus" value={row.EnergyFocus ?? 0} on:change={event => patch(row, { EnergyFocus: numeric(event) })}>{#each stageFocuses as option}<option value={option.value}>{option.label}</option>{/each}</select></label><label>Energy priorities<input aria-label="Energy priorities" placeholder="Focus defaults" title="Ordered tokens: WAN, TM, NGU, NGU-0..8, AUG(-0..13), AT(-0..4). Blank uses focus defaults." spellcheck="false" value={Array.isArray(row.EnergyPriorities) ? row.EnergyPriorities.join(', ') : ''} on:input={event => patch(row, { EnergyPriorities: value(event).trim() ? value(event).split(',').map(token => token.trim()) : [] })} /></label></fieldset>
-        <fieldset><legend>Magic</legend><label>Magic focus<select aria-label="Magic focus" value={row.MagicFocus ?? 0} on:change={event => patch(row, { MagicFocus: numeric(event) })}>{#each stageFocuses as option}<option value={option.value}>{option.label}</option>{/each}</select></label><label>Magic priorities<input aria-label="Magic priorities" placeholder="Focus defaults" title="Ordered tokens: WAN, TM, NGU, NGU-0..6, RIT(-0..7). Blank uses focus defaults." spellcheck="false" value={Array.isArray(row.MagicPriorities) ? row.MagicPriorities.join(', ') : ''} on:input={event => patch(row, { MagicPriorities: value(event).trim() ? value(event).split(',').map(token => token.trim()) : [] })} /></label></fieldset>
+        <fieldset><legend>Energy</legend><label>Energy focus<select aria-label="Energy focus" value={row.EnergyFocus ?? 0} on:change={event => patch(row, { EnergyFocus: numeric(event) })}>{#each stageFocuses as option}<option value={option.value}>{option.label}</option>{/each}</select></label><PriorityPicker label="Energy priorities" value={row.EnergyPriorities} options={energyPriorityOptions} defaultLabel="Use focus defaults" helper="Ordered first to last; unavailable or capped targets pass resources to the next priority. Empty uses focus defaults." {disabled} onchange={priorities => patch(row, { EnergyPriorities: priorities })} /></fieldset>
+        <fieldset><legend>Magic</legend><label>Magic focus<select aria-label="Magic focus" value={row.MagicFocus ?? 0} on:change={event => patch(row, { MagicFocus: numeric(event) })}>{#each stageFocuses as option}<option value={option.value}>{option.label}</option>{/each}</select></label><PriorityPicker label="Magic priorities" value={row.MagicPriorities} options={magicPriorityOptions} defaultLabel="Use focus defaults" helper="Ordered first to last; unavailable or capped targets pass resources to the next priority. Empty uses focus defaults." {disabled} onchange={priorities => patch(row, { MagicPriorities: priorities })} /></fieldset>
       </div>
+      {/if}
       <div class="stage-fields">
-        <label class="check"><input aria-label="Fight on entry" type="checkbox" checked={row.FightOnEntry === true} on:change={event => patch(row, { FightOnEntry: event.currentTarget.checked })} />Fight on entry<small>Fight prep and boss push once, then stage gear. No power fruits or digger upgrades.</small></label>
+        <label class="check" title={automatic ? 'Fight prep and boss push once before fresh planning. Entry preparation consumes the total elapsed budget.' : 'Fight prep and boss push once, then stage gear. No power fruits or digger upgrades.'}><input aria-label="Fight on entry" type="checkbox" checked={row.FightOnEntry === true} on:change={event => patch(row, { FightOnEntry: event.currentTarget.checked })} />Fight on entry</label>
       </div>
       <div class="panel-actions">
         <button type="button" class="ghost" class:active={plan.StageLoopStartIndex === index} aria-pressed={plan.StageLoopStartIndex === index} on:click={() => onchange({ ...plan, StageLoopStartIndex: plan.StageLoopStartIndex === index ? -1 : index })}>Repeat from here</button>
@@ -394,42 +511,49 @@
 <span class="sr-only" aria-live="polite">{announcement}</span>
 
 <style>
-  .stage-workspace { min-width: 0; margin-top: .8rem; }
+  .stage-workspace { min-width: 0; }
   .bar-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .6rem; margin-bottom: .75rem; }
-  .bar-toolbar label { display: flex; align-items: center; gap: .65rem; font-size: .78rem; }
-  .bar-toolbar select { width: auto; padding: .4rem .6rem; }
   .bar-toolbar button { padding: .5rem .75rem; }
   .bar-scroll { overflow-x: auto; padding: 4px 2px 8px; }
   .stage-bar { display: flex; gap: 3px; list-style: none; margin: 0; padding: 0; min-width: 100%; }
   .bar-segment { position: relative; flex-basis: 0; flex-shrink: 0; min-width: 7rem; border: 1px solid #48515b; background: #22272e; }
   .bar-segment:first-child { border-radius: 5px 0 0 5px; }
   .bar-segment:last-child { border-radius: 0 5px 5px 0; }
-  .stage-select { display: flex; flex-direction: column; align-items: stretch; gap: .45rem; width: 100%; height: 100%; min-height: 124px; padding: .7rem .65rem; border: 0; border-radius: 0; background: transparent; text-align: left; cursor: grab; touch-action: pan-y; user-select: none; }
+  .stage-select { display: flex; flex-direction: column; align-items: stretch; gap: .4rem; width: 100%; height: 100%; min-height: 98px; padding: .6rem; border: 0; border-radius: 0; background: transparent; text-align: left; cursor: grab; touch-action: pan-y; user-select: none; }
   .dragging .stage-select { cursor: grabbing; }
   .segment-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .3rem; font: .65rem Consolas, monospace; color: #a6afb9; }
   .stage-select strong { font-size: .82rem; line-height: 1.35; overflow-wrap: anywhere; }
   .segment-duration { font: .74rem Consolas, monospace; color: #bbc7d5; }
+  .segment-share { font-size: .7rem; color: var(--muted); }
   .selected { border-color: #d5e1ee; background: #303a45; box-shadow: inset 0 -3px #d5e1ee; }
   .current:not(.selected) { border-color: #9caec1; }
   .current .segment-top { color: #e3edf8; }
   .completed:not(.selected) { background: #293039; }
   .runtime-fill { position: absolute; bottom: 0; left: 0; height: 3px; background: #8ca9c6; pointer-events: none; }
-  .live-position { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .45rem 1rem; padding: .65rem 0; font-size: .78rem; }
+  .runtime-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin-top: .4rem; }
+  .live-position { display: flex; flex: 1 1 18rem; flex-wrap: wrap; justify-content: space-between; gap: .4rem 1rem; font-size: .78rem; min-width: 0; }
   .live-position > span:last-of-type { color: var(--muted); }
+  .live-position > .activity-now { flex-basis: 100%; color: #d5e1ee; }
+  .preset-blocker { flex-basis: 100%; overflow-wrap: anywhere; }
   .live-meter { flex-basis: 100%; height: 3px; background: #30363f; }
   .live-meter > span { display: block; height: 100%; background: #a6b7ca; }
-  .live-note, .selection-hint { color: var(--muted); font-size: .76rem; margin-top: .45rem; }
-  .selection-hint { padding: .7rem 0 .2rem; }
+  .live-note { color: var(--muted); font-size: .76rem; }
+  .stage-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-left: auto; }
+  .stage-actions button, .panel-tools button { padding: .4rem .55rem; font-size: .76rem; }
+  .panel-tools { display: flex; flex-wrap: wrap; align-items: start; gap: .5rem 1rem; margin-top: .65rem; }
+  .stage-history { margin: 0; color: var(--muted); font-size: .76rem; }
+  .stage-history p { white-space: pre-line; line-height: 1.6; }
+  .check { display: flex; align-items: center; gap: .5rem; }
   .stage-panel { margin-top: .8rem; padding: 1.15rem; border: 1px solid #697a8e; border-top: 3px solid #d5e1ee; border-radius: 0 0 5px 5px; background: #20262d; min-width: 0; }
   .panel-heading { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
   .panel-heading .eyebrow { margin-bottom: .3rem; }
   h4 { margin: 0; font-size: 1rem; }
   .panel-heading button { padding: .4rem .65rem; font-size: .76rem; }
   .stage-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1rem; margin-top: 1rem; }
+  .weight-share { display: block; margin-top: .35rem; color: var(--muted); font-size: .76rem; }
   .resource-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }
   fieldset { min-width: 0; margin: 0; padding: .85rem; border: 1px solid #3d4855; border-radius: 3px; }
   legend { padding: 0 .35rem; font: .75rem Consolas, monospace; color: #b7c7d9; }
-  fieldset label + label { margin-top: .8rem; }
   .panel-actions { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: 1.15rem; padding-top: 1rem; border-top: 1px solid #3d4855; }
   .panel-actions button { font-size: .78rem; }
   .dragging { opacity: .5; }
@@ -439,7 +563,6 @@
   @media (max-width: 740px) {
     .stage-panel { padding: .85rem; }
     .resource-fields, .stage-fields { grid-template-columns: minmax(0, 1fr); }
-    .stage-select { min-height: 140px; }
     .panel-actions button { flex: 1 1 auto; }
   }
 </style>

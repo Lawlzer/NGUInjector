@@ -1,0 +1,23 @@
+<Project>
+  <!-- Set this before Sdk.props so NuGet assets are isolated as well as compiler output. -->
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj/SaveInspector/</BaseIntermediateOutputPath>
+  </PropertyGroup>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <OutputPath>bin/SaveInspector/$(Configuration)/</OutputPath>
+    <IntermediateOutputPath>$(BaseIntermediateOutputPath)$(Configuration)/</IntermediateOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Formats.Nrbf" Version="10.0.13" />
+    <Compile Include="SaveInspector.cs" />
+    <Compile Include="../../NGUInjector/SaveSafetyCatalog.cs" Link="Production/SaveSafetyCatalog.cs" />
+  </ItemGroup>
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+</Project>

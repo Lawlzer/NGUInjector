@@ -15,7 +15,8 @@ namespace NGUInjector
         private const int ExternalUiRuntimeMilliseconds = 1000;
         private const int ExternalUiMaxCommandsPerPump = 4;
         private const int ExternalUiCommandLifetimeSeconds = 120;
-        private const int ExternalUiMaxCommandBytes = 1024 * 1024;
+        private const int ExternalUiMaxCommandBytes = 3 * 1024 * 1024;
+        private const int ExternalUiActionResultMaxBytes = 256 * 1024;
         private const long ExternalUiMaxRuntimeRevision = 9007199254740991L;
         private static readonly DateTime ExternalUiStartedAt = DateTime.Now;
         private static readonly object ExternalUiRuntimePublicationLock = new object();
@@ -28,11 +29,40 @@ namespace NGUInjector
             "applySettingsPatch", "savePlan", "focusGoal", "stopFocus", "optimizeGear", "previewGear",
             "createPlan", "deletePlan", "readPlan", "previewAugments", "allocateAugments",
             "manualFightPrep", "manualRebirth", "safeProbe", "probeCommands", "precacheLoadouts",
-            "resetRebirthPrep", "reloadSettings", "quickSave", "status", "unload"
+            "resetRebirthPrep", "reloadSettings", "quickSave", "captureLocalSave", "scanSaves", "loadLongestSave", "status", "unload", "setPlanStage",
+            "startMaxItopodPush", "cancelMaxItopodPush", "previewCombatPrep", "startCombatPrep", "cancelCombatPrep",
+            "previewLoadoutPreset", "applyLoadoutPreset", "readPresetLibrary", "savePresetLibrary",
+            "previewGlobalPreset", "applyGlobalPreset", "equipGlobalPreset", "previewExecutionRebind", "applyExecutionRebind", "previewExecutionRestart"
         };
         private DateTime _externalUiLastPump = DateTime.MinValue;
         private DateTime _externalUiLastRuntimeWrite = DateTime.MinValue;
         private static JSONObject _externalUiLastRuntimeSnapshot;
+        private string _currentExecutionCommandId;
+        internal string CurrentExecutionCommandId => _currentExecutionCommandId;
+
+        private void PersistExecutionCommandAcceptance(string id, string command, bool completed)
+        {
+            var saved = new JSONObject(); saved["version"] = 1; saved["commandId"] = id;
+            saved["command"] = command; saved["state"] = completed ? "accepted" : "admitted";
+            saved["plan"] = Settings?.CustomPlanFile ?? ""; saved["entry"] = ExecutionPersistenceEntry ?? "";
+            saved["acceptedAt"] = DateTime.UtcNow.ToString("o");
+            if (completed)
+            {
+                var selections = new JSONArray();
+                foreach (var path in Directory.EnumerateFiles(_dir, "execution-*-selection.json"))
+                {
+                    var selection = JsonFiles.ParseObject(File.ReadAllText(path));
+                    if (!selection["active"].IsBoolean || selection["active"].AsBool) selections.Add(selection);
+                }
+                saved["selectedCommitments"] = selections;
+                var process = ExportAcceptedExecutionProcess();
+                if (process["id"].IsNull || string.IsNullOrEmpty(process["id"].Value)) process["id"] = id;
+                saved["process"] = process;
+            }
+            // A failed acceptance publication is NOT permission to replay the claimed
+            // command. Preview tokens remain only in the original audited request.
+            JsonFiles.WriteAtomic(Path.Combine(_externalUiClaimsDir, id + ".accepted.json"), saved.ToString(2));
+        }
 
         internal static bool ExternalUiEnabled { get; private set; }
 
@@ -164,9 +194,16 @@ namespace NGUInjector
                     throw new FormatException("Command args must be an object or null.");
 
                 JSONNode data;
-                var message = ExecuteExternalUiCommand(command, args, out data);
+                var asynchronous = new[] { "focusGoal", "manualFightPrep", "manualRebirth", "startCombatPrep", "startMaxItopodPush",
+                    "equipGlobalPreset", "applyGlobalPreset", "applyLoadoutPreset" }.Contains(command);
+                if (asynchronous) PersistExecutionCommandAcceptance(id, command, false);
+                string message;
+                _currentExecutionCommandId = id;
+                try { message = ExecuteExternalUiCommand(command, args, out data); }
+                finally { _currentExecutionCommandId = null; }
                 // Existing action handlers sometimes return LogError instead of throwing.
                 var success = message == null || !message.StartsWith("ERROR in ", StringComparison.Ordinal);
+                if (asynchronous && success) PersistExecutionCommandAcceptance(id, command, true);
                 data = AttachExternalUiRuntime(data);
                 WriteExternalUiCommandResult(id, command, success, message, data);
             }
@@ -182,12 +219,55 @@ namespace NGUInjector
             data = null;
             if (!_started || _unloaded || _injectorLease == null || !ReferenceEquals(reference, this))
                 throw new InvalidOperationException("Injector is not ready: startup is incomplete, failed, or unloaded.");
+            if (_executionLifecycle != ExecutionLifecycle.Running && command != "status" && command != "unload")
+                throw new InvalidOperationException("Execution is quiesced; ordinary commands are not admitted.");
+            if (command == "focusGoal" || command == "stopFocus" || command == "optimizeGear" || command == "allocateAugments"
+                || command == "startMaxItopodPush" || command == "resetRebirthPrep"
+                || command == "probeCommands")
+                RequireCombatPrepIdle();
             switch (command)
             {
+                case "captureLocalSave":
+                case "scanSaves":
+                case "loadLongestSave":
+                    return ExecuteSaveSafetyCommand(command, args, out data);
+                case "previewExecutionRebind":
+                    data = new JSONObject(); data["result"] = PreviewExecutionRebind(args);
+                    return "Acquired selection review generated.";
+                case "previewExecutionRestart":
+                    data = new JSONObject(); data["result"] = PreviewExecutionRestart(args);
+                    return "Explicit stage restart reviewed.";
+                case "applyExecutionRebind":
+                    return ApplyExecutionRebind(args);
+                case "previewCombatPrep":
+                    return PreviewCombatPrep(args, out data);
+                case "startCombatPrep":
+                    return StartCombatPrep(args);
+                case "cancelCombatPrep":
+                    return CancelCombatPrep(args);
+                case "startMaxItopodPush":
+                    var deaths = args?["deaths"];
+                    if (args == null || args.Count != 1 || deaths == null || !deaths.IsNumber
+                        || deaths.AsDouble < 1 || deaths.AsDouble > 1000 || deaths.AsDouble != Math.Truncate(deaths.AsDouble))
+                        throw new FormatException("args.deaths must be an integer between 1 and 1000, with no other arguments.");
+                    return StartMaxItopodPush(deaths.AsInt);
+                case "cancelMaxItopodPush":
+                    if (args != null && !args.IsNull && args.Count != 0)
+                        throw new FormatException("cancelMaxItopodPush does not accept arguments.");
+                    return CancelMaxItopodPush();
+                case "setPlanStage":
+                    return OverrideCustomStage(args);
                 case "applySettingsPatch":
                     if (Settings == null)
                         throw new InvalidOperationException("Settings are not loaded yet.");
-                    Settings.ApplyPatch(args?["patch"]);
+                    if (CombatPrepActive && (args?["patch"]?["_manageEnergy"]?.IsBoolean == true && !args["patch"]["_manageEnergy"].AsBool
+                        || args?["patch"]?["_manageMagic"]?.IsBoolean == true && !args["patch"]["_manageMagic"].AsBool))
+                        throw new InvalidOperationException("Cancel combat prep before disabling managed resource lanes.");
+                    var settingsRevision = args?["expectedRevision"];
+                    if (settingsRevision == null || !settingsRevision.IsString)
+                        throw new FormatException("args.expectedRevision is required and must be a string.");
+                    data = Settings.ApplyExternalPatch(args?["patch"], settingsRevision.Value);
+                    InvalidateGlobalNguWeightPolicies();
                     LoadAllocation();
                     return "Settings patch applied and saved.";
                 case "savePlan":
@@ -197,7 +277,28 @@ namespace NGUInjector
                     var revisionNode = args?["expectedRevision"];
                     if (revisionNode == null || !revisionNode.IsString)
                         throw new FormatException("args.expectedRevision is required and must be a string.");
-                    var savedRevision = CustomPlanStore.SaveExternalPlan(name, args?["plan"], revisionNode.Value);
+                    string savedRevision;
+                    lock (NGUInjector.CustomPlans.PresetLibraryStore.SyncRoot)
+                    {
+                        var previousPermission = CustomPlanStore.PlanExists(name)
+                            ? (bool?) CustomPlanStore.Load(name).AutoRebirthEnabled : null;
+                        savedRevision = CustomPlanStore.SaveExternalPlan(name, args?["plan"], revisionNode.Value);
+                        var permission = CustomPlanStore.Load(name).AutoRebirthEnabled;
+                        // Unrelated saves (including retries after a partial save) must preserve live opt-outs.
+                        if (previousPermission.HasValue && previousPermission.Value != permission
+                            && Settings != null && Settings.UseCustomRebirthPlan
+                            && string.Equals(Settings.CustomPlanFile, name, StringComparison.OrdinalIgnoreCase)
+                            && Settings.AutoRebirth != permission)
+                        {
+                            var rebirthPatch = new JSONObject();
+                            rebirthPatch["_autoRebirth"] = permission;
+                            try { Settings.ApplyPatch(rebirthPatch); }
+                            catch (Exception e)
+                            {
+                                throw new InvalidOperationException("Plan saved, but live auto-rebirth synchronization failed. Retrying the save will not replay the switch. Explicitly Disable plan, then Enable plan to apply its saved permission.", e);
+                            }
+                        }
+                    }
                     var saved = new JSONObject();
                     saved["name"] = name;
                     saved["revision"] = savedRevision;
@@ -237,13 +338,38 @@ namespace NGUInjector
                     return mode == "apply" ? ApplyCustomFocusGoal(goal) : ToggleCustomFocusGoal(goal);
                 case "stopFocus":
                     return StopCustomFocusGoal();
+                case "previewLoadoutPreset":
+                    data = new JSONObject();
+                    data["result"] = PreviewLoadoutPreset(args);
+                    return "Loadout preset comparison generated without changing gear, support or resources.";
+                case "applyLoadoutPreset":
+                    return ApplyLoadoutPreset(args, out data);
+                case "readPresetLibrary":
+                    if (args != null && !args.IsNull && (!args.IsObject || args.Count != 0))
+                        throw new FormatException("readPresetLibrary does not accept arguments.");
+                    if (CustomPlanStore == null) throw new InvalidOperationException("Preset library is unavailable.");
+                    data = new JSONObject(); data["library"] = CustomPlanStore.PresetLibrary.ReadExternalLibrary();
+                    return "Global preset library read.";
+                case "savePresetLibrary":
+                    GlobalPresetArgs(args, "library", "expectedRevision");
+                    if (CustomPlanStore == null) throw new InvalidOperationException("Preset library is unavailable.");
+                    var libraryRevision = CustomPlanStore.PresetLibrary.SaveExternalLibrary(args["library"], args["expectedRevision"].Value);
+                    data = new JSONObject(); data["revision"] = libraryRevision;
+                    return "Global preset library saved.";
+                case "previewGlobalPreset":
+                    data = new JSONObject(); data["result"] = PreviewGlobalPreset(args);
+                    return "Global preset preview generated without mutation.";
+                case "applyGlobalPreset":
+                    return ApplyGlobalPreset(args, out data);
+                case "equipGlobalPreset":
+                    return EquipGlobalPreset(args, out data);
                 case "optimizeGear":
                 case "previewGear":
                     var gearGoal = ReadExternalUiEnum<GearOptimizationGoal>(args, "goal");
                     var fightMode = args != null && args["fightScoreMode"] != null
                         ? ReadExternalUiEnum<FightScoreMode>(args, "fightScoreMode") : GetActiveFightScoreMode();
                     var result = command == "previewGear" ? GearOptimizer.Optimize(gearGoal, fightMode)
-                        : GearOptimizer.OptimizeAndEquip(gearGoal, fightMode);
+                        : ApplyManualGearSelection(gearGoal, fightMode);
                     if (!result.Success)
                         throw new InvalidOperationException(result.Message);
                     var gear = new JSONObject();
@@ -269,7 +395,7 @@ namespace NGUInjector
                         expectedSeconds = expectedNode.AsInt;
                     }
                     var augmentResult = command == "previewAugments" ? AugmentOptimizer.OptimizeBest(expectedSeconds)
-                        : AugmentOptimizer.OptimizeAndAllocate(expectedSeconds);
+                        : RequestAugmentAllocation(AugmentOptimizer.OptimizeBest(expectedSeconds));
                     if (!augmentResult.Success)
                         throw new InvalidOperationException(augmentResult.Message);
                     var augment = new JSONObject();
@@ -325,8 +451,10 @@ namespace NGUInjector
 
         private static string ReloadSettingsForExternalUi()
         {
+            reference?.EndCombatPrep("cancelled", "Settings reload preempted combat prep.");
             if (Settings == null || !Settings.LoadSettings())
                 throw new InvalidOperationException("Settings reload failed; live settings retained.");
+            reference?.InvalidateGlobalNguWeightPolicies();
 
             LoadAllocation();
             settingsForm?.UpdateFromSettings(Settings);
@@ -407,7 +535,10 @@ namespace NGUInjector
             root["startedAt"] = ExternalUiStartedAt.ToString("o");
             root["externalUiEnabled"] = ExternalUiEnabled;
             root["protocolVersion"] = 3;
+            root["settingsCasVersion"] = 1;
             root["planVersion"] = NGUInjector.CustomPlans.CustomPlanStore.CurrentPlanVersion;
+            root["stageTimingVersion"] = 1;
+            root["stageOverridesV1"] = true;
             root["updatedAt"] = DateTime.Now.ToString("o");
             root["status"] = reference?._startupError != null ? "failed" : reference != null && reference._unloaded ? "unloaded"
                 : reference == null || !reference._started ? "starting" : "running";
@@ -415,9 +546,26 @@ namespace NGUInjector
             root["activeFocusGoal"] = reference?.GetActiveCustomFocusGoal()?.ToString() ?? string.Empty;
             root["appliedFocusGoal"] = reference?.GetAppliedCustomFocusGoal() ?? string.Empty;
             root["focusStatus"] = reference?.GetCustomFocusStatus() ?? "idle";
+            root["resourceAllocation"] = reference?.GetResourceCoordinationRuntime();
+            root["executionReview"] = reference?.GetExecutionPersistenceRuntime() ?? new JSONObject();
+            root["execution"] = reference?.GetExecutionStateRuntime() ?? new JSONObject();
+            root["saveSafety"] = reference?.GetSaveSafetyRuntime() ?? new JSONObject();
             root["planProgress"] = reference?.GetCustomPlanProgress() ?? UnavailableCustomPlanProgress();
             root["nguAllocation"] = reference?.GetCustomNguRuntime() ?? new JSONObject();
             root["bossPushRunning"] = reference != null && reference.BossPushRunning;
+            root["maxItopodPush"] = reference?.GetMaxItopodPushRuntime() ?? new JSONObject();
+            root["manualTitan"] = reference?.GetManualTitanRuntime() ?? new JSONObject();
+            root["manualAdventureOverlay"] = reference?.GetManualAdventureOverlayRuntime() ?? new JSONObject();
+            root["adventureRules"] = reference?.GetAdventureRulesRuntime() ?? new JSONObject();
+            root["combatPrep"] = reference?.GetCombatPrepRuntime() ?? new JSONObject();
+            root["loadoutPresetsVersion"] = 2;
+            root["globalPresetsVersion"] = 2;
+            root["adventureDynamicPresetsVersion"] = 1;
+            root["globalNguWeightsVersion"] = 1;
+            root["resourceLanePrioritiesVersion"] = 1;
+            root["planBloodMagicVersion"] = 1;
+            root["loadoutPreset"] = reference?.GetLoadoutPresetRuntime() ?? new JSONObject();
+            root["equipmentBoosts"] = GetEquipmentBoostsRuntime();
             WriteExternalUiSettingsState(root, false);
             WriteExternalUiCharacterState(root);
             return root;
@@ -456,6 +604,50 @@ namespace NGUInjector
             }
         }
 
+        private static JSONObject GetEquipmentBoostsRuntime()
+        {
+            var state = new JSONObject();
+            state["available"] = false;
+            state["reason"] = "Owned equipment game state is not available.";
+            state["items"] = new JSONArray();
+            try
+            {
+                var inv = Character?.inventory;
+                var names = Character?.itemInfo?.itemName;
+                if (inv == null || inv.inventory == null || inv.accs == null || names == null)
+                    return state;
+
+                // Read raw owned equipment, including unlocked inventory, without controller queries/actions.
+                var owned = new[] { inv.head, inv.chest, inv.legs, inv.boots, inv.weapon, inv.weapon2 }
+                    .Concat(inv.accs).Concat(inv.inventory)
+                    .Where(x => x != null && x.id > 0 && x.isEquipment())
+                    .Select(x => new { Equipment = x, FullyBoosted = x.IsFullyBoosted() })
+                    .GroupBy(x => x.Equipment.id).OrderBy(x => x.Key);
+                var items = new JSONArray();
+                foreach (var group in owned)
+                {
+                    var incomplete = group.Where(x => x.Equipment.level < 100 || !x.FullyBoosted).ToArray();
+                    if (incomplete.Length == 0) continue;
+                    var row = new JSONObject();
+                    row["id"] = group.Key;
+                    row["name"] = names[group.Key] ?? string.Empty;
+                    row["copies"] = group.Count();
+                    row["level"] = incomplete.Min(x => x.Equipment.level);
+                    row["fullyBoosted"] = group.All(x => x.FullyBoosted);
+                    items.Add(row);
+                }
+                state["items"] = items;
+                state["reason"] = string.Empty;
+                state["available"] = true;
+            }
+            catch (Exception)
+            {
+                // Discard partial results; optional telemetry must never interrupt runtime publication.
+                state["reason"] = "Owned equipment snapshot could not be read.";
+            }
+            return state;
+        }
+
         private static JSONNode AttachExternalUiRuntime(JSONNode data)
         {
             var result = data?.AsObject ?? new JSONObject();
@@ -479,6 +671,7 @@ namespace NGUInjector
             settings["useCustomRebirthPlan"] = Settings.UseCustomRebirthPlan;
             settings["customAdventureEnabled"] = Settings.CustomAdventureEnabled;
             settings["customAdventureMode"] = Settings.CustomAdventureMode;
+            settings["customAdventureMaxItopodDeaths"] = Settings.CustomAdventureMaxItopodDeaths;
             settings["customAdventureZone"] = Settings.CustomAdventureZone;
             settings["customAdventureGoldPush"] = Settings.CustomAdventureGoldPush;
             settings["manualAdventureEnabled"] = Settings.ManualAdventureEnabled;
@@ -488,6 +681,8 @@ namespace NGUInjector
             settings["customAutoMoneyPitEnabled"] = Settings.CustomAutoMoneyPitEnabled;
             settings["customAutoBloodSpellsEnabled"] = Settings.CustomAutoBloodSpellsEnabled;
             settings["disableOverlay"] = Settings.DisableOverlay;
+            settings["_energyNguWeights"] = LoadoutPresetNumbers(Settings.EnergyNguWeights.Select(x => (double)x));
+            settings["_magicNguWeights"] = LoadoutPresetNumbers(Settings.MagicNguWeights.Select(x => (double)x));
             root["settings"] = settings;
 
             if (!includePlanNames) return;
@@ -532,15 +727,18 @@ namespace NGUInjector
         internal static BloodGoalEstimate[] GetBloodGoalEstimates()
         {
             string status, reason;
-            return GetBloodGoalEstimates(out status, out reason);
+            return GetBloodGoalEstimates(out status, out reason, out _);
         }
 
-        private static BloodGoalEstimate[] GetBloodGoalEstimates(out string status, out string reason)
+        private static BloodGoalEstimate[] GetBloodGoalEstimates(out string status, out string reason, out NGUInjector.CustomPlans.CustomPlan plan)
         {
+            plan = null;
             status = "unavailable";
             reason = Settings == null ? "Settings are not loaded." : "Blood Magic game state is not available.";
             try
             {
+                if (Settings != null && Settings.UseCustomRebirthPlan && reference != null && CustomPlanStore != null)
+                    plan = reference.LoadRuntimeCustomPlan();
                 if (Settings == null || Character?.bloodMagic == null || Character.bloodMagicController == null || Character.bloodSpells == null)
                     return new BloodGoalEstimate[0];
 
@@ -549,10 +747,10 @@ namespace NGUInjector
                 var production = optimal.Success ? optimal.BloodPerSecond : 0d;
                 var count = (blood.lootAutoSpell ? 1 : 0) + (blood.goldAutoSpell ? 1 : 0) + (blood.rebirthAutoSpell ? 1 : 0);
                 var estimates = new[] {
-                    BloodGoalEstimate.Calculate(Settings.CustomBloodSpaghettiGoalPercent, false,
+                    BloodGoalEstimate.Calculate(EffectiveCustomBloodSpaghettiGoalPercent(plan), false,
                         BloodGoalEstimate.WholePercent(Character.bloodMagicController.lootBonus()), blood.lootSpellBlood,
                         blood.bloodPoints, Character.bloodSpells.minLootBlood(), production, count, blood.lootAutoSpell),
-                    BloodGoalEstimate.Calculate(Settings.CustomBloodCounterfeitGoalPercent, true,
+                    BloodGoalEstimate.Calculate(EffectiveCustomBloodCounterfeitGoalPercent(plan), true,
                         BloodGoalEstimate.WholePercent(Character.bloodMagicController.goldBonus()), blood.goldSpellBlood,
                         blood.bloodPoints, Character.bloodSpells.minGoldBlood(), production, count, blood.goldAutoSpell)
                 };
@@ -579,8 +777,10 @@ namespace NGUInjector
         private static void WriteExternalUiBloodState(JSONObject root)
         {
             string status, reason;
-            var estimates = GetBloodGoalEstimates(out status, out reason);
+            var estimates = GetBloodGoalEstimates(out status, out reason, out var plan);
             var blood = new JSONObject();
+            blood["planName"] = plan != null ? Settings.CustomPlanFile : string.Empty;
+            blood["autoBloodSpellsEnabled"] = EffectiveCustomAutoBloodSpellsEnabled(plan);
             blood["available"] = status == "available";
             blood["status"] = status;
             blood["reason"] = reason;
@@ -603,6 +803,9 @@ namespace NGUInjector
             root["bloodGoals"] = blood;
 
             var iron = new JSONObject();
+            iron["planName"] = plan != null ? Settings.CustomPlanFile : string.Empty;
+            iron["saveSeconds"] = EffectiveCustomIronPillSaveSeconds(plan);
+            iron["minWorth"] = EffectiveCustomIronPillMinWorth(plan);
             iron["available"] = false;
             iron["eligible"] = JSONNull.CreateOrGet();
             iron["status"] = "unavailable";
@@ -612,16 +815,27 @@ namespace NGUInjector
                 if (reference != null && Settings != null && CustomPlanStore != null && Character?.rebirthTime != null
                     && Character.bloodMagic != null && Character.bloodSpells != null)
                 {
-                    var blocker = reference.CustomIronPillEligibilityBlocker(CustomPlanStore.Load(Settings.CustomPlanFile));
+                    if (status == "error" && plan == null && Settings.UseCustomRebirthPlan)
+                        throw new InvalidOperationException(reason);
+                    var blocker = reference.CustomIronPillEligibilityBlocker(plan);
                     iron["available"] = true;
                     iron["eligible"] = blocker.Length == 0;
                     iron["status"] = blocker.Length == 0 ? "eligible" : "blocked";
                     iron["reason"] = blocker;
+                    iron["cooldownRemainingSeconds"] = LoadoutPresetNumber(reference.IronPillCooldownRemainingSeconds());
+                    iron["bloodPoints"] = LoadoutPresetNumber(Character.bloodMagic.bloodPoints);
+                    iron["currentWorth"] = LoadoutPresetNumber(reference.CustomIronPillWorth());
+                    iron["minimumBlood"] = Character.bloodSpells.minAdventureBlood();
+                    iron["ritualMagic"] = ToJsonArray(Character.bloodMagic.ritual.Select(x => x.magic.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToArray());
+                    iron["lootAutoSpell"] = Character.bloodMagic.lootAutoSpell;
+                    iron["goldAutoSpell"] = Character.bloodMagic.goldAutoSpell;
+                    iron["numberAutoSpell"] = Character.bloodMagic.rebirthAutoSpell;
                     iron["reservingBlood"] = reference.CustomIronPillPrepActive();
                     iron["savedSeconds"] = reference.CustomIronPillPrepActive()
                         ? Math.Max(0d, Character.rebirthTime.totalseconds - reference._customIronPillPrepStartedAt) : 0d;
-                    iron["prepLimitSeconds"] = IronPillAutomation.PrepLimitSeconds(Settings.CustomIronPillSaveSeconds);
-                    iron["retryInSeconds"] = Math.Max(0d, reference._customIronPillRetryAt - Character.rebirthTime.totalseconds);
+                    iron["prepLimitSeconds"] = IronPillAutomation.PrepLimitSeconds(EffectiveCustomIronPillSaveSeconds(plan));
+                    iron["retryInSeconds"] = plan != null && reference._customIronPillPlanName == Settings.CustomPlanFile
+                        ? Math.Max(0d, reference._customIronPillRetryAt - Character.rebirthTime.totalseconds) : 0d;
                     if (reference.CustomIronPillPrepActive()) iron["status"] = "saving";
                 }
             }
@@ -636,30 +850,31 @@ namespace NGUInjector
         private bool CustomPlanResourceAutomationActive(NGUInjector.CustomPlans.CustomPlan plan)
         {
             return plan != null
-                   && Settings.UseCustomRebirthPlan
-                   && Settings.AutoRebirth
-                   && plan.AutoRebirthEnabled;
+                   && (Settings.UseCustomRebirthPlan || _globalPresetManualId != null
+                       || GetActiveCustomFocusGoal().HasValue && GetActiveCustomFocusGoal() != CustomFocusGoal.Fight
+                           && GetActiveCustomFocusGoal() != CustomFocusGoal.ManualTitans);
         }
 
         // Shared by reservation and read-only metadata; changing UI metadata must not change policy.
         private string CustomIronPillEligibilityBlocker(NGUInjector.CustomPlans.CustomPlan plan)
         {
             if (Settings == null) return "Settings are not loaded.";
+            if (plan == null && (_globalPresetManualId != null || GetActiveCustomFocusGoal().HasValue))
+                plan = CustomPlanStore?.Load(Settings.CustomPlanFile);
             if (Character?.rebirthTime == null || Character.bloodMagic == null || Character.bloodSpells == null)
                 return "Blood Magic game state is not available.";
             if (_manualRebirthPending) return "Manual rebirth is pending.";
+            if (!Settings.ManageMagic) return "Magic management is disabled.";
             if (_customPreRebirthPrepRunning) return "Pre-rebirth preparation is running.";
             if (BossPushRunning) return "Boss push is running.";
             if (!CustomPlanResourceAutomationActive(plan))
             {
                 if (plan == null) return "No custom plan is loaded.";
-                if (!Settings.UseCustomRebirthPlan) return "The custom plan is not running.";
-                if (!Settings.AutoRebirth) return "Custom auto-rebirth is disabled.";
-                return "The selected plan's auto-rebirth is disabled.";
+                return "No resource allocation activity is selected.";
             }
             if (!plan.AutoIronPillEnabled) return "The selected plan's automatic Iron Pill is disabled.";
             if (CustomRebirthReady(plan)) return "Automatic rebirth is ready.";
-            return IronPillAutomation.EligibilityBlocker(Settings.CustomAutoBloodSpellsEnabled, true,
+            return IronPillAutomation.EligibilityBlocker(EffectiveCustomAutoBloodSpellsEnabled(Settings.UseCustomRebirthPlan ? plan : null), true,
                 Character.rebirthTime.totalseconds, Character.bossID);
         }
 

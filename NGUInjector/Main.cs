@@ -49,8 +49,6 @@ namespace NGUInjector
         private static string _profilesDir;
         private static string _customPlansDir;
 
-        private static bool _tempSwapped = false;
-
         internal static FileSystemWatcher ConfigWatcher;
         internal static FileSystemWatcher AllocationWatcher;
         internal static FileSystemWatcher ZoneWatcher;
@@ -123,8 +121,6 @@ namespace NGUInjector
                 _yggManager = new YggdrasilManager();
                 _questManager = new QuestManager();
                 _combManager = new CombatManager();
-                LoadoutManager.ReleaseLock();
-                DiggerManager.ReleaseLock();
 
                 Settings = new SavedSettings(_dir);
 
@@ -157,7 +153,7 @@ namespace NGUInjector
                         AutoMoneyPit = false,
                         AutoSpin = false,
                         MoneyPitLoadout = new int[] {},
-                        AutoRebirth = false,
+                        AutoRebirth = true,
                         ManageWandoos = false,
                         MoneyPitThreshold = 1e5,
                         DoGoldSwap = false,
@@ -220,6 +216,7 @@ namespace NGUInjector
                         CustomPlanFile = "default",
                         CustomAdventureEnabled = false,
                         CustomAdventureMode = 0,
+                        CustomAdventureMaxItopodDeaths = 3,
                         CustomAdventureZone = 0,
                         CustomAdventureGoldPush = true,
                         CustomAutoMoneyPitEnabled = false,
@@ -238,6 +235,8 @@ namespace NGUInjector
                     Log($"Created default settings");
                 }
 
+                Settings.EnsureGlobalNguWeightsSaved();
+                EnsureStandaloneSelectionLoaded();
                 CustomPlanStore = new CustomPlanStore(_customPlansDir);
                 var customPlanFile = Settings.CustomPlanFile;
                 if (string.IsNullOrEmpty(customPlanFile) || !CustomPlanStore.PlanExists(customPlanFile))
@@ -352,6 +351,7 @@ namespace NGUInjector
                 settingsForm?.UpdateFromSettings(Settings);
                 settingsForm?.Show();
 
+                InitializeSaveRecovery();
                 InvokeRepeating("AutomationRoutine", 0.0f, 10.0f);
                 InvokeRepeating("CustomAdventureTick", 0.0f, .1f);
                 if (LegacyAutomationEnabled)
@@ -363,7 +363,7 @@ namespace NGUInjector
                 InvokeRepeating("SetResnipe", 0f,1f);
 
 
-                RunStartupAutomationRequests();
+                if (_executionLifecycle == ExecutionLifecycle.Running) RunStartupAutomationRequests();
                 _started = true;
                 if (ExternalUiEnabled)
                     WriteExternalUiRuntimeSnapshot(0);
@@ -380,15 +380,22 @@ namespace NGUInjector
                 return;
             try
             {
+                PumpSaveSafety();
                 PumpWatcherReloads();
                 var progressPercent = (int)Math.Floor(_timeLeft / 10 * 100);
                 PumpExternalUi(progressPercent);
                 if (_unloaded || Settings == null || _combManager == null)
                     return;
+                if (_executionLifecycle != ExecutionLifecycle.Running)
+                {
+                    if (Input.GetKeyDown(KeyCode.F7)) QuickLoad();
+                    return;
+                }
 
                 _timeLeft -= Time.deltaTime;
+                ServiceReviewedExactSetup();
                 _combManager.UpdateFightTimer(Time.deltaTime);
-                RunCustomSustainedFocusAllocation();
+                ReconcileCustomResources();
 
                 settingsForm?.UpdateProgressBar(progressPercent);
 
@@ -430,37 +437,7 @@ namespace NGUInjector
 
                 if (Input.GetKeyDown(KeyCode.F8))
                 {
-                    if (Settings.QuickLoadout != null && Settings.QuickLoadout.Length > 0)
-                    {
-                        if (_tempSwapped)
-                        {
-                            Log("Restoring Previous Loadout");
-                            LoadoutManager.RestoreTempLoadout();
-                        }
-                        else
-                        {
-                            Log("Equipping Quick Loadout");
-                            LoadoutManager.SaveTempLoadout();
-                            LoadoutManager.ChangeGear(Settings.QuickLoadout);
-                        }
-                    }
-
-                    if (Settings.QuickDiggers != null && Settings.QuickDiggers.Length > 0)
-                    {
-                        if (_tempSwapped)
-                        {
-                            Log("Equipping Previous Diggers");
-                            DiggerManager.RestoreTempDiggers();
-                        }
-                        else
-                        {
-                            Log("Equipping Quick Diggers");
-                            DiggerManager.SaveTempDiggers();
-                            DiggerManager.EquipDiggers(Settings.QuickDiggers);
-                        }
-                    }
-
-                    _tempSwapped = !_tempSwapped;
+                    ToggleQuickExecutionClaim();
                 }
 
                 // F11 reserved for testing
@@ -477,8 +454,10 @@ namespace NGUInjector
 
         private void QuickSave()
         {
+            var backup = CaptureVerifiedLocalSave();
+            RequireSafeCloudSave();
             Log("Writing quicksave and json");
-            var data = Character.importExport.getBase64Data();
+            var data = File.ReadAllText(backup.Path);
             using (var writer = new StreamWriter(Path.Combine(_dir, "NGUSave.txt")))
             {
                 writer.WriteLine(data);
@@ -547,7 +526,21 @@ namespace NGUInjector
                     return;
                 }
 
-                Character.saveLoad.loadintoGame(saveDataFromString);
+                QuiesceExecution("Loading quicksave.");
+                SetExecutionLifecycle(ExecutionLifecycle.LoadingSave);
+                _protectedTimingLoadingSave = true;
+                var loaded = false;
+                try
+                {
+                    Character.saveLoad.loadintoGame(saveDataFromString);
+                    ResetCustomAutomationRuntime();
+                    loaded = true;
+                }
+                finally
+                {
+                    _protectedTimingLoadingSave = false;
+                    if (loaded && _saveRecoveryIssue == null) SetExecutionLifecycle(ExecutionLifecycle.Running);
+                }
             }
             catch (Exception e)
             {
@@ -586,7 +579,8 @@ namespace NGUInjector
         public void OnGUI()
         {
             if (_unloaded || !_started || ExternalUiEnabled || Settings == null || Settings.DisableOverlay) return;
-            var customActive = Settings.UseCustomRebirthPlan || Settings.CustomAdventureEnabled || Settings.ManualAdventureEnabled || Settings.CustomAutoMoneyPitEnabled || Settings.CustomAutoBoostEnabled || Settings.CustomAutoBloodSpellsEnabled;
+            // A running plan is active even when its blood-spell opt-in overrides disabled globals.
+            var customActive = Settings.UseCustomRebirthPlan || Settings.CustomAdventureEnabled || Settings.ManualAdventureEnabled || Settings.ManualTitanEnabled || Settings.CustomAutoMoneyPitEnabled || Settings.CustomAutoBoostEnabled || EffectiveCustomAutoBloodSpellsEnabled(null) || Settings.CustomAutoExpEnabled;
             GUI.Label(new Rect(10, 0, 260, 40), $"Legacy - {(LegacyAutomationEnabled && Settings.GlobalEnabled ? "Active" : "Disabled")}");
             GUI.Label(new Rect(10, 10, 260, 40), $"Custom - {(customActive ? "Active" : "Inactive")}");
             GUI.Label(new Rect(10, 20, 260, 40), $"Next Loop - {_timeLeft:00.0}s");
@@ -595,7 +589,13 @@ namespace NGUInjector
 
         public void OnApplicationQuit()
         {
-            Loader.Unload();
+            try { Loader.Unload(); }
+            catch (Exception error)
+            {
+                LogError("Quit retained unresolved execution evidence; native process exit cannot await retirement", error);
+                SetExecutionLifecycle(ExecutionLifecycle.Unloaded);
+                CancelInvoke();
+            }
         }
 
     }

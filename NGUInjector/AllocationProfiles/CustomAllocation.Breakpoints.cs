@@ -62,56 +62,6 @@ namespace NGUInjector.AllocationProfiles
             return null;
         }
 
-        private GearBreakpoint GetCurrentGearBreakpoint()
-        {
-            var bps = _wrapper?.Breakpoints?.Gear;
-            if (bps == null)
-                return null;
-            foreach (var b in bps)
-            {
-                if (_character.rebirthTime.totalseconds > b.Time)
-                {
-                    if (_currentGearBreakpoint == null)
-                    {
-                        _hasGearSwapped = false;
-                        _currentGearBreakpoint = b;
-                    }
-
-                    return b;
-                }
-            }
-
-            _currentGearBreakpoint = null;
-            return null;
-        }
-
-        private DiggerBreakpoint GetCurrentDiggerBreakpoint()
-        {
-            var bps = _wrapper?.Breakpoints?.Diggers;
-            if (bps == null)
-                return null;
-
-            if (_character.challenges.timeMachineChallenge.inChallenge)
-                return null;
-
-            foreach (var b in bps)
-            {
-                if (_character.rebirthTime.totalseconds > b.Time)
-                {
-                    if (_currentDiggerBreakpoint == null || _character.challenges.trollChallenge.inChallenge)
-                    {
-                        _hasDiggerSwapped = false;
-                        _currentDiggerBreakpoint = b;
-                    }
-
-                    return b;
-                }
-            }
-
-            _currentDiggerBreakpoint = null;
-            return null;
-        }
-
         private NGUDiffBreakpoint GetCurrentNGUDiffBreakpoint()
         {
             var bps = _wrapper?.Breakpoints?.NGUBreakpoints;

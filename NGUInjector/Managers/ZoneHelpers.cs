@@ -7,6 +7,51 @@ namespace NGUInjector.Managers
     static class ZoneHelpers
     {
         internal static readonly int[] TitanZones = { 6, 8, 11, 14, 16, 19, 23, 26, 30, 34, 38, 42 };
+        // Native manageFight() for T1-T5, then autokillTitan{N}V{1..4}Achieved().
+        // These are binary32 literals, not enemy stats or rounded UI requirements.
+        private static readonly float[,] TitanAutokillStats =
+        {
+            { 3000f, 2500f, 0f },
+            { 9000f, 7000f, 0f },
+            { 25000f, 15000f, 0f },
+            { 800000f, 400000f, 14000f },
+            { 13000000f, 7000000f, 150000f },
+            // T6
+            { 2.5E+09f, 1.6E+09f, 25000000f },
+            { 2.5E+10f, 1.6E+10f, 250000000f },
+            { 2.5E+11f, 1.6E+11f, 2.5E+09f },
+            { 2.5E+12f, 1.6E+12f, 2.5E+10f },
+            // T7
+            { 5E+14f, 2.5E+14f, 5E+12f },
+            { 1E+16f, 5E+15f, 1E+14f },
+            { 2E+17f, 1E+17f, 2E+15f },
+            { 5E+18f, 2.5E+18f, 5E+16f },
+            // T8
+            { 5E+18f, 2.5E+18f, 5E+16f },
+            { 1E+20f, 5E+19f, 1E+18f },
+            { 2E+21f, 1E+21f, 2E+19f },
+            { 5E+22f, 2.5E+22f, 5E+20f },
+            // T9
+            { 1E+23f, 5E+22f, 1E+21f },
+            { 2E+24f, 1E+24f, 2E+22f },
+            { 4E+25f, 2E+25f, 4E+23f },
+            { 7.5E+26f, 3.7E+26f, 7.5E+24f },
+            // T10
+            { 4E+28f, 2E+28f, 4E+26f },
+            { 3.2E+29f, 1.6E+29f, 1.6E+27f },
+            { 2E+30f, 1E+30f, 1E+28f },
+            { 1E+31f, 5E+30f, 5E+28f },
+            // T11
+            { 1.8E+31f, 6E+30f, 1.2E+29f },
+            { 9E+31f, 3E+31f, 6E+29f },
+            { 3.6E+32f, 1.2E+32f, 2.5E+30f },
+            { 1.1E+33f, 3.6E+32f, 7.5E+30f },
+            // T12
+            { 3E+33f, 1E+33f, 2E+31f },
+            { 1.2E+34f, 4E+33f, 8E+31f },
+            { 3.6E+34f, 1.2E+34f, 2.4E+32f },
+            { 7.2E+34f, 2.4E+34f, 4.8E+32f }
+        };
         // Mirrors AdventureController.constructDropdown(), but checked against current rebirth progress.
         private static readonly int[] ZoneUnlockEffectiveBossIds =
         {
@@ -127,7 +172,7 @@ namespace NGUInjector.Managers
         {
             for (var i = 0; i < TitanZones.Length; i++)
             {
-                if (TitanGoldTargetActive(i))
+                if (TitanGoldTargetActive(i) || !TitanAutokillAvailable(i))
                     continue;
 
                 if (TitanSpawnWindowActive(i) && !TitanAutokillAchieved(i))
@@ -137,13 +182,97 @@ namespace NGUInjector.Managers
             return -1;
         }
 
-        internal static bool TitanAutokillAchieved(int bossId)
+        internal static int GetPreparingTitanGoldTarget()
         {
-            if (bossId < 5 || bossId >= TitanZones.Length)
+            if (Main.Character == null || !Main.Character.buttons.adventure.IsInteractable())
+                return -1;
+
+            for (var i = 0; i < TitanZones.Length; i++)
+            {
+                if (TitanGoldTargetPreparing(i))
+                    return i;
+            }
+
+            return -1;
+        }
+
+        internal static bool TitanGoldTargetPreparing(int bossId)
+        {
+            if (!Main.Character.buttons.adventure.IsInteractable()
+                || !TitanGoldTargetPending(bossId) || !TitanAutokillAvailable(bossId))
+                return false;
+
+            var remaining = TitanSpawnSecondsRemaining(bossId);
+            return remaining >= 0 && remaining <= 3;
+        }
+
+        internal static bool TitanAutokillAvailable(int bossId)
+        {
+            if (bossId < 0 || bossId >= TitanZones.Length)
                 return false;
 
             try
             {
+                var character = Main.Character;
+                if (character == null || !character.settings.autoKillTitans || character.bossID < 1
+                    || !IsZoneUnlocked(TitanZones[bossId]))
+                    return false;
+
+                // AdventureController.manageFight() gates, without its due-time or stat checks.
+                if (bossId == 3)
+                    return character.inventory.itemList.itemMaxxed[135];
+                if (bossId == 4)
+                    return character.adventure.boss5Kills >= 3;
+                if (bossId < 5)
+                    return true;
+
+                var field = character.adventure.GetType().GetField($"titan{bossId + 1}Unlocked",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                return field?.GetValue(character.adventure) is bool unlocked && unlocked && TitanVersion(bossId) > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        internal static float[] TitanAutokillRequirements(int bossId)
+        {
+            if (!TitanAutokillAvailable(bossId))
+                return null;
+
+            var version = bossId < 5 ? 0 : TitanVersion(bossId);
+            if (bossId >= 5 && version == 0)
+                return null;
+            var row = bossId < 5 ? bossId : 5 + (bossId - 5) * 4 + version - 1;
+            var requirements = new[] { TitanAutokillStats[row, 0], TitanAutokillStats[row, 1], TitanAutokillStats[row, 2] };
+            // Positive finite thresholds: advancing the bits converts native > into numeric >=.
+            if (bossId < 3)
+                for (var i = 0; i < 2; i++)
+                    requirements[i] = BitConverter.ToSingle(BitConverter.GetBytes(BitConverter.ToInt32(BitConverter.GetBytes(requirements[i]), 0) + 1), 0);
+            return requirements;
+        }
+
+        internal static bool TitanAutokillAchieved(int bossId)
+        {
+            if (!TitanAutokillAvailable(bossId))
+                return false;
+
+            try
+            {
+                var character = Main.Character;
+                // Native early-titan thresholds live in manageFight(), not separate achieved methods.
+                switch (bossId)
+                {
+                    case 0: return character.totalAdvAttack() > 3000f && character.totalAdvDefense() > 2500f;
+                    case 1: return character.totalAdvAttack() > 9000f && character.totalAdvDefense() > 7000f;
+                    case 2: return character.totalAdvAttack() > 25000f && character.totalAdvDefense() > 15000f;
+                    case 3: return character.totalAdvAttack() >= 800000f && character.totalAdvDefense() >= 400000f
+                                   && character.totalAdvHPRegen() >= 14000f;
+                    case 4: return character.totalAdvAttack() >= 13000000f && character.totalAdvDefense() >= 7000000f
+                                   && character.totalAdvHPRegen() >= 150000f;
+                }
+
                 var method = Main.Character.adventureController.GetType().GetMethod(
                     $"autokillTitan{bossId + 1}V{TitanVersion(bossId)}Achieved",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
@@ -159,7 +288,7 @@ namespace NGUInjector.Managers
         internal static int TitanVersion(int bossId)
         {
             if (bossId < 5 || bossId >= TitanZones.Length)
-                return 1;
+                return 0;
 
             try
             {
@@ -167,15 +296,15 @@ namespace NGUInjector.Managers
                     $"titan{bossId + 1}Version",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                 var value = field?.GetValue(Main.Character.adventure);
-                if (value is int version)
-                    return Math.Max(1, Math.Min(4, version));
+                if (value is int version && version >= 0 && version <= 3)
+                    return version + 1;
             }
             catch
             {
-                // Fall back to V1; missing version data should not break titan routing.
+                // Missing or invalid native version data must not select an easier autokill.
             }
 
-            return 1;
+            return 0;
         }
 
         internal static Enemy TitanEnemy(int bossId)
@@ -251,25 +380,50 @@ namespace NGUInjector.Managers
         private static bool CheckTitanSpawnTime(int bossId)
         {
             if (Main.Test) return true;
-            var controller = Main.Character.adventureController;
-            var adventure = Main.Character.adventure;
+            return Math.Abs(TitanSpawnSecondsRemaining(bossId)) < 20;
+        }
 
-            var spawnMethod = controller.GetType().GetMethod($"boss{bossId + 1}SpawnTime",
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            var spawnTimeObj = spawnMethod?.Invoke(controller, null);
-            if (spawnTimeObj == null)
-                return false;
-            var spawnTime = (float) spawnTimeObj;
+        internal static double TitanSpawnElapsedSeconds(int bossId)
+        {
+            if (bossId < 0 || bossId >= TitanZones.Length)
+                return double.NaN;
 
-            var spawnField = adventure.GetType().GetField($"boss{bossId + 1}Spawn",
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            var spawnObj = spawnField?.GetValue(adventure);
+            try
+            {
+                var adventure = Main.Character.adventure;
+                var field = adventure.GetType().GetField($"boss{bossId + 1}Spawn",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var timer = field?.GetValue(adventure) as PlayerTime;
+                var elapsed = timer == null ? double.NaN : timer.totalseconds;
+                return double.IsNaN(elapsed) || double.IsInfinity(elapsed) || elapsed < 0 ? double.NaN : elapsed;
+            }
+            catch
+            {
+                return double.NaN;
+            }
+        }
 
-            if (spawnObj == null)
-                return false;
+        internal static double TitanSpawnSecondsRemaining(int bossId)
+        {
+            var elapsed = TitanSpawnElapsedSeconds(bossId);
+            if (double.IsNaN(elapsed))
+                return double.NaN;
 
-            var spawn = (PlayerTime) spawnObj;
-            return Math.Abs(spawnTime - spawn.totalseconds) < 20;
+            try
+            {
+                var controller = Main.Character.adventureController;
+                var method = controller.GetType().GetMethod($"boss{bossId + 1}SpawnTime",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var value = method?.Invoke(controller, null);
+                if (!(value is float interval) || float.IsNaN(interval) || float.IsInfinity(interval) || interval <= 0)
+                    return double.NaN;
+
+                return interval - elapsed;
+            }
+            catch
+            {
+                return double.NaN;
+            }
         }
 
         internal static int GetMaxReachableZone(bool includingTitans)

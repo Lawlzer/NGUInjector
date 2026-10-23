@@ -17,25 +17,6 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return false;
         }
 
-        internal override bool Allocate()
-        {
-            var goldCost = Character.bloodMagicController.bloodMagics[Index].baseCost * Character.totalDiscount();
-            if (goldCost > Character.realGold && Character.bloodMagic.ritual[Index].progress <= 0)
-            {
-                if (Character.bloodMagic.ritual[Index].magic > 0)
-                {
-                    Character.bloodMagicController.bloodMagics[Index].removeAllMagic();
-                }
-
-                return true;
-            }
-
-            var cap = GetRitualCap(Index);
-            SetInput(Math.Min(cap, MaxAllocation));
-            Character.bloodMagicController.bloodMagics[Index].add();
-            return true;
-        }
-
         protected override bool CorrectResourceType()
         {
             return Type == ResourceType.Magic;

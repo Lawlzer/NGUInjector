@@ -17,7 +17,7 @@ const priorityOrders = [
   [[], ['NGU', 'RIT', 'WAN', 'TM']],
   [['NGU', 'WAN', 'TM', 'AUG', 'AT'], ['NGU', 'RIT', 'WAN', 'TM']],
   [['AT', 'NGU', 'WAN', 'TM', 'AUG'], ['RIT', 'NGU', 'WAN', 'TM']],
-  [['AT-3', 'AT-4', 'WAN', 'NGU', 'TM', 'AUG', 'AT'], ['WAN', 'RIT', 'NGU', 'TM']]
+  [['AT-3', 'AT-4', 'WAN', 'NGU', 'TM', 'AUG', 'AT'], ['RIT', 'NGU', 'TM']]
 ];
 
 describe('stage presets', () => {
@@ -86,10 +86,10 @@ describe('stage presets', () => {
     }
   });
 
-  it('puts Wandoos training before energy spillover and Wandoos before magic rituals', () => {
+  it('puts Wandoos AT before energy spillover without Wandoos magic during AT', () => {
     const row = applyStagePreset({ EnergyPriorities: ['TM'], MagicPriorities: ['RIT'] }, 7);
     expect(row.EnergyPriorities).toEqual(['AT-3', 'AT-4', 'WAN', 'NGU', 'TM', 'AUG', 'AT']);
-    expect(row.MagicPriorities).toEqual(['WAN', 'RIT', 'NGU', 'TM']);
+    expect(row.MagicPriorities).toEqual(['RIT', 'NGU', 'TM']);
     expect([row.EnergyFocus, row.MagicFocus, row.GearGoal]).toEqual([7, 3, 11]);
   });
 
@@ -126,7 +126,7 @@ describe('stage presets', () => {
   });
 
   it.each(allocations)('preserves lossless unknown fields, timing, completion and targets when selecting %s', label => {
-    const source = parseJson('{"Name":"Old","Percent":0.123456789012345678901,"DurationSeconds":321,"DurationUnit":"min","CompletionMode":1,"TargetAdvancedTrainingPower":"9223372036854775807","TargetAdvancedTrainingToughness":"9007199254740993","FightOnEntry":true,"BlackBarLookaheadSeconds":17,"EnergyNguWeights":[0,0,0,0,2,0,1,0,0],"MagicNguWeights":[1,0,0,0,0,0,0],"Future":9007199254740995,"Nested":{"values":[9223372036854775807,null,true]}}') as JsonObject;
+    const source = parseJson('{"Name":"Old","Percent":0.123456789012345678901,"DurationSeconds":321,"DurationUnit":"min","CompletionMode":1,"TargetAdvancedTrainingPower":"9223372036854775807","TargetAdvancedTrainingToughness":"9007199254740993","FightOnEntry":true,"BlackBarLookaheadSeconds":17,"Future":9007199254740995,"Nested":{"values":[9223372036854775807,null,true]}}') as JsonObject;
     const before = stringifyJson(source);
     const next = applyStagePreset(source, allocations.findIndex(entry => entry[0] === label));
     for (const key of Object.keys(source).filter(key => key !== 'Name')) {

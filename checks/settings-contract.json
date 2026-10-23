@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "sourceJson": "{\"_energyNguWeights\":[0,0,0,0,1,0,1,0,0],\"_magicNguWeights\":[1,0,0,0,0,0,0],\"_moneyPitThreshold\":1,\"Future\":{\"integer\":9007199254740993,\"decimal\":1.2300e+004,\"fraction\":0.12345678901234567890123456789},\"_customIronPillHistory\":[{\"CastAtUtc\":\"2026-10-22T01:02:03Z\",\"WaitSeconds\":900,\"Worth\":2,\"RebirthSeconds\":3600,\"FutureHistory\":{\"precise\":9007199254740993,\"token\":1.2300e+004}}]}",
+  "defaults": {
+    "_customAdventureMaxItopodDeaths": 3,
+    "_customAdventureRules": [],
+    "_customAutoExpEnabled": false,
+    "_customExpEnergyRatio": 5,
+    "_customExpMagicRatio": 1,
+    "_customExpEnergyPowerRatio": 5,
+    "_customExpEnergyCapRatio": 160000,
+    "_customExpEnergyBarsRatio": 4,
+    "_customExpMagicPowerRatio": 5,
+    "_customExpMagicCapRatio": 160000,
+    "_customExpMagicBarsRatio": 4,
+    "_manualAdventureLoadout": -1,
+    "_manualAdventureGearWeights": [0,0,0,0,0],
+    "_manualAdventureBeardWeights": [0,0,0,0,0,0,0],
+    "_manualAdventureDiggerWeights": [0,0,0,0,0,0,0,0,0,0,0,0],
+    "_manualTitanEnabled": false,
+    "_manualTitanZone": 16,
+    "_manualTitanRequireAT": true,
+    "_manualTitanLoadout": 1,
+    "_manualTitanMaxDeaths": 3
+  },
+  "patches": [
+    {"name":"finite double", "json":"{\"_moneyPitThreshold\":123.5}", "accept":true},
+    {"name":"int32 boundary", "json":"{\"_snipeZone\":2147483647}", "accept":true},
+    {"name":"fractional integer", "json":"{\"_snipeZone\":1.00000000000000000001}", "accept":false},
+    {"name":"underflow integer", "json":"{\"_snipeZone\":1e-999}", "accept":false},
+    {"name":"overflow integer", "json":"{\"_snipeZone\":2147483648}", "accept":false},
+    {"name":"wrong boolean", "json":"{\"_autoFight\":1}", "accept":false},
+    {"name":"backend provenance", "json":"{\"_customIronPillHistory\":[]}", "accept":false},
+    {"name":"future field read only", "json":"{\"Future\":0}", "accept":false},
+    {"name":"revision transport only", "json":"{\"__externalUiRevision\":\"\"}", "accept":false},
+    {"name":"EXP exact integer", "json":"{\"_customExpEnergyCapRatio\":1000000000}", "accept":true},
+    {"name":"EXP rounded fraction", "json":"{\"_customExpEnergyCapRatio\":1.00000000000000000001}", "accept":false},
+    {"name":"manual bounds", "json":"{\"_manualTitanLoadout\":-1,\"_manualTitanMaxDeaths\":1000}", "accept":true},
+    {"name":"invalid support length", "json":"{\"_manualAdventureGearWeights\":[1]}", "accept":false}
+  ]
+}

@@ -1,3 +1,5 @@
+#requires -Version 7.0
+
 param(
     [string]$GameFolder = "C:\Gaming\Launchers\Steam\Steam\steamapps\common\NGU IDLE",
     [string]$Configuration = "Release",
@@ -10,8 +12,10 @@ param(
     [switch]$ForceRestart,
     [int]$ShutdownWaitSeconds = 20,
     [int]$LaunchWaitSeconds = 15,
-    [int]$InjectWaitSeconds = 10,
-    [int]$InjectRetrySeconds = 60
+    [int]$InjectWaitSeconds = 30,
+    [int]$InjectRetrySeconds = 60,
+    [string]$InjectorDirectory = '',
+    [ValidatePattern('^$|^[A-Fa-f0-9]{64}$')][string]$ExpectedInjectorSha256 = ''
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,13 +50,7 @@ if ($ProbeMode -notin @("safe", "commands")) {
     throw "ProbeMode must be 'safe' or 'commands'."
 }
 
-# Close standalone controllers; the legacy WinForms UI closes with the game below.
-foreach ($ui in @(Get-Process -Name 'nguinjector-ui' -ErrorAction SilentlyContinue)) {
-    $ui | Stop-Process -Force
-    if (!$ui.WaitForExit([Math]::Max(1, $ShutdownWaitSeconds) * 1000)) {
-        throw "Injector UI process $($ui.Id) did not exit."
-    }
-}
+if ($InjectorDirectory -and !$NoBuild) { throw 'An explicit injector directory requires -NoBuild.' }
 
 if (!$NoBuild) {
     $msbuildArgs = @(
@@ -69,7 +67,7 @@ if (!$NoBuild) {
 }
 
 $DistDir = Join-Path $ProjectDir "bin\$Configuration\dist"
-$InjectorDir = Join-Path $DistDir "injector"
+$InjectorDir = if ($InjectorDirectory) { [IO.Path]::GetFullPath($InjectorDirectory) } else { Join-Path $DistDir "injector" }
 $SmiPath = Join-Path $InjectorDir "smi.exe"
 $DllPath = Join-Path $InjectorDir "NGUInjector.dll"
 
@@ -79,6 +77,16 @@ if (!(Test-Path -LiteralPath $SmiPath)) {
 
 if (!(Test-Path -LiteralPath $DllPath)) {
     throw "NGUInjector.dll not found: $DllPath"
+}
+if ($ExpectedInjectorSha256 -and (Get-FileHash -LiteralPath $DllPath -Algorithm SHA256).Hash -ine $ExpectedInjectorSha256) {
+    throw 'Injector hash mismatch; existing game was not closed.'
+}
+
+# Respect unsaved-editor close guards; never force-close the standalone UI.
+foreach ($ui in @(Get-Process -Name 'nguinjector-ui' -ErrorAction SilentlyContinue)) {
+    if (!$ui.CloseMainWindow() -or !$ui.WaitForExit([Math]::Max(1, $ShutdownWaitSeconds) * 1000)) {
+        throw "Injector UI process $($ui.Id) refused graceful close; preserve its drafts before restarting."
+    }
 }
 
 $existing = Get-Process -Name "NGUIdle" -ErrorAction SilentlyContinue
@@ -132,6 +140,11 @@ do {
         continue
     }
     $target = $targets[0]
+    if ($ExpectedInjectorSha256) {
+        $hash = (Get-FileHash -LiteralPath $DllPath -Algorithm SHA256).Hash
+        if ($hash -ine $ExpectedInjectorSha256) { throw 'Injector hash changed immediately before injection.' }
+        "Injecting exact artifact: $DllPath; SHA256=$hash; PID=$($target.Id)"
+    }
     $injectOutput = & $SmiPath inject -p NGUIdle -a $DllPath -n NGUInjector -c Loader -m Init 2>&1
     $injectExitCode = $LASTEXITCODE
     $lastInjectionText = ($injectOutput | Out-String).Trim()
@@ -170,6 +183,11 @@ if ($ExternalUi) {
         # Steam can replace the initial process after Mono injection succeeds.
         if ($target.Id -ne $injectedProcessId) {
             if (((Get-Date) - $target.StartTime).TotalSeconds -lt [Math]::Max(1, $InjectWaitSeconds)) { continue }
+            if ($ExpectedInjectorSha256) {
+                $hash = (Get-FileHash -LiteralPath $DllPath -Algorithm SHA256).Hash
+                if ($hash -ine $ExpectedInjectorSha256) { throw 'Injector hash changed before replacement-process injection.' }
+                "Injecting exact artifact into replacement PID=$($target.Id); SHA256=$hash"
+            }
             $injectOutput = & $SmiPath inject -p NGUIdle -a $DllPath -n NGUInjector -c Loader -m Init 2>&1
             $injectExitCode = $LASTEXITCODE
             $lastInjectionText = ($injectOutput | Out-String).Trim()
@@ -181,7 +199,7 @@ if ($ExternalUi) {
         }
         if (Test-Path -LiteralPath $runtimePath) {
             try {
-                $runtime = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json
+                $runtime = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json -AsHashtable
                 $fresh = [DateTimeOffset]::Now - [DateTimeOffset]::Parse($runtime.updatedAt)
                 if ([DateTimeOffset]::Parse($runtime.startedAt) -lt [DateTimeOffset]$target.StartTime) { continue }
                 if ($runtime.status -eq 'failed' -and $fresh.TotalSeconds -lt 5) { throw "Injector startup failed: $($runtime.startupError)" }
@@ -196,5 +214,5 @@ if ($ExternalUi) {
 }
 
 if ($StartUi) {
-    & (Join-Path $RepoRoot 'start-ui.ps1')
+    & (Join-Path $RepoRoot 'start-ui.ps1') -Build:(!$NoBuild)
 }

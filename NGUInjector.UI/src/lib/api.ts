@@ -4,7 +4,28 @@ import { LosslessNumber, isSafeNumber, parse, stringify } from 'lossless-json';
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | LosslessNumber | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
+export type PlanStageAction = 'skip' | 'set' | 'restart';
 export const planRevisionField = '__externalUiRevision';
+
+// Migration belongs to the backend. Retired overrides must never re-enter a saved definition.
+export function stripNguOverrides(value: JsonObject): JsonObject {
+  const next = { ...value };
+  let changed = ['NguGoal', 'EnergyNguWeights', 'MagicNguWeights'].some(key => Object.prototype.hasOwnProperty.call(value, key));
+  delete next.NguGoal;
+  delete next.EnergyNguWeights;
+  delete next.MagicNguWeights;
+  for (const key of ['Stages', 'LoadoutPresets', 'GoalPresets', 'Presets']) {
+    const rows = next[key];
+    if (!Array.isArray(rows)) continue;
+    const cleaned = rows.map(row => isObject(row) ? stripNguOverrides(row) : row);
+    if (cleaned.some((row, index) => row !== rows[index])) {
+      next[key] = cleaned;
+      changed = true;
+    }
+  }
+  // Stage editors use clean row identities to retain selection and local drafts.
+  return changed ? next : value;
+}
 
 export function parseJson(text: string): JsonValue {
   return parse(text, undefined, (token: string) => isSafeNumber(token) ? Number(token) : new LosslessNumber(token)) as JsonValue;
@@ -21,9 +42,9 @@ export function requirePlanRevision(plan: JsonObject): void {
   if (typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)) throw new Error('Plan requires a valid SHA-256 revision. Reload the plan before saving.');
 }
 
-// Settings and action args still use object IPC; a lossless scalar would otherwise become an object.
+// Action args still use object IPC; a lossless scalar would otherwise become an object.
 function requireObjectIpc(value: JsonValue): void {
-  if (value instanceof LosslessNumber) throw new Error('Object IPC cannot carry an exact unsafe numeric token. Keep unknown settings values unchanged; lossless numeric edits are supported in plan JSON only.');
+  if (value instanceof LosslessNumber) throw new Error('Object IPC cannot carry an exact unsafe numeric token.');
   if (Array.isArray(value)) value.forEach(requireObjectIpc);
   else if (isObject(value)) Object.values(value).forEach(requireObjectIpc);
 }
@@ -48,6 +69,7 @@ export interface NguiState {
   connected: boolean;
   protocol: JsonObject;
   settings: JsonObject;
+  settings_revision?: string;
   runtime: JsonObject;
   profiles: string[];
   plans: string[];
@@ -66,12 +88,32 @@ export function storeRuntimeDir(path: string): void {
 }
 
 export async function getState(runtimeDir?: string): Promise<NguiState> {
-  return invoke<NguiState>('get_ngui_state', { runtimeDir });
+  const state = await invoke<Omit<NguiState, 'settings'> & { settings_json: string }>('get_ngui_state', { runtimeDir });
+  if (typeof state.settings_json !== 'string') throw new Error('Settings read requires lossless JSON transport; update the native backend.');
+  const settings = parseJson(state.settings_json);
+  if (!isObject(settings)) throw new Error('Settings JSON must be an object.');
+  requireSettingsRevision(state.settings_revision);
+  return { ...state, settings };
 }
 
-export async function saveSettingsPatch(runtimeDir: string, patch: JsonObject): Promise<JsonObject> {
-  requireObjectIpc(patch);
-  return invoke<JsonObject>('save_settings_patch', { runtimeDir, patch });
+export function requireSettingsRevision(revision: unknown): asserts revision is string {
+  if (typeof revision !== 'string' || revision !== '' && !/^[a-f0-9]{64}$/.test(revision)) throw new Error('Settings require an explicit revision. Reload settings before saving.');
+}
+
+export function committedSettings(result: JsonObject, keys: string[] = []): { settings: JsonObject; revision: string } {
+  const data = isObject(result.data) ? result.data : isObject(result.result) && isObject(result.result.data) ? result.result.data : {};
+  if (result.success !== true || !isObject(data.settings) || keys.some(key => !Object.prototype.hasOwnProperty.call(data.settings, key)) || typeof data.revision !== 'string' || !/^[a-f0-9]{64}$/.test(data.revision)) throw new Error('Settings save did not return a committed snapshot and revision. Outcome may be unknown; edits retained.');
+  return { settings: data.settings, revision: data.revision };
+}
+
+export async function saveSettingsPatch(runtimeDir: string, patch: JsonObject, expectedRevision: string): Promise<JsonObject> {
+  requireSettingsRevision(expectedRevision);
+  const text = await invoke<string>('save_settings_patch_json', { runtimeDir, patchJson: stringifyJson(patch), expectedRevision });
+  if (typeof text !== 'string') throw new Error('Settings save requires lossless JSON transport; update the native backend.');
+  const result = parseJson(text);
+  if (!isObject(result)) throw new Error('Settings result must be an object.');
+  committedSettings(result, Object.keys(patch));
+  return result;
 }
 
 export async function readPlan(runtimeDir: string, name: string): Promise<JsonObject> {
@@ -81,16 +123,30 @@ export async function readPlan(runtimeDir: string, name: string): Promise<JsonOb
   if (!isObject(plan)) throw new Error('Plan JSON must be an object.');
   requirePlanRevision(plan);
   if (typeof plan.Version !== 'number' || !Number.isInteger(plan.Version) || plan.Version < 14) throw new Error('Legacy plan cannot be edited offline. Connect to a running protocol v3 injector and reload to apply normalized migrations.');
-  return plan;
+  return stripNguOverrides(plan);
 }
 
 export async function savePlan(runtimeDir: string, name: string, plan: JsonObject): Promise<JsonObject> {
   requirePlanRevision(plan);
-  return invoke<JsonObject>('save_plan', { runtimeDir, name, planJson: stringifyJson(plan) });
+  return invoke<JsonObject>('save_plan', { runtimeDir, name, planJson: stringifyJson(stripNguOverrides(plan)) });
+}
+
+export async function readPresetLibrary(runtimeDir: string): Promise<JsonObject> {
+  const text = await invoke<string>('read_preset_library', { runtimeDir });
+  if (typeof text !== 'string') throw new Error('read_preset_library must return a JSON string; update the native backend.');
+  const library = parseJson(text);
+  if (!isObject(library) || library.Version !== 1 || !Array.isArray(library.Presets)) throw new Error('Preset library must contain Version 1 and Presets.');
+  requirePlanRevision(library);
+  return stripNguOverrides(library);
+}
+
+export async function savePresetLibrary(runtimeDir: string, library: JsonObject): Promise<JsonObject> {
+  requirePlanRevision(library);
+  return invoke<JsonObject>('save_preset_library', { runtimeDir, libraryJson: stringifyJson(stripNguOverrides(library)) });
 }
 
 export async function createPlan(runtimeDir: string, requestedName: string, source?: JsonObject): Promise<string> {
-  const copy = source ? cloneObject(source) : undefined;
+  const copy = source ? stripNguOverrides(cloneObject(source)) : undefined;
   if (copy) delete copy[planRevisionField];
   return invoke<string>('create_plan', { runtimeDir, requestedName, sourceJson: copy ? stringifyJson(copy) : undefined });
 }

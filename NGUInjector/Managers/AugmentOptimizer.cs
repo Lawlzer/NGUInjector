@@ -9,8 +9,8 @@ namespace NGUInjector.Managers
         internal string Message { get; set; }
         internal int AugmentIndex { get; set; }
         internal bool UsesUpgrade { get; set; }
-        internal float EnergyToAugment { get; set; }
-        internal float EnergyToUpgrade { get; set; }
+        internal long EnergyToAugment { get; set; }
+        internal long EnergyToUpgrade { get; set; }
         internal double Seconds { get; set; }
         internal double ExpectedSeconds { get; set; }
         internal double ValuePerSecond { get; set; }
@@ -29,6 +29,45 @@ namespace NGUInjector.Managers
         private static readonly float[] AugmentRatios = {5 / 15f, 7 / 17f, 9 / 19f, 11 / 21f, 13 / 23f, 15 / 25f, 17 / 27f};
         private static readonly float[] UpgradeRatios = {10 / 15f, 10 / 17f, 10 / 19f, 10 / 21f, 10 / 23f, 10 / 25f, 10 / 27f};
         private const int DefaultExpectedSeconds = 300;
+
+        // Ordinary allocation is equal, capped sharing of the pool that actually reaches AUG.
+        // Standalone entry points below intentionally retain their tier-specific ratio preset.
+        internal static AugmentOptimizerResult OptimizeForActualBudget(int remainingSeconds, long availableEnergy,
+            int lookaheadSeconds, int augmentIndex = -1, bool useUpgrade = true)
+        {
+            if (remainingSeconds <= 0)
+                return Fail("No time remains for augments.");
+            if (availableEnergy <= 0)
+                return Fail("No energy is available for augments.");
+
+            var upgrades = useUpgrade && Main.Character.bossID >= 37;
+            if (augmentIndex >= 0)
+                return OptimizeTargetMode(augmentIndex, upgrades, remainingSeconds, true, availableEnergy,
+                    availableEnergy, lookaheadSeconds);
+
+            AugmentOptimizerResult best = null;
+            foreach (var paired in upgrades ? new[] {true, false} : new[] {false})
+            {
+                for (var i = 0; i < Main.Character.augmentsController.augments.Length; i++)
+                {
+                    var candidate = OptimizeTargetMode(i, paired, remainingSeconds, true, availableEnergy,
+                        availableEnergy, lookaheadSeconds);
+                    if (candidate.Success && (best == null || candidate.ValuePerSecond > best.ValuePerSecond))
+                        best = candidate;
+                }
+                if (best != null) return best;
+            }
+            return Fail("No affordable unlocked augment target found.");
+        }
+
+        private static double RequiredStartGold(int augmentIndex, bool useUpgrade)
+        {
+            var c = Main.Character;
+            var aug = c.augmentsController.augments[augmentIndex];
+            return (c.augments.augs[augmentIndex].augProgress <= 0 ? Math.Max(0d, aug.getAugCost()) : 0d)
+                   + (useUpgrade && c.augments.augs[augmentIndex].upgradeProgress <= 0
+                       ? Math.Max(0d, aug.getUpgradeCost()) : 0d);
+        }
 
         internal static AugmentOptimizerResult OptimizeBest(int remainingSeconds)
         {
@@ -108,28 +147,26 @@ namespace NGUInjector.Managers
                 if (useUpgrades && !CanSpendUpgradeNow(i))
                     continue;
 
+                if (RequiredStartGold(i, useUpgrades) > c.realGold)
+                    continue;
+
                 var augEnergy = useUpgrades ? maxAllocation * AugmentRatios[i] : maxAllocation;
                 var upgradeEnergy = useUpgrades ? maxAllocation * UpgradeRatios[i] : 0f;
-                if (augEnergy <= 0)
+                if (ToEnergyAmount(augEnergy) <= 0 || useUpgrades && ToEnergyAmount(upgradeEnergy) <= 0)
                     continue;
 
                 double seconds;
-                double remaining;
                 double barCost;
-                float progress;
                 if (useUpgrades)
                 {
-                    seconds = Math.Max(aug.UpgradeTimeLeftEnergyMax((long) upgradeEnergy), aug.AugTimeLeftEnergyMax((long) augEnergy));
-                    remaining = aug.UpgradeTimeLeftEnergy((long) upgradeEnergy);
+                    seconds = Math.Max(1d / Extensions.getUpgradeProgressPerTick(aug, ToEnergyAmount(upgradeEnergy)) / 50d,
+                        aug.AugTimeLeftEnergyMax(ToEnergyAmount(augEnergy)));
                     barCost = aug.getUpgradeCost();
-                    progress = aug.UpgradeProgress();
                 }
                 else
                 {
-                    seconds = aug.AugTimeLeftEnergyMax((long) augEnergy);
-                    remaining = aug.AugTimeLeftEnergy((long) augEnergy);
+                    seconds = aug.AugTimeLeftEnergyMax(ToEnergyAmount(augEnergy));
                     barCost = aug.getAugCost();
-                    progress = aug.AugProgress();
                 }
 
                 if (seconds < 0.01d)
@@ -139,9 +176,6 @@ namespace NGUInjector.Managers
                 var progressFraction = Math.Max(0.000001d, Math.Min(1d, secondsWorked / seconds));
                 var projectedGoldCost = Math.Max(0d, barCost) * Math.Max(0.000001d, secondsWorked / seconds);
                 var projectedGoldBudget = c.realGold + goldPerSecond * secondsWorked;
-
-                if (projectedGoldCost > projectedGoldBudget && (progress == 0f || remaining < 10d))
-                    continue;
 
                 var value = AugmentValue(i, useUpgrades);
                 var expectedValue = value * progressFraction;
@@ -168,10 +202,10 @@ namespace NGUInjector.Managers
                 return Fail("No affordable unlocked augment target found.");
             }
 
-            var augmentAllocation = useFullAllocation ? bestAugEnergy : CalculateAugCap(bestAugment * 2, bestAugEnergy, maxAllocation);
+            var augmentAllocation = useFullAllocation ? ToEnergyAmount(bestAugEnergy) : CalculateAugCap(bestAugment * 2, bestAugEnergy, maxAllocation);
             var upgradeAllocation = useUpgrades
-                ? (useFullAllocation ? bestUpgradeEnergy : CalculateAugCap(bestAugment * 2 + 1, bestUpgradeEnergy, maxAllocation))
-                : 0f;
+                ? (useFullAllocation ? ToEnergyAmount(bestUpgradeEnergy) : CalculateAugCap(bestAugment * 2 + 1, bestUpgradeEnergy, maxAllocation))
+                : 0L;
             return new AugmentOptimizerResult
             {
                 Success = true,
@@ -209,7 +243,8 @@ namespace NGUInjector.Managers
             return fallback;
         }
 
-        private static AugmentOptimizerResult OptimizeTargetMode(int augmentIndex, bool useUpgrades, int remainingSeconds, bool useFullAllocation, float maxAllocation)
+        private static AugmentOptimizerResult OptimizeTargetMode(int augmentIndex, bool useUpgrades, int remainingSeconds, bool useFullAllocation, float maxAllocation,
+            long? ordinaryBudget = null, int lookaheadSeconds = 0)
         {
             var c = Main.Character;
             if (!c.buttons.augmentation.interactable)
@@ -234,50 +269,59 @@ namespace NGUInjector.Managers
             if (useUpgrades && !CanSpendUpgradeNow(augmentIndex))
                 return Fail($"Pinned augment upgrade is not affordable now ({UpgradeGoldStatus(augmentIndex)})");
 
+            if (RequiredStartGold(augmentIndex, useUpgrades) > c.realGold)
+                return Fail("Pinned augment target cannot pay the full combined start price now.");
+
             var expectedSeconds = remainingSeconds > 0 ? remainingSeconds : DefaultExpectedSeconds;
             var goldPerSecond = Math.Max(0d, c.goldPerSecond());
             var energyPower = Math.Max(1d, c.totalEnergyPower());
             var augEnergy = useUpgrades ? maxAllocation * AugmentRatios[augmentIndex] : maxAllocation;
             var upgradeEnergy = useUpgrades ? maxAllocation * UpgradeRatios[augmentIndex] : 0f;
-            if (augEnergy <= 0)
+            long actualAugEnergy = ToEnergyAmount(augEnergy), actualUpgradeEnergy = ToEnergyAmount(upgradeEnergy);
+            if (ordinaryBudget.HasValue)
+            {
+                var indexes = useUpgrades ? new[] {augmentIndex * 2, augmentIndex * 2 + 1} : new[] {augmentIndex * 2};
+                var shares = BlackBarAllocator.ShareAugmentBudget(indexes, ordinaryBudget.Value, lookaheadSeconds);
+                actualAugEnergy = shares[0];
+                actualUpgradeEnergy = useUpgrades ? shares[1] : 0;
+                augEnergy = actualAugEnergy;
+                upgradeEnergy = actualUpgradeEnergy;
+                if (actualAugEnergy <= 0 || useUpgrades && actualUpgradeEnergy <= 0)
+                    return Fail("Pinned augment target has no runnable allocation under the ordinary policy.");
+            }
+            if (actualAugEnergy <= 0 || useUpgrades && actualUpgradeEnergy <= 0)
                 return Fail("No energy is available for pinned augment target.");
 
             double seconds;
-            double remaining;
             double barCost;
-            float progress;
             if (useUpgrades)
             {
-                seconds = Math.Max(aug.UpgradeTimeLeftEnergyMax((long) upgradeEnergy), aug.AugTimeLeftEnergyMax((long) augEnergy));
-                remaining = aug.UpgradeTimeLeftEnergy((long) upgradeEnergy);
+                seconds = Math.Max(1d / Extensions.getUpgradeProgressPerTick(aug, actualUpgradeEnergy) / 50d,
+                    aug.AugTimeLeftEnergyMax(actualAugEnergy));
                 barCost = aug.getUpgradeCost();
-                progress = aug.UpgradeProgress();
             }
             else
             {
-                seconds = aug.AugTimeLeftEnergyMax((long) augEnergy);
-                remaining = aug.AugTimeLeftEnergy((long) augEnergy);
+                seconds = aug.AugTimeLeftEnergyMax(actualAugEnergy);
                 barCost = aug.getAugCost();
-                progress = aug.AugProgress();
             }
 
             if (seconds < 0.01d)
                 seconds = 0.01d;
+            if (double.IsNaN(seconds) || double.IsInfinity(seconds))
+                return Fail("Pinned augment target cannot make progress with the available energy.");
 
             var secondsWorked = Math.Max(0.01d, Math.Min(seconds, expectedSeconds));
             var progressFraction = Math.Max(0.000001d, Math.Min(1d, secondsWorked / seconds));
             var projectedGoldCost = Math.Max(0d, barCost) * Math.Max(0.000001d, secondsWorked / seconds);
             var projectedGoldBudget = c.realGold + goldPerSecond * secondsWorked;
-            if (projectedGoldCost > projectedGoldBudget && (progress == 0f || remaining < 10d))
-                return Fail($"Pinned augment target is unaffordable: gold {projectedGoldBudget:0.###}/{projectedGoldCost:0.###}.");
-
             var value = AugmentValue(augmentIndex, useUpgrades);
             var expectedValue = value * progressFraction;
             var valuePerSecond = expectedValue / secondsWorked;
-            var augmentAllocation = useFullAllocation ? augEnergy : CalculateAugCap(augmentIndex * 2, augEnergy, maxAllocation);
+            var augmentAllocation = useFullAllocation ? actualAugEnergy : CalculateAugCap(augmentIndex * 2, augEnergy, maxAllocation);
             var upgradeAllocation = useUpgrades
-                ? (useFullAllocation ? upgradeEnergy : CalculateAugCap(augmentIndex * 2 + 1, upgradeEnergy, maxAllocation))
-                : 0f;
+                ? (useFullAllocation ? actualUpgradeEnergy : CalculateAugCap(augmentIndex * 2 + 1, upgradeEnergy, maxAllocation))
+                : 0L;
 
             return new AugmentOptimizerResult
             {
@@ -311,12 +355,14 @@ namespace NGUInjector.Managers
             if (aug.upgradeLocked() || aug.hitUpgradeTarget())
                 return false;
 
+            if (c.augments.augs[augmentIndex].upgradeProgress > 0)
+                return true;
+
             var requiredGold = Math.Max(0d, aug.getUpgradeCost());
             if (requiredGold <= 0d)
                 return true;
 
-            var goldAvailableSoon = c.realGold + Math.Max(0d, c.goldPerSecond()) * 2d;
-            return goldAvailableSoon >= requiredGold;
+            return c.realGold >= requiredGold;
         }
 
         private static string UpgradeGoldStatus(int augmentIndex)
@@ -326,8 +372,7 @@ namespace NGUInjector.Managers
                 return "upgrade gold check unavailable.";
 
             var requiredGold = Math.Max(0d, c.augmentsController.augments[augmentIndex].getUpgradeCost());
-            var goldAvailableSoon = c.realGold + Math.Max(0d, c.goldPerSecond()) * 2d;
-            return $"upgrade cost {requiredGold:0.###}, available now/soon {goldAvailableSoon:0.###}.";
+            return $"upgrade cost {requiredGold:0.###}, available now {c.realGold:0.###}.";
         }
 
         internal static AugmentOptimizerResult OptimizeAndAllocate(int remainingSeconds)
@@ -340,132 +385,7 @@ namespace NGUInjector.Managers
             var result = OptimizeBest(remainingSeconds, useFullAllocation);
             if (!result.Success)
                 return result;
-
-            try
-            {
-                var c = Main.Character;
-                c.removeMostEnergy();
-                if (settleMilliseconds > 0)
-                    System.Threading.Thread.Sleep(settleMilliseconds);
-
-                result = OptimizeBest(remainingSeconds, useFullAllocation);
-                if (!result.Success)
-                    return result;
-
-                SetInput(result.EnergyToAugment);
-                c.augmentsController.augments[result.AugmentIndex].addEnergyAug();
-                if (result.UsesUpgrade)
-                {
-                    if (settleMilliseconds > 0)
-                        System.Threading.Thread.Sleep(settleMilliseconds);
-
-                    if (!CanSpendUpgradeNow(result.AugmentIndex))
-                    {
-                        SetInput(result.EnergyToUpgrade);
-                        c.augmentsController.augments[result.AugmentIndex].addEnergyAug();
-                        c.augmentsController.updateMenu();
-                        result.Message = $"Allocated augment pair {result.AugmentIndex}: aug {result.EnergyToAugment + result.EnergyToUpgrade:0}, upgrade skipped after gold check ({UpgradeGoldStatus(result.AugmentIndex)})";
-                        result.UsesUpgrade = false;
-                        result.EnergyToAugment += result.EnergyToUpgrade;
-                        result.EnergyToUpgrade = 0;
-                        return result;
-                    }
-
-                    SetInput(result.EnergyToUpgrade);
-                    c.augmentsController.augments[result.AugmentIndex].addEnergyUpgrade();
-                }
-
-                c.augmentsController.updateMenu();
-                result.Message = $"Allocated augment pair {result.AugmentIndex}: aug {result.EnergyToAugment:0}, upgrade {result.EnergyToUpgrade:0}; projected gold {result.ProjectedGoldCost:0.###}/{result.ProjectedGoldBudget:0.###}.";
-                return result;
-            }
-            catch (Exception e)
-            {
-                return Fail(Main.LogError("Allocate best augment", e));
-            }
-        }
-
-        internal static AugmentOptimizerResult OptimizeAndAllocateTarget(int augmentIndex, bool useUpgrade, int remainingSeconds, bool useFullAllocation, int settleMilliseconds)
-        {
-            var result = OptimizeTarget(augmentIndex, useUpgrade, remainingSeconds, useFullAllocation);
-            if (!result.Success)
-                return result;
-
-            try
-            {
-                var c = Main.Character;
-                c.removeMostEnergy();
-                if (settleMilliseconds > 0)
-                    System.Threading.Thread.Sleep(settleMilliseconds);
-
-                result = OptimizeTarget(augmentIndex, result.UsesUpgrade, remainingSeconds, useFullAllocation);
-                if (!result.Success)
-                    return result;
-
-                SetInput(result.EnergyToAugment);
-                c.augmentsController.augments[result.AugmentIndex].addEnergyAug();
-                if (result.UsesUpgrade)
-                {
-                    if (settleMilliseconds > 0)
-                        System.Threading.Thread.Sleep(settleMilliseconds);
-
-                    SetInput(result.EnergyToUpgrade);
-                    c.augmentsController.augments[result.AugmentIndex].addEnergyUpgrade();
-                }
-
-                c.augmentsController.updateMenu();
-                result.Message = $"Allocated pinned augment pair {result.AugmentIndex}: aug {result.EnergyToAugment:0}, upgrade {result.EnergyToUpgrade:0}; projected gold {result.ProjectedGoldCost:0.###}/{result.ProjectedGoldBudget:0.###}.";
-                return result;
-            }
-            catch (Exception e)
-            {
-                return Fail(Main.LogError("Allocate pinned augment", e));
-            }
-        }
-
-        internal static AugmentOptimizerResult OptimizeAndAllocateIdle(int remainingSeconds)
-        {
-            try
-            {
-                var c = Main.Character;
-                var idleEnergy = (float) Math.Max(0, c.idleEnergy);
-                if (idleEnergy <= 0)
-                {
-                    return Fail("Augments skipped: no idle energy after Wandoos cap.");
-                }
-
-                var result = OptimizeBest(remainingSeconds, false, idleEnergy);
-                if (!result.Success)
-                    return result;
-
-                SetInput(result.EnergyToAugment);
-                c.augmentsController.augments[result.AugmentIndex].addEnergyAug();
-                if (result.UsesUpgrade)
-                {
-                    if (!CanSpendUpgradeNow(result.AugmentIndex))
-                    {
-                        SetInput(result.EnergyToUpgrade);
-                        c.augmentsController.augments[result.AugmentIndex].addEnergyAug();
-                        c.augmentsController.updateMenu();
-                        result.Message = $"Allocated Wandoos overflow to augment pair {result.AugmentIndex}: aug {result.EnergyToAugment + result.EnergyToUpgrade:0}, upgrade skipped after gold check.";
-                        result.UsesUpgrade = false;
-                        result.EnergyToAugment += result.EnergyToUpgrade;
-                        result.EnergyToUpgrade = 0;
-                        return result;
-                    }
-
-                    SetInput(result.EnergyToUpgrade);
-                    c.augmentsController.augments[result.AugmentIndex].addEnergyUpgrade();
-                }
-
-                c.augmentsController.updateMenu();
-                result.Message = $"Allocated Wandoos overflow to augment pair {result.AugmentIndex}: aug {result.EnergyToAugment:0}, upgrade {result.EnergyToUpgrade:0}.";
-                return result;
-            }
-            catch (Exception e)
-            {
-                return Fail(Main.LogError("Allocate idle augment overflow", e));
-            }
+            return Main.reference != null ? Main.reference.RequestAugmentAllocation(result) : Fail("Execution authority is unavailable.");
         }
 
         private static AugmentOptimizerResult Fail(string message)
@@ -487,7 +407,7 @@ namespace NGUInjector.Managers
                    - aug.baseBoost * aug.getUpgradeBoost() * Math.Pow(c.augments.augs[aug.id].augLevel + 1f, aug.augTierBonus());
         }
 
-        private static float CalculateAugCap(int index, float allocation, float maxUsableEnergy)
+        private static long CalculateAugCap(int index, float allocation, float maxUsableEnergy)
         {
             var calcA = CalculateAugCapCalc(500, index, allocation, maxUsableEnergy);
             if (calcA.PPT < 1)
@@ -511,7 +431,8 @@ namespace NGUInjector.Managers
             if (index % 2 == 0)
             {
                 augIndex = index / 2;
-                formula = 50000 * (1f + c.augments.augs[augIndex].augLevel + offset) / AugmentSpeedDivisor(augIndex, false);
+                formula = (c.settings.rebirthDifficulty == difficulty.sadistic ? 1d : 50000d)
+                          * (1d + c.augments.augs[augIndex].augLevel + offset) / AugmentSpeedDivisor(augIndex, false);
                 if (c.settings.rebirthDifficulty == difficulty.normal)
                     formula *= c.augmentsController.normalAugSpeedDividers[augIndex];
                 else if (c.settings.rebirthDifficulty == difficulty.evil)
@@ -522,7 +443,8 @@ namespace NGUInjector.Managers
             else
             {
                 augIndex = (index - 1) / 2;
-                formula = 50000 * (1f + c.augments.augs[augIndex].upgradeLevel + offset) / AugmentSpeedDivisor(augIndex, true);
+                formula = (c.settings.rebirthDifficulty == difficulty.sadistic ? 1d : 50000d)
+                          * (1d + c.augments.augs[augIndex].upgradeLevel + offset) / AugmentSpeedDivisor(augIndex, true);
                 if (c.settings.rebirthDifficulty == difficulty.normal)
                     formula *= c.augmentsController.normalUpgradeSpeedDividers[augIndex];
                 else if (c.settings.rebirthDifficulty == difficulty.evil)
@@ -539,7 +461,7 @@ namespace NGUInjector.Managers
             if (num + 1L <= long.MaxValue)
                 ++num;
             if (num > maxUsableEnergy)
-                num = (long) maxUsableEnergy;
+                num = ToEnergyAmount(maxUsableEnergy);
             if (num < 0L)
                 num = 0L;
 
@@ -566,14 +488,13 @@ namespace NGUInjector.Managers
             if (c.settings.rebirthDifficulty >= difficulty.sadistic)
                 divisor /= c.augmentsController.augments[augIndex].sadisticDivider();
 
-            return Math.Max(1d, divisor);
+            return divisor;
         }
 
-        private static void SetInput(float val)
+        private static long ToEnergyAmount(float amount)
         {
-            var c = Main.Character;
-            c.energyMagicPanel.energyRequested.text = val.ToString("0");
-            c.energyMagicPanel.validateInput();
+            return float.IsNaN(amount) || amount <= 0 ? 0 : amount >= long.MaxValue ? long.MaxValue : (long)amount;
         }
+
     }
 }

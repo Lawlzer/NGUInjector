@@ -15,6 +15,65 @@ namespace NGUInjector.Managers
         private float _fightTimer = 0;
         private string _enemyName;
         private int _lastBlockedZone = int.MinValue;
+        internal Action GoldFightCompleted;
+        private ExecutionGrant _routeGrant;
+        private Action _observeRoute;
+        private bool _callbackRejected;
+
+        private bool InvokeNative(Action invoke, Func<bool> effect, bool changesRoute = false, bool changesIdle = false, bool changesBeast = false)
+        {
+            var grant = _routeGrant;
+            var coordinator = Main.reference;
+            if (_callbackRejected || coordinator == null || !coordinator.VerifyExecutionPrerequisites(grant, ExecutionDomain.Route | ExecutionDomain.NativeSettings, () => true)) return false;
+            var zone = _character.adventure.zone; var idle = _character.adventure.autoattacking;
+            var beast = _character.adventure.beastModeOn;
+            var enemy = _character.adventureController.currentEnemy;
+            var rebirth = _character.stats.rebirthNumber;
+            var allocations = ResourceWriter.CaptureAllocations(_character);
+            var resources = ResourceWriter.CaptureResourceContext(_character);
+            invoke();
+            if (!ReferenceEquals(Main.reference, coordinator) || !ReferenceEquals(Main.Character, _character)
+                || _character.stats.rebirthNumber != rebirth || !coordinator.RouteResourcesStillOwned(allocations, resources))
+            { _callbackRejected = true; return false; }
+            var nativeDeath = !changesRoute && zone != -1 && _character.adventure.zone == -1 && _character.adventure.curHP <= 0;
+            if ((!changesRoute && !nativeDeath && _character.adventure.zone != zone)
+                || (!changesIdle && _character.adventure.autoattacking != idle)
+                || (!changesBeast && _character.adventure.beastModeOn != beast)
+                || !changesRoute && enemy != null && _character.adventureController.currentEnemy != null
+                    && !ReferenceEquals(enemy, _character.adventureController.currentEnemy) || !effect())
+            { _callbackRejected = true; return false; }
+            _observeRoute?.Invoke();
+            return coordinator.ValidateExecutionGrant(grant, ExecutionDomain.Route | ExecutionDomain.NativeSettings);
+        }
+
+        private bool InvokeMove(Action invoke) => InvokeNative(invoke, () => true);
+        private bool InvokeCast(Func<bool> invoke) { var cast = false; return InvokeNative(() => cast = invoke(), () => cast); }
+        private bool CastCharge() => InvokeCast(() => CombatHelpers.CastCharge(_routeGrant));
+        private bool CastParry() => InvokeCast(() => CombatHelpers.CastParry(_routeGrant));
+        private bool CastHeal() => InvokeCast(() => CombatHelpers.CastHeal(_routeGrant));
+        private bool CastHyperRegen() => InvokeCast(() => CombatHelpers.CastHyperRegen(_routeGrant));
+        private bool CastUltimateBuff() => InvokeCast(() => CombatHelpers.CastUltimateBuff(_routeGrant));
+        private bool CastMegaBuff() => InvokeCast(() => CombatHelpers.CastMegaBuff(_routeGrant));
+        private bool CastOffensiveBuff() => InvokeCast(() => CombatHelpers.CastOffensiveBuff(_routeGrant));
+        private bool CastBlock() => InvokeCast(() => CombatHelpers.CastBlock(_routeGrant));
+        private bool CastDefensiveBuff() => InvokeCast(() => CombatHelpers.CastDefensiveBuff(_routeGrant));
+        private bool CastParalyze() => InvokeCast(() => CombatHelpers.CastParalyze(_routeGrant));
+        private bool CastOhShit() => InvokeCast(() => CombatHelpers.CastOhShit(_routeGrant));
+
+        private bool ToggleIdle() { var expected = !_character.adventure.autoattacking;
+            return InvokeNative(() => _character.adventureController.idleAttackMove.setToggle(),
+                () => _character.adventure.autoattacking == expected, changesIdle: true); }
+
+        private bool ToggleBeast() { var expected = !_character.adventure.beastModeOn;
+            return InvokeNative(() => _character.adventureController.beastModeMove.doMove(),
+                () => _character.adventure.beastModeOn == expected, changesBeast: true); }
+
+        internal bool SetIdleAttack(bool enabled, ExecutionGrant grant, Action observe = null)
+        {
+            _routeGrant = grant; _observeRoute = observe ?? Main.reference.ObserveOrdinaryRoute; _callbackRejected = false;
+            if (!Main.reference.ValidateExecutionGrant(grant, ExecutionDomain.Route | ExecutionDomain.NativeSettings)) return false;
+            return _character.adventure.autoattacking == enabled || ToggleIdle();
+        }
 
         public CombatManager()
         {
@@ -48,8 +107,39 @@ namespace NGUInjector.Managers
             if (TryHandleWalderpSays())
                 return;
 
-            if (IsWalderpFight() && WalderpAttacksLeft() <= 1)
+            if (IsWalderpFight())
+            {
+                if (!TryGetEnemyAIValue(_character.adventureController.enemyAI, "inWaldoSaysLoop", out bool inWaldoSaysLoop)
+                    || inWaldoSaysLoop)
+                    return;
+
+                // Utility need not reserve attack cooldowns before prompts, but must not delay an active response.
+                if (!fastCombat && CombatBuffs())
+                    return;
+
+                // Recover before the prompt, leaving room for button refresh and automation ticks.
+                var budget = WalderpSecondsUntilPrompt() - .25f;
+                var globalCooldown = _character.inventory.itemList.redLiquidComplete ? .8f : 1f;
+                var cooldownSpeed = _pc.timeDilation(1f);
+                if (!(budget >= globalCooldown) || !(cooldownSpeed > 0) || float.IsInfinity(cooldownSpeed))
+                    return;
+
+                for (var attackID = 6; attackID >= 3; attackID--)
+                {
+                    float cooldown;
+                    switch (attackID)
+                    {
+                        case 6: cooldown = _character.ultimateAttackCooldown(); break;
+                        case 5: cooldown = _character.pierceAttackCooldown(); break;
+                        case 4: cooldown = _character.strongAttackCooldown(); break;
+                        default: cooldown = _character.regAttackCooldown(); break;
+                    }
+
+                    if (cooldown > 0 && cooldown / cooldownSpeed <= budget && TryWalderpAttack(attackID))
+                        return;
+                }
                 return;
+            }
 
             if (!fastCombat)
             {
@@ -65,54 +155,55 @@ namespace NGUInjector.Managers
             var ac = _character.adventureController;
             var ai = ac.currentEnemy.AI;
             var eai = ac.enemyAI;
+            var walderp = IsWalderpFight();
+            var lowHealth = GetHPPercentage() <= .5f;
 
-            if (ai == AI.charger && eai.GetPV<int>("chargeCooldown") >= 3)
+            if (OhShitUnlocked() && GetHPPercentage() < .5 && OhShitReady() && CastOhShit())
+                return true;
+
+            // Deny enemy turns before spending a short-lived defense, even with Block/Parry active.
+            if (CastParalyze())
+                return true;
+
+            // Block lasts three seconds. Reserve it for several hits or an imminent low-HP hit.
+            var damagingTurn = !walderp || TryGetEnemyAIValue(eai, "growCount", out int count) && count >= 0 && count % 6 != 1;
+            var attackInterval = ac.currentEnemy.attackRate;
+            var chargeCount = ai == AI.charger ? eai.GetPV<int>("chargeCooldown") : 0;
+            var rapidCount = ai == AI.rapid ? eai.GetPV<int>("rapidEffect") : 0;
+            // Special bosses bypass the ordinary first-strike and AI-counter routines.
+            var ordinaryEnemy = ac.currentEnemy.enemyType == enemyType.normal || ac.currentEnemy.enemyType == enemyType.boss;
+            if (ordinaryEnemy)
             {
-                if (ac.blockMove.button.IsInteractable() && !_pc.isParrying)
-                {
-                    ac.blockMove.doMove();
-                    return true;
-                }
+                if (TryGetEnemyAIValue(eai, "firstStrike", out bool firstStrike) && firstStrike)
+                    attackInterval *= 1.5f;
+                else if (ai == AI.rapid && TryGetEnemyAIValue(eai, "rapidMode", out bool rapidMode) && rapidMode)
+                    attackInterval *= .3f;
 
-                if (ac.parryMove.button.IsInteractable() && !_pc.isBlocking && !_pc.isParrying)
-                {
-                    ac.parryMove.doMove();
+                if (ai == AI.charger)
+                    damagingTurn = chargeCount < 2 || chargeCount >= 4;
+                else if (ai == AI.rapid)
+                    damagingTurn = rapidCount < 4 || rapidCount >= 7;
+            }
+            var paralysisRemaining = TryGetEnemyAIValue(eai, "paralyzeTime", out float paralyzeTime) ? Math.Max(0, paralyzeTime) : 0;
+            var hitDue = damagingTurn
+                && TryGetEnemyAIValue(eai, "enemyAttackTimer", out float elapsed)
+                && attackInterval > 0 && !float.IsInfinity(attackInterval)
+                && elapsed >= 0 && !float.IsInfinity(elapsed)
+                && paralysisRemaining + attackInterval - elapsed <= (_character.inventory.itemList.redLiquidComplete ? .8f : 1f) + .25f;
+            var manyAttacks = ac.currentEnemy.attackRate > 0 && ac.currentEnemy.attackRate <= 1f
+                || ordinaryEnemy && ai == AI.rapid && rapidCount >= 7 && rapidCount < 13;
+            var strongAttack = ai == AI.charger && chargeCount >= 4 || ai == AI.exploder;
+
+            if (hitDue && !BlockActive() && !ParryActive())
+            {
+                if ((manyAttacks || lowHealth) && CastBlock())
                     return true;
-                }
+
+                if ((strongAttack || lowHealth) && CastParry())
+                    return true;
             }
 
-            if (ai == AI.rapid && eai.GetPV<int>("rapidEffect") >= 6)
-            {
-                if (ac.blockMove.button.IsInteractable())
-                {
-                    ac.blockMove.doMove();
-                    return true;
-                }
-            }
-
-            if (ai == AI.exploder && ac.currentEnemy.attackRate - eai.GetPV<float>("enemyAttackTimer") < 1)
-            {
-                if (ac.blockMove.button.IsInteractable())
-                {
-                    ac.blockMove.doMove();
-                    return true;
-                }
-            }
-
-            if (ac.currentEnemy.curHP / ac.currentEnemy.maxHP < .2)
-            {
-                return false;
-            }
-
-            if (OhShitUnlocked() && GetHPPercentage() < .5 && OhShitReady())
-            {
-                if (CastOhShit())
-                {
-                    return true;
-                }
-            }
-
-            if (GetHPPercentage() < .5)
+            if (GetHPPercentage() <= .85f)
             {
                 if (CastHeal())
                 {
@@ -120,13 +211,16 @@ namespace NGUInjector.Managers
                 }
             }
 
-            if (GetHPPercentage() < .5 && !HealReady())
+            if (GetHPPercentage() < .85f)
             {
                 if (CastHyperRegen())
                 {
                     return true;
                 }
             }
+
+            if (!walderp && ac.currentEnemy.curHP / ac.currentEnemy.maxHP < .2)
+                return false;
 
             if (CastMegaBuff())
             {
@@ -135,38 +229,15 @@ namespace NGUInjector.Managers
 
             if (!MegaBuffUnlocked())
             {
-                if (!DefenseBuffActive())
-                {
-                    if (CastUltimateBuff())
-                    {
-                        return true;
-                    }
-                }
+                if (CastUltimateBuff())
+                    return true;
 
-                if (UltimateBuffActive())
-                {
-                    if (CastOffensiveBuff())
-                        return true;
-                }
+                if (CastOffensiveBuff())
+                    return true;
 
-                if (GetHPPercentage() < .75 && !UltimateBuffActive() && !BlockActive())
+                if (!UltimateBuffActive() && !DefenseBuffActive())
                 {
                     if (CastDefensiveBuff())
-                        return true;
-                }
-            }
-
-            if (ai != AI.charger && ai != AI.rapid && ai != AI.exploder && (Settings.MoreBlockParry || !UltimateBuffActive() && !DefenseBuffActive()))
-            {
-                if (!ParryActive() && !BlockActive())
-                {
-                    if (CastBlock())
-                        return true;
-                }
-
-                if (!BlockActive() && !ParryActive())
-                {
-                    if (CastParry())
                         return true;
                 }
             }
@@ -175,10 +246,6 @@ namespace NGUInjector.Managers
             {
                 return false;
             }
-
-            if (CastParalyze(ai, eai))
-                return true;
-
 
             if (ChargeReady())
             {
@@ -198,95 +265,45 @@ namespace NGUInjector.Managers
             return false;
         }
 
-        //private bool ParalyzeBoss()
-        //{
-        //    var ac = _character.adventureController;
-        //    var ai = ac.currentEnemy.AI;
-        //    var eai = ac.enemyAI;
-
-        //    if (!ac.paralyzeMove.button.IsInteractable())
-        //        return false;
-
-        //    if (GetHPPercentage() < .2)
-        //        return false;
-
-        //    if (UltimateBuffActive())
-        //        return false;
-
-        //    if (ai == AI.charger && eai.GetPV<int>("chargeCooldown") == 0)
-        //    {
-        //        ac.paralyzeMove.doMove();
-        //        return true;
-        //    }
-
-        //    if (ai == AI.rapid && eai.GetPV<int>("rapidEffect") < 5)
-        //    {
-        //        ac.paralyzeMove.doMove();
-        //        return true;
-        //    }
-
-        //    if (ai != AI.rapid && ai != AI.charger)
-        //    {
-        //        ac.paralyzeMove.doMove();
-        //        return true;
-        //    }
-
-        //    return false;
-        //}
-
         private void CombatAttacks(bool fastCombat)
         {
             var ac = _character.adventureController;
-
-            if (IsWalderpFight())
-            {
-                WalderpCombatAttacks();
-                return;
-            }
 
             if (ac.ultimateAttackMove.button.IsInteractable())
             {
                 if (fastCombat)
                 {
-                    ac.ultimateAttackMove.doMove();
+                    if (!InvokeMove(() => ac.ultimateAttackMove.doMove())) return;
                 }
 
                 if (ChargeActive())
                 {
-                    ac.ultimateAttackMove.doMove();
+                    if (!InvokeMove(() => ac.ultimateAttackMove.doMove())) return;
                 }
 
                 if (GetChargeCooldown() > .45)
                 {
-                    ac.ultimateAttackMove.doMove();
+                    if (!InvokeMove(() => ac.ultimateAttackMove.doMove())) return;
                 }
             }
 
             if (ac.pierceMove.button.IsInteractable())
             {
-                ac.pierceMove.doMove();
+                InvokeMove(() => ac.pierceMove.doMove());
                 return;
             }
 
             if (ac.strongAttackMove.button.IsInteractable())
             {
-                ac.strongAttackMove.doMove();
+                InvokeMove(() => ac.strongAttackMove.doMove());
                 return;
             }
 
             if (ac.regularAttackMove.button.IsInteractable())
             {
-                ac.regularAttackMove.doMove();
+                InvokeMove(() => ac.regularAttackMove.doMove());
                 return;
             }
-        }
-
-        private void WalderpCombatAttacks()
-        {
-            if (WalderpAttacksLeft() <= 1)
-                return;
-
-            TryWalderpAttack(3);
         }
 
         private bool TryHandleWalderpSays()
@@ -295,23 +312,22 @@ namespace NGUInjector.Managers
                 return false;
 
             var eai = _character.adventureController.enemyAI;
-            if (!TryGetEnemyAIValue(eai, "inWaldoSaysLoop", out bool inWaldoSaysLoop) || !inWaldoSaysLoop)
+            if (!TryGetEnemyAIValue(eai, "inWaldoSaysLoop", out bool inWaldoSaysLoop))
+                return false;
+
+            if (!inWaldoSaysLoop)
                 return false;
 
             if (!TryGetEnemyAIValue(eai, "waldoAttackID", out int waldoAttackID) || waldoAttackID < 3 || waldoAttackID > 6)
-                return true;
+                return false;
 
             if (!TryGetEnemyAIValue(eai, "waldoSays", out bool waldoSays))
-                return true;
+                return false;
 
             if (waldoSays)
-            {
-                TryWalderpAttack(waldoAttackID);
-                return true;
-            }
+                return TryWalderpAttack(waldoAttackID);
 
-            TryWalderpAlternateAttack(waldoAttackID);
-            return true;
+            return TryWalderpAlternateAttack(waldoAttackID);
         }
 
         private bool TryWalderpAlternateAttack(int forbiddenAttackID)
@@ -336,26 +352,22 @@ namespace NGUInjector.Managers
                     if (!ac.regularAttackMove.button.IsInteractable())
                         return false;
 
-                    ac.regularAttackMove.doMove();
-                    return true;
+                    return InvokeMove(() => ac.regularAttackMove.doMove());
                 case 4:
                     if (!ac.strongAttackMove.button.IsInteractable())
                         return false;
 
-                    ac.strongAttackMove.doMove();
-                    return true;
+                    return InvokeMove(() => ac.strongAttackMove.doMove());
                 case 5:
                     if (!ac.pierceMove.button.IsInteractable())
                         return false;
 
-                    ac.pierceMove.doMove();
-                    return true;
+                    return InvokeMove(() => ac.pierceMove.doMove());
                 case 6:
                     if (!ac.ultimateAttackMove.button.IsInteractable())
                         return false;
 
-                    ac.ultimateAttackMove.doMove();
-                    return true;
+                    return InvokeMove(() => ac.ultimateAttackMove.doMove());
                 default:
                     return false;
             }
@@ -374,13 +386,25 @@ namespace NGUInjector.Managers
                    || enemy.enemyType == enemyType.bigBoss5;
         }
 
-        private int WalderpAttacksLeft()
+        private float WalderpSecondsUntilPrompt()
         {
-            var eai = _character.adventureController.enemyAI;
-            if (!TryGetEnemyAIValue(eai, "growCount", out int growCount))
-                return int.MaxValue;
+            var ac = _character.adventureController;
+            if (!TryGetEnemyAIValue(ac.enemyAI, "growCount", out int growCount) || growCount < 0
+                || !TryGetEnemyAIValue(ac.enemyAI, "enemyAttackTimer", out float elapsed))
+                return 0;
 
-            return 5 - ((growCount + 4) % 6);
+            var attackRate = ac.currentEnemy.attackRate;
+            if (!(attackRate > 0) || float.IsInfinity(attackRate)
+                || float.IsNaN(elapsed) || float.IsInfinity(elapsed))
+                return 0;
+
+            // growCount advances on enemy turns; prompts occur at 2, 8, 14, ... .
+            var turns = (8 - growCount % 6) % 6;
+            if (turns == 0)
+                turns = 6;
+
+            var seconds = turns * attackRate - Math.Max(0, Math.Min(elapsed, attackRate));
+            return float.IsInfinity(seconds) ? 0 : seconds;
         }
 
         private static bool TryGetEnemyAIValue<T>(EnemyAI eai, string fieldName, out T value)
@@ -413,13 +437,21 @@ namespace NGUInjector.Managers
             return ZoneHelpers.IsZoneUnlocked(zone);
         }
 
-        internal bool MoveToZone(int zone)
+        internal bool MoveToZone(int zone, ExecutionGrant grant = null, Action observe = null)
+        {
+            _routeGrant = grant ?? Main.reference.ObserveRouteGrant(zone);
+            _observeRoute = observe ?? Main.reference.ObserveOrdinaryRoute;
+            _callbackRejected = false;
+            return MoveWithinRoute(zone);
+        }
+
+        private bool MoveWithinRoute(int zone)
         {
             if (!CanRouteToZone(zone))
                 return false;
 
-            _character.adventureController.zoneSelector.changeZone(zone);
-            return true;
+            return InvokeNative(() => _character.adventureController.zoneSelector.changeZone(zone),
+                () => _character.adventure.zone == zone, changesRoute: true);
         }
 
         private bool CanRouteToZone(int zone)
@@ -437,9 +469,6 @@ namespace NGUInjector.Managers
                 Log($"Adventure route blocked: {ZoneName(zone)} ({zone}) requires effective boss {required}, current effective boss {ZoneHelpers.CurrentRebirthEffectiveBossId()}.");
             }
 
-            if (_character.adventure.zone != -1)
-                _character.adventureController.zoneSelector.changeZone(-1);
-
             return false;
         }
 
@@ -455,8 +484,10 @@ namespace NGUInjector.Managers
             }
         }
 
-        internal void IdleZone(int zone, bool bossOnly, bool recoverHealth)
+        internal void IdleZone(int zone, bool bossOnly, bool recoverHealth, ExecutionGrant grant = null, Action observe = null)
         {
+            _routeGrant = grant ?? Main.reference.ObserveRouteGrant(zone); _observeRoute = observe ?? Main.reference.ObserveOrdinaryRoute; _callbackRejected = false;
+            if (!Main.reference.ValidateExecutionGrant(_routeGrant, ExecutionDomain.Route | ExecutionDomain.NativeSettings)) return;
             if (!CanRouteToZone(zone))
                 return;
 
@@ -464,21 +495,21 @@ namespace NGUInjector.Managers
             {
                 if (_character.adventure.zone != -1)
                 {
-                    MoveToZone(-1);
+                    MoveWithinRoute(-1);
                     return;
                 }
             }
             //Enable idle attack if its not on
             if (!_character.adventure.autoattacking && !IsWalderpFight())
             {
-                _character.adventureController.idleAttackMove.setToggle();
+                if (!ToggleIdle()) return;
                 return;
             }
 
             //Turn on beast mode depending
             if (_character.adventure.beastModeOn && !Settings.BeastMode && _character.adventureController.beastModeMove.button.interactable)
             {
-                _character.adventureController.beastModeMove.doMove();
+                if (!ToggleBeast()) return;
                 return;
             }
 
@@ -486,7 +517,7 @@ namespace NGUInjector.Managers
             if (!_character.adventure.beastModeOn && Settings.BeastMode &&
                 _character.adventureController.beastModeMove.button.interactable)
             {
-                _character.adventureController.beastModeMove.doMove();
+                if (!ToggleBeast()) return;
                 return;
             }
 
@@ -496,13 +527,13 @@ namespace NGUInjector.Managers
             //Check if we're in not in the right zone and not in safe zone, if not move to safe zone first
             if (_character.adventure.zone != zone && _character.adventure.zone != -1)
             {
-                MoveToZone(-1);
+                MoveWithinRoute(-1);
             }
 
             //Move to the zone
             if (_character.adventure.zone != zone)
             {
-                MoveToZone(zone);
+                MoveWithinRoute(zone);
                 return;
             }
 
@@ -512,8 +543,8 @@ namespace NGUInjector.Managers
 
             if (zone < 1000 && Settings.BlacklistedBosses.Contains(_character.adventureController.currentEnemy.spriteID))
             {
-                MoveToZone(-1);
-                MoveToZone(zone);
+                MoveWithinRoute(-1);
+                MoveWithinRoute(zone);
                 return;
             }
 
@@ -525,7 +556,7 @@ namespace NGUInjector.Managers
                 //If its not a boss, move back to safe zone. Next loop will put us back in the right zone.
                 if (ec != enemyType.boss && !ec.ToString().Contains("bigBoss"))
                 {
-                    MoveToZone(-1);
+                    MoveWithinRoute(-1);
                 }
             }
 
@@ -533,7 +564,7 @@ namespace NGUInjector.Managers
             {
                 if (_character.adventure.autoattacking)
                 {
-                    _character.adventureController.idleAttackMove.setToggle();
+                    if (!ToggleIdle()) return;
                     return;
                 }
 
@@ -542,8 +573,11 @@ namespace NGUInjector.Managers
             }
         }
 
-        internal void ManualZone(int zone, bool bossOnly, bool recoverHealth, bool precastBuffs, bool fastCombat, bool beastMode, bool preserveIdleMode = false)
+        internal void ManualZone(int zone, bool bossOnly, bool recoverHealth, bool precastBuffs, bool fastCombat, bool beastMode, bool preserveIdleMode = false,
+            ExecutionGrant grant = null, Action observe = null)
         {
+            _routeGrant = grant ?? Main.reference.ObserveRouteGrant(zone); _observeRoute = observe ?? Main.reference.ObserveOrdinaryRoute; _callbackRejected = false;
+            if (!Main.reference.ValidateExecutionGrant(_routeGrant, ExecutionDomain.Route | ExecutionDomain.NativeSettings)) return;
             if (!CanRouteToZone(zone))
                 return;
 
@@ -551,7 +585,7 @@ namespace NGUInjector.Managers
             {
                 if (_character.adventure.zone != -1)
                 {
-                    MoveToZone(-1);
+                    MoveWithinRoute(-1);
                     return;
                 }
             }
@@ -561,7 +595,7 @@ namespace NGUInjector.Managers
             {
                 if (!_character.adventure.autoattacking && !IsWalderpFight())
                 {
-                    _character.adventureController.idleAttackMove.setToggle();
+                    if (!ToggleIdle()) return;
                     return;
                 }
             }
@@ -569,7 +603,7 @@ namespace NGUInjector.Managers
             {
                 if (_character.training.attackTraining[1] == 0 && !IsWalderpFight())
                 {
-                    _character.adventureController.idleAttackMove.setToggle();
+                    if (!ToggleIdle()) return;
                     return;
                 }
             }
@@ -577,33 +611,33 @@ namespace NGUInjector.Managers
             {
                 if (_character.training.attackTraining[1] > 0)
                 {
-                    _character.adventureController.idleAttackMove.setToggle();
+                    if (!ToggleIdle()) return;
                 }
             }
 
             if (_character.adventure.beastModeOn && !beastMode && _character.adventureController.beastModeMove.button.interactable)
             {
-                _character.adventureController.beastModeMove.doMove();
+                if (!ToggleBeast()) return;
                 return;
             }
 
             if (!_character.adventure.beastModeOn && beastMode &&
                 _character.adventureController.beastModeMove.button.interactable)
             {
-                _character.adventureController.beastModeMove.doMove();
+                if (!ToggleBeast()) return;
                 return;
             }
 
             //Move back to safe zone if we're in the wrong zone
             if (_character.adventure.zone != zone && _character.adventure.zone != -1)
             {
-                MoveToZone(-1);
+                MoveWithinRoute(-1);
             }
 
             //If precast buffs is true and we have no enemy and charge isn't active, go back to safe zone
             if (precastBuffs && !ChargeActive() && _character.adventureController.currentEnemy == null)
             {
-                MoveToZone(-1);
+                MoveWithinRoute(-1);
             }
 
             //If we're in safe zone, recover health if needed. Also precast buffs
@@ -648,7 +682,7 @@ namespace NGUInjector.Managers
             if (_character.adventure.zone != zone)
             {
                 _isFighting = false;
-                MoveToZone(zone);
+                MoveWithinRoute(zone);
                 return;
             }
 
@@ -662,19 +696,16 @@ namespace NGUInjector.Managers
                         LogCombat($"{_enemyName} killed in {_fightTimer:00.0}s");
 
                     _fightTimer = 0;
-                    if (LoadoutManager.CurrentLock == LockType.Gold)
+                    if (preserveIdleMode && GoldFightCompleted != null)
                     {
-                        Log("Gold Loadout kill done. Turning off setting and swapping gear");
-                        Settings.DoGoldSwap = false;
-                        LoadoutManager.RestoreGear();
-                        LoadoutManager.ReleaseLock();
-                        MoveToZone(-1);
+                        if (Main.reference.ValidateExecutionGrant(_routeGrant, ExecutionDomain.Route | ExecutionDomain.NativeSettings))
+                            GoldFightCompleted();
+                        Main.reference.ValidateExecutionGrant(_routeGrant, ExecutionDomain.Route | ExecutionDomain.NativeSettings);
                         return;
                     }
-
                     if (precastBuffs || recoverHealth && !HasFullHP())
                     {
-                        MoveToZone(-1);
+                        MoveWithinRoute(-1);
                         return;
                     }
                 }
@@ -689,7 +720,7 @@ namespace NGUInjector.Managers
                         }
                     }
 
-                    if (!ParryActive())
+                    if (!ParryActive() && (fastCombat || GetHPPercentage() <= .5f))
                     {
                         if (CastParry())
                         {
@@ -725,8 +756,8 @@ namespace NGUInjector.Managers
 
             if (zone < 1000 && Settings.BlacklistedBosses.Contains(_character.adventureController.currentEnemy.spriteID))
             {
-                MoveToZone(-1);
-                MoveToZone(zone);
+                MoveWithinRoute(-1);
+                MoveWithinRoute(zone);
                 return;
             }
 
@@ -736,15 +767,15 @@ namespace NGUInjector.Managers
                 var ec = _character.adventureController.currentEnemy.enemyType;
                 if (ec != enemyType.boss && !ec.ToString().Contains("bigBoss"))
                 {
-                    MoveToZone(-1);
-                    MoveToZone(zone);
+                    MoveWithinRoute(-1);
+                    MoveWithinRoute(zone);
                     return;
                 }
             }
 
             if (IsWalderpFight() && _character.adventure.autoattacking)
             {
-                _character.adventureController.idleAttackMove.setToggle();
+                if (!ToggleIdle()) return;
                 return;
             }
 

@@ -1,72 +1,65 @@
 ﻿using System;
+using System.Linq;
 using System.Reflection;
 
 namespace NGUInjector.Managers
 {
     internal static class MoneyPitManager
     {
-        private const double MinimumMoneyPitGold = 200000.0;
+
+        internal sealed class RewardPreview
+        {
+            internal int Tier, Roll;
+            internal bool AllEquipment;
+            internal int[] RandomSlots = new int[0];
+            internal bool LevelsEquipment => AllEquipment || RandomSlots.Length > 0;
+            public override string ToString() => $"tier {Tier}, roll {Roll}" + (AllEquipment
+                ? " (all equipped items level up)" : RandomSlots.Length > 0
+                    ? $" (level slots {string.Join(",", RandomSlots)})" : " (no equipped-item levels)");
+        }
+
+        internal static RewardPreview PreviewReward()
+        {
+            var preview = new RewardPreview();
+            var exponent = Math.Log10(Main.Character.realGold);
+            if (double.IsNaN(exponent) || exponent < 5) return preview;
+            var bounds = new[] { 7, 9, 11, 13, 15, 18, 21, 24, 27, 30, 50, 55, 60, 65, 70 };
+            preview.Tier = 1 + bounds.Count(bound => exponent >= bound);
+            if (Main.Character.wishes.wishes[4].level < 1) preview.Tier = Math.Min(11, preview.Tier);
+            var upper = preview.Tier >= 12 ? 6 : preview.Tier >= 7 ? 13 : preview.Tier == 6 ? 12
+                : preview.Tier == 5 ? 11 : preview.Tier >= 2 ? 10 : 9;
+
+            // Native tiers reset Unity RNG from pitState. Never advance the saved pit or caller's RNG.
+            var previous = UnityEngine.Random.state;
+            try
+            {
+                UnityEngine.Random.state = Main.Character.pit.pitState;
+                preview.Roll = UnityEngine.Random.Range(1, upper);
+                preview.AllEquipment = preview.Tier >= 12 ? preview.Roll == 2 : preview.Tier >= 5 && preview.Roll == 4;
+                if (preview.Tier >= 2 && preview.Tier <= 4 && preview.Roll == 4)
+                {
+                    preview.RandomSlots = new int[preview.Tier == 4 ? 2 : 1];
+                    for (var i = 0; i < preview.RandomSlots.Length; i++)
+                    {
+                        var slot = UnityEngine.Random.Range(Math.Min(-5, -5 - Main.Controller.accessorySpaces()), 0);
+                        preview.RandomSlots[i] = slot >= -5 ? slot : slot >= -10 ? 10000 + (-slot - 6) : -1;
+                        // randomLevelUp also draws for cosmetic text, including between the two hits.
+                        UnityEngine.Random.Range(0, 100);
+                    }
+                }
+                return preview;
+            }
+            finally { UnityEngine.Random.state = previous; }
+        }
 
         internal static string CheckMoneyPit()
         {
-            if (Main.Character.pit.pitTime.totalseconds < Main.Character.pitController.currentPitTime())
-                return "Money Pit skipped: pit is not ready.";
-
-            var effectiveThreshold = Math.Max(MinimumMoneyPitGold, Main.Settings.MoneyPitThreshold);
-            if (Main.Character.realGold <= effectiveThreshold)
-                return $"Money Pit skipped: gold is below {effectiveThreshold:0}.";
-
-            DiggerManager.UpdateCheapestDigger(true);
-            DiggerManager.UpgradeCheapestDigger(true, effectiveThreshold);
-
-            if (Main.Character.realGold <= effectiveThreshold)
-                return $"Money Pit skipped: digger upgrades used gold down to the {effectiveThreshold:0} reserve.";
-
-            string result;
-            if (Main.Character.realGold >= 1e50 && Main.Settings.ManageMagic && Main.Character.wishes.wishes[4].level > 0)
-            {
-                Main.Character.removeMostMagic();
-                for (var i = Main.Character.bloodMagic.ritual.Count - 1; i >= 0; i--)
-                {
-                    Main.Character.bloodMagicController.bloodMagics[i].cap();
-                }
-
-                if (!DiggerManager.CanSwap())
-                    return "Money Pit skipped: digger swap is locked.";
-                DiggerManager.SaveDiggers();
-                DiggerManager.EquipDiggers(new[] {10});
-                result = DoMoneyPit();
-                DiggerManager.RestoreDiggers();
-            }
-            else
-            {
-                result = DoMoneyPit();
-            }
-
-            return result;
-        }
-
-        private static string DoMoneyPit()
-        {
-            var controller = Main.Character.pitController;
-            typeof(PitController).GetMethod("engage", BindingFlags.NonPublic | BindingFlags.Instance)
-                ?.Invoke(controller, null);
-
-            var result = $"Money Pit Reward: {controller.pitText.text}";
-            Main.LogPitSpin(result);
-            return result;
+            return Main.reference?.RequestMoneyPit() ?? "Money Pit waiting for execution authority.";
         }
 
         internal static string DoDailySpin()
         {
-            if (Main.Character.daily.spinTime.totalseconds < Main.Character.dailyController.targetSpinTime())
-                return "Daily Spin skipped: spin is not ready.";
-
-            Main.Character.dailyController.startNoBullshitSpin();
-            var result = Main.Character.dailyController.outcomeText.text;
-            var message = $"Daily Spin Reward: {result}";
-            Main.LogPitSpin(message);
-            return message;
+            return Main.reference?.RequestDailySpin() ?? "Daily Spin waiting for execution authority.";
         }
     }
 }

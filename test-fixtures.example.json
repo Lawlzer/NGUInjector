@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "name": "24hour-ready",
+      "path": "C:\\Users\\Kevin\\AppData\\LocalLow\\NGU Industries\\NGU Idle\\24hour-ready-test.txt",
+      "scenario": "Scheduled NGU allocation, loadout, beards, diggers, and configured overflow",
+      "plan": "24hr",
+      "stage": 3
+    }
+  ]
+}

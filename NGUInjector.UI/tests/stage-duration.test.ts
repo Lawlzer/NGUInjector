@@ -1,17 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { parseJson, stringifyJson, type JsonObject } from '../src/lib/api';
-import { INT_MAX, longTarget, reorderStages } from '../src/lib/model';
-import { changeDurationUnit, changeStageCompletion, changeTimingMode, durationAmount, durationUnit, editDuration, editDurationText, formatStageDuration, formatTime, parseDurationText, scheduleTiming, timingMode } from '../src/lib/stage-duration';
+import { INT_MAX, reorderStages } from '../src/lib/model';
+import { changeStageTiming, editDurationText, editFlexWeight, fixedSeconds, formatStageDuration, formatTime, parseDurationText, scheduleTiming } from '../src/lib/stage-duration';
 
+const rows = (value: JsonObject) => value.Stages as JsonObject[];
 const plan = (): JsonObject => ({
-  Version: 15, StageDurationSeconds: 1200, StageLoopStartIndex: 1,
-  Stages: [{ Name: 'A', Percent: .2 }, { Name: 'B', Percent: .3 }, { Name: 'C', Percent: .5 }]
+  Version: 17, StageDurationSeconds: 1200, StageLoopStartIndex: 1,
+  Stages: [{ CompletionMode: 1, DurationSeconds: 999 }, { DurationSeconds: 100 }, { Percent: 35 }, { Percent: 50 }, { Percent: 15 }, { DurationSeconds: 100 }]
 });
 
-describe('inline durations and plan timing mode', () => {
+describe('stage duration text', () => {
   it.each([
     ['25m', 25, 'min'], ['35min', 35, 'min'], ['2H', 2, 'h'], [' 1.5 h ', 1.5, 'h'], ['90s', 90, 's'], ['30%', 30, '%'], ['.5m', .5, 'min'], ['12', 12, 'min']
-  ])('parses %s without interpreting it as a different unit', (text, amount, unit) => {
+  ])('parses %s without changing units', (text, amount, unit) => {
     expect(parseDurationText(text as string, 'min')).toEqual({ amount, unit });
   });
 
@@ -19,286 +20,206 @@ describe('inline durations and plan timing mode', () => {
     expect(() => parseDurationText(text, 'min')).toThrow('Enter a duration');
   });
 
-  it.each([[25 * 60, '25m'], [2 * 3600, '2h'], [90, '90s'], [0, '0s']])('formats %s seconds as %s', (seconds, label) => {
+  it.each([[1500, '25m'], [7200, '2h'], [90, '90s'], [0, '0s']])('formats %s seconds as %s', (seconds, label) => {
     expect(formatTime(seconds as number)).toBe(label);
   });
 
-  it('supports an opener, timed training, and two-hour sustain without sharing their budgets', () => {
-    let next = changeTimingMode(plan(), 'time');
+  it('edits independent fixed durations without expanding the budget', () => {
+    let next: JsonObject = { ...plan(), Stages: [{ Percent: 35 }, { Percent: 50 }, { Percent: 15 }] };
     for (const [index, text] of ['25m', '35m', '2h'].entries()) next = editDurationText(next, index, text);
-    expect(scheduleTiming(next).seconds).toEqual([1500, 2100, 7200]);
-    expect(scheduleTiming(next).total).toBe(10800);
-    expect(rows(next).map((_, index) => formatStageDuration(next, index))).toEqual(['25m', '35m', '2h']);
-    expect(timingMode(next)).toBe('time');
-    expect(plan().StageDurationSeconds).toBe(1200);
+    expect(scheduleTiming(next)).toEqual({ seconds: [1500, 2100, 7200], shares: [0, 0, 0], total: 1200, remaining: 0 });
+    expect(rows(next).map((_, i) => formatStageDuration(next, i))).toEqual(['25m', '35m', '2h']);
+    expect(next.StageDurationSeconds).toBe(1200);
   });
 
-  it('uses the displayed suffix for bare numbers even if saved unit metadata differs', () => {
-    const source: JsonObject = { ...plan(), Stages: [{ DurationSeconds: 7200, DurationUnit: 'min', Percent: 1 }] };
+  it('uses the displayed suffix for bare numbers, not saved unit metadata', () => {
+    const source = { ...plan(), Stages: [{ DurationSeconds: 7200, DurationUnit: 'min', Percent: 1 }] };
     expect(formatStageDuration(source, 0)).toBe('2h');
     expect(scheduleTiming(editDurationText(source, 0, '3')).seconds).toEqual([10800]);
     expect(scheduleTiming(editDurationText(source, 0, '90s')).seconds).toEqual([90]);
   });
 
-  it('rebalances percentage edits without changing the total or unrelated data', () => {
-    const source = plan();
-    const next = editDurationText(source, 0, '25%');
-    expect(scheduleTiming(next).seconds).toEqual([300, 337, 563]);
-    expect(formatStageDuration(next, 0)).toBe('25%');
-    expect(next.StageDurationSeconds).toBe(1200);
-    expect(next.StageLoopStartIndex).toBe(1);
-    expect(rows(next)[1]).toBe(rows(source)[1]);
-  });
-
-  it('shows legacy mixed timing accurately and converts every timed stage together', () => {
-    const source: JsonObject = { ...plan(), Stages: [{ DurationSeconds: 200, Percent: 1 }, { Percent: 1 }, { Percent: 3 }, { CompletionMode: 1, DurationSeconds: INT_MAX }] };
-    const before = stringifyJson(source);
-    expect(timingMode(source)).toBe('mixed');
-    const time = changeTimingMode(source, 'time');
-    const percent = changeTimingMode(time, '%');
-    expect(timingMode(time)).toBe('time');
-    expect(timingMode(percent)).toBe('%');
-    expect(scheduleTiming(time).seconds).toEqual([200, 250, 750, null]);
-    expect(scheduleTiming(percent).seconds).toEqual([200, 250, 750, null]);
-    expect(rows(time)[3]).toBe(rows(source)[3]);
-    expect(rows(percent)[3]).toBe(rows(source)[3]);
-    expect(stringifyJson(source)).toBe(before);
-  });
-
-  it('preserves effective seconds across whole-plan conversions including sequential legacy rounding', () => {
-    for (const sequential of [false, true]) for (const budget of [3, 5, 7, 31, 1200]) {
-      const source: JsonObject = { ...plan(), StageDurationSeconds: budget, Stages: [...(sequential ? [{ CompletionMode: 1, Name: 'AT', TargetAdvancedTrainingPower: '9223372036854775807' }] : []), { Percent: 1 }, { Percent: 1 }, { Percent: 1 }] };
-      const seconds = scheduleTiming(source).seconds;
-      const time = changeTimingMode(source, 'time');
-      expect(scheduleTiming(time).seconds).toEqual(seconds);
-      expect(scheduleTiming(changeTimingMode(time, '%')).seconds).toEqual(seconds);
-    }
-  });
-
-  it('does not migrate old plans when requesting fixed timing', () => {
-    const source = { ...plan(), Version: 14 };
-    expect(() => changeTimingMode(source, 'time')).toThrow('version 15');
-    expect(timingMode(source)).toBe('%');
-  });
-
-  it('rejects fractional seconds and overflow in inline fixed times', () => {
-    expect(() => editDurationText(plan(), 0, '.001m')).toThrow('whole seconds');
-    expect(() => editDurationText(plan(), 0, '2147483648s')).toThrow('Fixed duration seconds');
-    expect(() => editDurationText(plan(), 0, '0m')).toThrow('Duration');
-    expect(() => editDurationText(plan(), 0, '101%')).toThrow('% share');
-  });
-
-  it('lets a zero-second legacy share be replaced with a positive fixed time', () => {
-    const source: JsonObject = { ...plan(), StageDurationSeconds: 1, Stages: [{ Percent: 1 }, { Percent: 1 }] };
-    expect(scheduleTiming(source).seconds).toEqual([0, 1]);
-    const next = editDurationText(source, 0, '25m');
-    expect(scheduleTiming(next).seconds).toEqual([1500, 1]);
-    expect(next.StageDurationSeconds).toBe(1501);
-    expect(() => changeTimingMode(source, 'time')).toThrow('Fixed duration seconds');
-  });
-
-  it('gives returning AT stages their own time without stealing another stage budget', () => {
-    const source: JsonObject = { ...plan(), Stages: [{ CompletionMode: 1, Percent: 100, Future: 'keep', TargetAdvancedTrainingPower: '9223372036854775807' }, { Percent: 1 }] };
-    const next = changeStageCompletion(source, 0, 0);
-    expect(scheduleTiming(next).seconds).toEqual([300, 1200]);
-    expect(next.StageDurationSeconds).toBe(1500);
-    expect(rows(next)[0]).toMatchObject({ CompletionMode: 0, DurationSeconds: 300, Future: 'keep', TargetAdvancedTrainingPower: '9223372036854775807' });
-    expect(rows(next)[1]).toBe(rows(source)[1]);
-    expect(rows(source)[0].CompletionMode).toBe(1);
-  });
-
-  it('restores a dormant timed duration without reading an unused all-fixed reference budget', () => {
-    const source = parseJson('{"Version":15,"StageDurationSeconds":9007199254740993,"Stages":[{"CompletionMode":1,"DurationSeconds":90},{"DurationSeconds":3600}]}') as JsonObject;
-    const next = changeStageCompletion(source, 0, 0);
-    expect(scheduleTiming(next).seconds).toEqual([90, 3600]);
-    expect(stringifyJson(next)).toContain('"StageDurationSeconds":9007199254740993');
-  });
-
-  it('keeps dormant timing and exact targets when changing a timed stage to AT completion', () => {
-    const source: JsonObject = { ...plan(), Stages: [{ DurationSeconds: 900, DurationUnit: 'min', TargetAdvancedTrainingPower: '9223372036854775807' }, { Percent: 100 }] };
-    const next = changeStageCompletion(source, 0, 1);
-    expect(rows(next)[0]).toEqual({ ...rows(source)[0], CompletionMode: 1 });
-    expect(scheduleTiming(next).seconds).toEqual([null, 1200]);
-    expect(changeStageCompletion(next, 0, 1)).toBe(next);
-    expect(() => changeStageCompletion(source, 99, 0)).toThrow('no longer exists');
-    expect(() => changeStageCompletion(source, 0, 5)).toThrow('Unknown completion');
-  });
-});
-const rows = (value: JsonObject) => value.Stages as JsonObject[];
-
-describe('schedule durations', () => {
-  it('normalizes old sub-one weights without rewriting the source', () => {
+  it.each(['0s', '0m', '.001m', '1.5s', '2147483648s'])('rejects invalid fixed time %s without mutation', text => {
     const source = plan();
     const before = stringifyJson(source);
-    expect(scheduleTiming(source).seconds).toEqual([240, 360, 600]);
-    expect(durationAmount(source, 0)).toBe(20);
+    expect(() => editDurationText(source, 1, text)).toThrow();
     expect(stringifyJson(source)).toBe(before);
-    expect(scheduleTiming({ ...source, Stages: rows(source).map(row => ({ ...row, Percent: Number(row.Percent) * 1000 })) }).seconds).toEqual([240, 360, 600]);
-  });
-
-  it('leaves version 14 plans weighted even if unknown future duration fields exist', () => {
-    const source: JsonObject = { ...plan(), Version: 14, Stages: [{ Percent: 1, DurationSeconds: 50 }, { Percent: 1 }] };
-    expect(scheduleTiming(source).seconds).toEqual([600, 600]);
-    expect(() => changeDurationUnit(source, 0, 's')).toThrow('version 15');
-  });
-
-  it('subtracts fixed times before distributing the remaining budget', () => {
-    const source: JsonObject = { ...plan(), Stages: [{ Percent: 99, DurationSeconds: 200 }, { Percent: .25 }, { Percent: .75 }] };
-    expect(scheduleTiming(source)).toEqual({ seconds: [200, 250, 750], shares: [0, 25, 75], total: 1200, remaining: 1000 });
-  });
-
-  it('converts to fixed and back without changing any effective times', () => {
-    const source = plan();
-    const fixed = changeDurationUnit(source, 1, 'min');
-    expect(rows(fixed)[1]).toEqual({ Name: 'B', Percent: .3, DurationSeconds: 360, DurationUnit: 'min' });
-    expect(durationAmount(fixed, 1)).toBe(6);
-    expect(scheduleTiming(fixed).seconds).toEqual([expect.closeTo(240, 10), 360, 600]);
-    const percent = changeDurationUnit(fixed, 1, '%');
-    expect(scheduleTiming(percent).seconds).toEqual(scheduleTiming(source).seconds);
-    expect(Number(rows(percent)[1].Percent)).toBeCloseTo(.3, 14);
-    expect(percent.StageLoopStartIndex).toBe(1);
-  });
-
-  it('changes fixed units as display metadata only', () => {
-    const source = changeDurationUnit(plan(), 0, 's');
-    const next = changeDurationUnit(source, 0, 'h');
-    expect(rows(next)[0].DurationSeconds).toBe(240);
-    expect(rows(next)[0].Percent).toBe(.2);
-    expect(durationUnit(next, rows(next)[0])).toBe('h');
-    expect(durationAmount(next, 0)).toBe(240 / 3600);
-    expect(scheduleTiming(next)).toEqual(scheduleTiming(source));
-  });
-
-  it('adjusts reference length by fixed edit delta, keeping every other duration stable', () => {
-    const source = changeDurationUnit(plan(), 0, 'min');
-    const next = editDuration(source, 0, 4.5);
-    expect(next.StageDurationSeconds).toBe(1230);
-    expect(scheduleTiming(next).seconds).toEqual([270, expect.closeTo(360, 10), 600]);
-    expect(rows(next)[0].Percent).toBe(.2);
-  });
-
-  it('redistributes percentage edits within the remaining pool only', () => {
-    const source = changeDurationUnit(plan(), 0, 's');
-    const next = editDuration(source, 1, 50);
-    expect(scheduleTiming(next).seconds).toEqual([240, 480, 480]);
-    expect(next.StageDurationSeconds).toBe(1200);
-    expect(rows(next)[2]).toBe(rows(source)[2]);
-  });
-
-  it('uses all-fixed sum without silently replacing stale reference metadata', () => {
-    const source = { ...plan(), StageDurationSeconds: 9999, Stages: [{ DurationSeconds: 60, Percent: .2 }, { DurationSeconds: 120, Percent: .8 }] };
-    expect(scheduleTiming(source).total).toBe(180);
-    expect(changeDurationUnit(source, 0, 'min').StageDurationSeconds).toBe(9999);
-    const edited = editDuration(source, 0, 90);
-    expect(edited.StageDurationSeconds).toBe(9999);
-    expect(scheduleTiming(edited).seconds).toEqual([90, 120]);
-    const converted = changeDurationUnit(source, 0, '%');
-    expect(converted.StageDurationSeconds).toBe(180);
-    expect(scheduleTiming(converted).seconds).toEqual([60, 120]);
-  });
-
-  it('keeps source metadata, unknown numeric tokens and Int64 targets exact', () => {
-    const source = parseJson('{"Version":15,"StageDurationSeconds":1200,"__externalUiRevision":"revision","Future":9007199254740993,"Stages":[{"Percent":1,"CompletionMode":1,"TargetAdvancedTrainingPower":"9223372036854775807","Future":9007199254740995},{"Percent":1}]}') as JsonObject;
-    const next = changeDurationUnit(source, 1, 'min');
-    expect(stringifyJson(next)).toContain('"Future":9007199254740993');
-    expect(stringifyJson(next)).toContain('"Future":9007199254740995');
-    expect(rows(next)[0].TargetAdvancedTrainingPower).toBe('9223372036854775807');
-    expect(rows(next)[0].CompletionMode).toBe(1);
-    expect(next.__externalUiRevision).toBe('revision');
-    expect(longTarget(rows(next)[0].TargetAdvancedTrainingPower, 'AT target', true)).toBe('9223372036854775807');
-  });
-
-  it('does not round or replace an unused lossless all-fixed reference budget', () => {
-    const source = parseJson('{"Version":15,"StageDurationSeconds":9007199254740993,"Stages":[{"DurationSeconds":60,"Percent":0.2}]}') as JsonObject;
-    expect(scheduleTiming(source).total).toBe(60);
-    expect(stringifyJson(changeDurationUnit(source, 0, 'min'))).toContain('"StageDurationSeconds":9007199254740993');
-    expect(stringifyJson(editDuration(source, 0, 90))).toContain('"StageDurationSeconds":9007199254740993');
-  });
-
-  it('retains loop boundary and timing identity through reordering', () => {
-    const source = changeDurationUnit(plan(), 1, 'min');
-    const next = reorderStages(source, 1, 2);
-    expect(next.StageLoopStartIndex).toBe(2);
-    expect(scheduleTiming(next).seconds).toEqual([expect.closeTo(240, 10), 600, 360]);
-    expect(reorderStages(next, 2, null).StageLoopStartIndex).toBe(-1);
-  });
-
-  it.each([0, -1, NaN, Infinity, INT_MAX + 1, 1.5])('rejects invalid fixed seconds %s', amount => {
-    expect(() => editDuration(changeDurationUnit(plan(), 0, 's'), 0, amount)).toThrow();
   });
 
   it('accepts fractional units only when they resolve to whole positive seconds', () => {
-    const source = changeDurationUnit(plan(), 0, 'min');
-    expect(rows(editDuration(source, 0, 1 / 60))[0].DurationSeconds).toBe(1);
-    expect(() => editDuration(source, 0, .001)).toThrow('whole seconds');
-    expect(() => changeDurationUnit({ ...plan(), StageDurationSeconds: 1 }, 0, 's')).toThrow('Fixed duration seconds');
+    expect(rows(editDurationText(plan(), 1, '.5m'))[1].DurationSeconds).toBe(30);
+    expect(rows(editDurationText(plan(), 1, `${1 / 60}min`))[1].DurationSeconds).toBe(1);
   });
 
-  it('enforces Int32 seconds and reference-budget limits', () => {
-    const source = { Version: 15, StageDurationSeconds: INT_MAX, Stages: [{ DurationSeconds: INT_MAX, Percent: 1 }] };
-    expect(rows(editDuration(source, 0, INT_MAX))[0].DurationSeconds).toBe(INT_MAX);
-    expect(() => editDuration({ ...source, Stages: [{ DurationSeconds: INT_MAX - 2, Percent: 1 }, { Percent: 1 }] }, 0, INT_MAX - 1)).toThrow('Schedule length');
-    expect(() => scheduleTiming({ ...plan(), Stages: [{ DurationSeconds: 1200 }, { Percent: 1 }] })).toThrow('positive time');
+  it('applies fixed text directly without an overflowing intermediate default duration', () => {
+    const source: JsonObject = { ...plan(), StageDurationSeconds: 0, Stages: [{ DurationSeconds: INT_MAX - 1 }, { Percent: 100 }] };
+    const next = editDurationText(source, 1, '1s');
+    expect(scheduleTiming(next).seconds).toEqual([INT_MAX - 1, 1]);
+    expect(next.StageDurationSeconds).toBe(0);
+  });
+});
+
+describe('default stage budgets', () => {
+  it('reserves every fixed stage including the tail before distributing raw 35/50/15 weights', () => {
+    const source = plan();
+    const before = stringifyJson(source);
+    expect(scheduleTiming(source)).toEqual({ seconds: [null, 100, 350, 500, 150, 100], shares: [0, 0, 35, 50, 15, 0], total: 1200, remaining: 1000 });
+    expect(formatStageDuration(source, 2)).toBe('35%');
+    expect(stringifyJson(source)).toBe(before);
   });
 
-  it('rejects impossible percentage shares without zeroing other stages', () => {
-    expect(() => editDuration(plan(), 0, 100)).toThrow('positive share');
-    expect(() => editDuration({ ...plan(), Stages: [{ Percent: .2 }] }, 0, 50)).toThrow('only % share');
-    expect(() => editDuration(plan(), 0, 0)).toThrow('Duration');
+  it('uses a positive enabled time trigger even for all-fixed plans', () => {
+    const source = { ...plan(), TimeTriggerEnabled: true, TimeTriggerSeconds: 800 };
+    expect(scheduleTiming(source)).toMatchObject({ total: 800, remaining: 600, seconds: [null, 100, 210, 300, 90, 100] });
+    for (const patch of [{ TimeTriggerEnabled: false }, { TimeTriggerSeconds: 0 }]) expect(scheduleTiming({ ...source, ...patch }).total).toBe(1200);
+    expect(scheduleTiming({ ...source, Stages: [{ DurationSeconds: 40 }] })).toEqual({ seconds: [40], shares: [0], total: 800, remaining: 760 });
   });
 
-  it('excludes dormant AT weights and fixed durations from the timed pool', () => {
-    const source: JsonObject = { Version: 15, StageDurationSeconds: 600, Stages: [{ CompletionMode: 1, Percent: 50, DurationSeconds: INT_MAX }, { Percent: 50 }] };
-    expect(scheduleTiming(source)).toEqual({ seconds: [null, 600], shares: [0, 100], total: 600, remaining: 600 });
-    const fixed = changeDurationUnit(source, 1, 's');
-    expect(rows(fixed)[1].DurationSeconds).toBe(600);
-    expect(scheduleTiming(fixed).seconds).toEqual([null, 600]);
-    expect(rows(fixed)[0]).toBe(rows(source)[0]);
-    expect(() => changeDurationUnit(source, 0, 's')).toThrow('AT target');
-    expect(() => editDuration(source, 0, 10)).toThrow('AT target');
-    expect(() => durationAmount(source, 0)).toThrow('AT target');
+  it.each([0, 100, 200])('allows a %s-second budget and fixed overruns with zero flexible time', horizon => {
+    const source = { ...plan(), StageDurationSeconds: horizon };
+    expect(scheduleTiming(source)).toMatchObject({ seconds: [null, 100, 0, 0, 0, 100], total: horizon, remaining: 0 });
+    const next = editDurationText(source, 1, '25m');
+    expect(next.StageDurationSeconds).toBe(horizon);
+    expect(scheduleTiming(next).seconds).toEqual([null, 1500, 0, 0, 0, 100]);
   });
 
-  it('uses legacy C# midpoint-to-even and minimum-one rounding for sequential percent stages', () => {
-    const source: JsonObject = { Version: 14, StageDurationSeconds: 5, Stages: [{ CompletionMode: 1 }, { Percent: .5 }, { Percent: .5 }] };
-    expect(scheduleTiming(source).seconds).toEqual([null, 2, 2]);
-    expect(scheduleTiming({ ...source, StageDurationSeconds: 7 }).seconds).toEqual([null, 4, 4]);
-    expect(scheduleTiming({ ...source, StageDurationSeconds: 1 }).seconds).toEqual([null, 1, 1]);
+  it('keeps both saved budgets unchanged on fixed edits and reallocates only flex', () => {
+    const source = { ...plan(), TimeTriggerEnabled: true, TimeTriggerSeconds: 1000 };
+    const next = editDurationText(source, 1, '200s');
+    expect(next.StageDurationSeconds).toBe(1200);
+    expect(next.TimeTriggerSeconds).toBe(1000);
+    expect(scheduleTiming(next).seconds).toEqual([null, 200, 245, 350, 105, 100]);
+    rows(next).forEach((row, i) => { if (i !== 1) expect(row).toBe(rows(source)[i]); });
   });
 
-  it('preserves rounded legacy effective times when converting to fixed and back', () => {
-    const source: JsonObject = { Version: 15, StageDurationSeconds: 5, Stages: [{ CompletionMode: 1 }, { Percent: 1 }, { Percent: 1 }] };
-    const fixed = changeDurationUnit(source, 1, 's');
-    expect(scheduleTiming(fixed).seconds).toEqual([null, 2, 2]);
-    expect(rows(fixed)[1].DurationSeconds).toBe(2);
-    expect(scheduleTiming(changeDurationUnit(fixed, 1, '%')).seconds).toEqual([null, 2, 2]);
+  it('conserves cumulative integer budgets with no midpoint rounding or one-second minimum', () => {
+    const source: JsonObject = { ...plan(), StageDurationSeconds: 3, Stages: [{ CompletionMode: 1 }, { Percent: 35 }, { Percent: 50 }, { Percent: 15 }] };
+    expect(scheduleTiming(source).seconds).toEqual([null, 1, 1, 1]);
+    expect(scheduleTiming({ ...source, StageDurationSeconds: 1 }).seconds).toEqual([null, 0, 0, 1]);
+    expect(scheduleTiming({ ...source, StageDurationSeconds: 0 }).seconds).toEqual([null, 0, 0, 0]);
+    expect(scheduleTiming({ ...source, StageDurationSeconds: 5, Stages: [{ CompletionMode: 1 }, { Percent: 1 }, { Percent: 1 }] }).seconds).toEqual([null, 2, 3]);
   });
 
-  it('conserves mixed timed budgets and time-window budgets by cumulative integer boundaries', () => {
-    const source: JsonObject = { Version: 15, StageDurationSeconds: 10, Stages: [{ Percent: 1 }, { Percent: 1 }, { Percent: 1 }] };
-    expect(scheduleTiming(source).seconds).toEqual([3, 3, 4]);
-    expect(scheduleTiming({ ...source, Stages: [{ CompletionMode: 1, DurationSeconds: 999 }, { DurationSeconds: 3 }, { Percent: 1 }, { Percent: 1 }] }).seconds).toEqual([null, 3, 3, 4]);
+  it('reads DurationSeconds canonically without version-dependent reinterpretation', () => {
+    for (const Version of [undefined, 14, 15, 16, 17]) {
+      const source = { ...plan(), Version, Stages: [{ DurationSeconds: 200 }, { Percent: 1 }, { Percent: 3 }] } as JsonObject;
+      expect(fixedSeconds(rows(source)[0])).toBe(200);
+      expect(scheduleTiming(source).seconds).toEqual([200, 250, 750]);
+    }
   });
 
-  it('keeps even a tiny unused reference budget unchanged when editing an all-fixed timed pool', () => {
-    const source: JsonObject = { Version: 15, StageDurationSeconds: 1, Stages: [{ CompletionMode: 1, Percent: 50 }, { DurationSeconds: 60 }, { DurationSeconds: 120 }] };
-    const next = editDuration(source, 1, 30);
-    expect(next.StageDurationSeconds).toBe(1);
-    expect(scheduleTiming(next).seconds).toEqual([null, 30, 120]);
-    expect(scheduleTiming(next).total).toBe(150);
+  it.each([-1, NaN, Infinity, INT_MAX + 1, 1.5, '1200'])('rejects an invalid active budget %s', StageDurationSeconds => {
+    expect(() => scheduleTiming({ ...plan(), StageDurationSeconds })).toThrow('Time budget');
   });
 
-  it('does not adjust a fixed edit budget merely because an untimed AT row has a dormant weight', () => {
-    const source: JsonObject = { Version: 15, StageDurationSeconds: 600, Stages: [{ CompletionMode: 1, Percent: 100 }, { DurationSeconds: 60 }] };
-    expect(editDuration(source, 1, 30).StageDurationSeconds).toBe(600);
-    const weighted: JsonObject = { ...source, Stages: [...rows(source), { Percent: .5 }] };
-    const next = editDuration(weighted, 1, 30);
-    expect(next.StageDurationSeconds).toBe(570);
-    expect(scheduleTiming(next).seconds).toEqual([null, 30, 540]);
+  it('validates the fixed total and active budget even for fixed-only or AT-only plans', () => {
+    expect(() => scheduleTiming({ ...plan(), Stages: [{ DurationSeconds: INT_MAX }, { DurationSeconds: 1 }] })).toThrow('Total fixed');
+    const source = parseJson('{"Version":17,"StageDurationSeconds":9007199254740993,"Stages":[{"CompletionMode":1}]}') as JsonObject;
+    expect(() => scheduleTiming(source)).toThrow('Time budget');
+    expect(scheduleTiming({ ...source, StageDurationSeconds: 0 })).toEqual({ seconds: [null], shares: [0], total: 0, remaining: 0 });
+  });
+});
+
+describe('raw flexible weights', () => {
+  it('sets exact 35/50/15 weights sequentially without rewriting other rows or either budget', () => {
+    let next: JsonObject = { ...plan(), TimeTriggerEnabled: true, TimeTriggerSeconds: 1200 };
+    for (const [index, text] of ['35%', '50', '15'].entries()) {
+      const before = next;
+      next = editFlexWeight(next, index + 2, text);
+      rows(next).forEach((row, i) => { if (i !== index + 2) expect(row).toBe(rows(before)[i]); });
+      expect(rows(next)[index + 2].Percent).toBe(Number(text.replace('%', '')));
+    }
+    expect(rows(next).slice(2, 5).map(row => row.Percent)).toEqual([35, 50, 15]);
+    expect(scheduleTiming(next).seconds).toEqual([null, 100, 350, 500, 150, 100]);
+    expect([next.StageDurationSeconds, next.TimeTriggerSeconds]).toEqual([1200, 1200]);
   });
 
-  it('represents an AT-only plan as entirely untimed without reading its dormant budget', () => {
-    const source = parseJson('{"Version":15,"StageDurationSeconds":9007199254740993,"Stages":[{"CompletionMode":1,"DurationSeconds":120,"Percent":1}]}') as JsonObject;
-    expect(scheduleTiming(source)).toEqual({ seconds: [null], shares: [0], total: 0, remaining: 0 });
+  it('percent text is a raw weight, not a normalized share edit', () => {
+    const next = editDurationText(plan(), 2, '50%');
+    expect(rows(next).slice(2, 5).map(row => row.Percent)).toEqual([50, 50, 15]);
+    expect(formatStageDuration(next, 2)).toBe('43.478261%');
+    expect(scheduleTiming(next).seconds).toEqual([null, 100, 434, 435, 131, 100]);
+  });
+
+  it.each(['35', ' 35% ', '35 %', '3.5e1'])('accepts %s and weights above 100', text => {
+    const next = editFlexWeight(plan(), 2, text);
+    expect(rows(next)[2].Percent).toBe(35);
+    expect(rows(editFlexWeight(next, 2, '350'))[2].Percent).toBe(350);
+  });
+
+  it.each(['', ' ', '0', '0%', '-1', 'NaN', 'Infinity', '1e309', '1e-400', '35%%', '35m'])('rejects invalid weight %j without mutation', text => {
+    const source = plan();
+    const before = stringifyJson(source);
+    expect(() => editFlexWeight(source, 2, text)).toThrow();
+    expect(stringifyJson(source)).toBe(before);
+  });
+
+  it('normalizes a single flexible row for display only, even at zero time', () => {
+    const source: JsonObject = { ...plan(), StageDurationSeconds: 0, Stages: [{ DurationSeconds: 100 }, { Percent: 100 }] };
+    const next = editFlexWeight(source, 1, '350%');
+    expect(rows(next)[1].Percent).toBe(350);
+    expect(scheduleTiming(next)).toEqual({ seconds: [100, 0], shares: [0, 100], total: 0, remaining: 0 });
+    expect(formatStageDuration(next, 1)).toBe('100%');
+  });
+
+  it('rejects weight edits on fixed or target rows and overflowing totals', () => {
+    expect(() => editFlexWeight(plan(), 1, '35')).toThrow('flexible stage');
+    expect(() => editFlexWeight(plan(), 0, '35')).toThrow('flexible stage');
+    expect(() => editFlexWeight(plan(), 99, '35')).toThrow('no longer exists');
+    expect(() => editFlexWeight({ ...plan(), Stages: [{ Percent: Number.MAX_VALUE }, { Percent: 1 }] }, 1, String(Number.MAX_VALUE))).toThrow('finite total');
+  });
+
+  it.each(['35', true, {}])('does not coerce a malformed configured weight %j', Percent => {
+    const source: JsonObject = { ...plan(), Stages: [{ Percent }] };
+    expect(() => scheduleTiming(source)).toThrow('Percent');
+  });
+});
+
+describe('per-row timing changes', () => {
+  it('changes only the selected row, retaining its raw weight and budget', () => {
+    const source = plan();
+    const fixed = changeStageTiming(source, 2, 'fixed');
+    expect(rows(fixed)[2]).toEqual({ CompletionMode: 0, Percent: 35, DurationSeconds: 350, DurationUnit: 's' });
+    for (const i of [0, 1, 3, 4, 5]) expect(rows(fixed)[i]).toBe(rows(source)[i]);
+    const flexible = changeStageTiming(fixed, 2, 'flexible');
+    expect(rows(flexible)[2]).toEqual({ CompletionMode: 0, Percent: 35, DurationSeconds: 0, DurationUnit: '%' });
+    expect(scheduleTiming(flexible)).toEqual(scheduleTiming(source));
+    expect(flexible.StageDurationSeconds).toBe(1200);
+    expect(rows(changeStageTiming(fixed, 2, 'target'))[2]).toMatchObject({ CompletionMode: 1, DurationSeconds: 350, Percent: 35 });
+  });
+
+  it('defaults zero-budget flexible work to five fixed minutes without growing the horizon', () => {
+    const source = { ...plan(), StageDurationSeconds: 0 };
+    const fixed = changeStageTiming(source, 2, 'fixed');
+    expect(rows(fixed)[2].DurationSeconds).toBe(300);
+    expect(fixed.StageDurationSeconds).toBe(0);
+    expect(rows(changeStageTiming(source, 0, 'flexible'))[0]).toMatchObject({ CompletionMode: 0, DurationSeconds: 0 });
+  });
+
+  it('restores dormant fixed time from AT work and retains exact targets and unknown tokens', () => {
+    const source = parseJson('{"Version":17,"StageDurationSeconds":1200,"__externalUiRevision":"revision","Future":9007199254740993,"Stages":[{"Percent":35,"CompletionMode":1,"DurationSeconds":90,"TargetAdvancedTrainingPower":"9223372036854775807","Future":9007199254740995},{"Percent":50}]}') as JsonObject;
+    const next = changeStageTiming(source, 0, 'fixed');
+    expect(rows(next)[0]).toMatchObject({ CompletionMode: 0, DurationSeconds: 90, Percent: 35, TargetAdvancedTrainingPower: '9223372036854775807' });
+    expect(stringifyJson(next)).toContain('"Future":9007199254740993');
+    expect(stringifyJson(next)).toContain('"Future":9007199254740995');
+    expect(next.__externalUiRevision).toBe('revision');
+    expect(next.StageDurationSeconds).toBe(1200);
+    expect(rows(next)[1]).toBe(rows(source)[1]);
+  });
+
+  it('excludes dormant AT weights and durations from the timed pool', () => {
+    const source: JsonObject = { ...plan(), Stages: [{ CompletionMode: 1, Percent: 50, DurationSeconds: INT_MAX }, { Percent: 50 }] };
+    expect(scheduleTiming(source)).toEqual({ seconds: [null, 1200], shares: [0, 100], total: 1200, remaining: 1200 });
+    expect(() => editDurationText(source, 0, '10s')).toThrow('AT target');
+    expect(() => changeStageTiming(source, 99, 'fixed')).toThrow('no longer exists');
+    expect(() => changeStageTiming(source, 0, 'protected' as 'fixed')).toThrow('Unknown stage timing');
+  });
+
+  it('keeps timing and the loop boundary attached to reordered rows', () => {
+    const source: JsonObject = { ...plan(), StageLoopStartIndex: 1, Stages: [{ DurationSeconds: 100 }, { Percent: 35 }, { Percent: 65 }] };
+    const next = reorderStages(source, 1, 2);
+    expect(next.StageLoopStartIndex).toBe(2);
+    expect(scheduleTiming(next).seconds).toEqual([100, 715, 385]);
+    expect(reorderStages(next, 2, null).StageLoopStartIndex).toBe(-1);
   });
 });

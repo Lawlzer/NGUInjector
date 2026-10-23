@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.Serialization;
 
@@ -34,6 +35,7 @@ internal static class GearOptimizerChecks
             Call("ClearCache");
             CheckNormalization();
             CheckNguRanking();
+            CheckCombatPrepScores();
             CheckCache();
             CheckBuildCandidate(assembly, controllerField, characterField);
             try { CheckEquipPreflight(characterField); }
@@ -200,8 +202,35 @@ internal static class GearOptimizerChecks
         var wishesField = wishes.GetType().GetField("wishes", InstanceMembers);
         var wishType = wishesField.FieldType.GetGenericArguments()[0];
         var wishList = List(wishType);
-        for (var i = 0; i <= 28; i++) wishList.Add(FormatterServices.GetUninitializedObject(wishType));
+        for (var i = 0; i <= 109; i++) wishList.Add(FormatterServices.GetUninitializedObject(wishType));
         wishesField.SetValue(wishes, wishList);
+        // Exercise the native unlock getter, not a replacement slot-count formula.
+        FixtureField(character, "purchases");
+        FixtureField(character, "arbitrary");
+        FixtureField(character.GetType().GetField("challenges", InstanceMembers).GetValue(character), "trollChallenge");
+        var troll = FixtureField(FixtureField(character, "allChallenges"), "trollChallenge");
+        SetField(troll, "character", character);
+        SetField(troll, "maxCompletions", 7);
+        foreach (var input in new[] {
+            new {Owner = FixtureField(FixtureField(character, "adventure"), "itopod"), Field = "perkLevel", Count = 30},
+            new {Owner = FixtureField(character, "beastQuest"), Field = "quirkLevel", Count = 19}
+        })
+        {
+            var field = input.Owner.GetType().GetField(input.Field, InstanceMembers);
+            var type = field.FieldType.GetGenericArguments()[0];
+            var levels = List(type);
+            for (var i = 0; i < input.Count; i++) levels.Add(Activator.CreateInstance(type));
+            field.SetValue(input.Owner, levels);
+        }
+        FixtureField(character, "diggers");
+        FixtureField(character, "yggdrasil");
+        SetField(FixtureField(character, "stats"), "rebirthNumber", 7L);
+        SetField(FixtureField(character, "rebirthTime"), "totalseconds", 100d);
+        SetField(FixtureField(character, "totalPlaytime"), "totalseconds", 1000d);
+        Equal(2, (int) controller.GetType().GetMethod("accessorySpaces", InstanceMembers).Invoke(controller, null),
+            "native accessory getter has two unlocked slots");
+        Equal(false, (bool) controller.GetType().GetMethod("weapon2Unlocked", InstanceMembers).Invoke(controller, null),
+            "native offhand getter remains locked");
         var head = RuntimeItem(100, 0f, 0f);
         var headType = Get(head, "equipment").GetType().GetField("type", InstanceMembers);
         headType.SetValue(Get(head, "equipment"), Enum.Parse(headType.FieldType, "Head"));
@@ -228,39 +257,42 @@ internal static class GearOptimizerChecks
         Equal(true, ReferenceEquals(second, Get(equipped[2], "equipment")), "runtime second accessory identity");
 
         var loadouts = assembly.GetType("NGUInjector.Managers.LoadoutManager", true);
-        var savedField = loadouts.GetField("_savedLoadout", StaticMembers);
-        var tempField = loadouts.GetField("_tempLoadout", StaticMembers);
-        var writerField = assembly.GetType("NGUInjector.Main", true).GetField("OutputWriter", StaticMembers);
-        var previousSaved = savedField.GetValue(null);
-        var previousTemp = tempField.GetValue(null);
-        var previousWriter = writerField.GetValue(null);
-        try
-        {
-            // Snapshot logging is null-safe; never create log files for these checks.
-            writerField.SetValue(null, null);
-            loadouts.GetMethod("SaveCurrentLoadout", StaticMembers).Invoke(null, null);
-            var saved = (Array) savedField.GetValue(null);
-            Equal(3, saved.Length, "runtime saved loadout length");
+        var capture = loadouts.GetMethod("CaptureExactLoadout", StaticMembers);
+        var epochType = loadouts.GetNestedType("SnapshotEpoch", BindingFlags.NonPublic);
+        var savedEpoch = Activator.CreateInstance(epochType, true);
+        var saved = (Array) capture.Invoke(null, null);
+            Equal(7, saved.Length, "runtime saved exact map includes five fixed slots and two accessories");
+            Equal(true, (bool) epochType.GetMethod("Matches", InstanceMembers).Invoke(savedEpoch, null),
+                "exact capture belongs to the actual fixture epoch");
             var replacement = Get(RuntimeItem(138, 0f, 0f), "equipment");
             ((IList) accessoriesField.GetValue(inventory))[0] = replacement;
-            loadouts.GetMethod("SaveTempLoadout", StaticMembers).Invoke(null, null);
-            var temp = (Array) tempField.GetValue(null);
-            Equal(3, temp.Length, "runtime temporary loadout length");
+            var temp = (Array) capture.Invoke(null, null);
+            Equal(7, temp.Length, "runtime temporary exact map includes empty fixed slots");
             Equal(false, ReferenceEquals(saved, temp), "runtime saved and temp arrays are independent");
-            Equal(false, ReferenceEquals(saved.GetValue(2), temp.GetValue(2)), "runtime snapshots create independent wrappers");
-            Equal(true, ReferenceEquals(first, Get(saved.GetValue(1), "equipment")), "saved snapshot retains replaced same-ID identity");
-            Equal(true, ReferenceEquals(replacement, Get(temp.GetValue(1), "equipment")), "temp snapshot captures replacement same-ID identity");
-            Equal(true, ReferenceEquals(second, Get(saved.GetValue(2), "equipment")), "saved snapshot retains second same-ID identity");
-            Equal(true, ReferenceEquals(second, Get(temp.GetValue(2), "equipment")), "temp snapshot retains second same-ID identity");
-            Equal(10000, (int) Get(saved.GetValue(1), "slot"), "saved snapshot preserves accessory slot");
-            Equal(10001, (int) Get(temp.GetValue(2), "slot"), "temp snapshot preserves accessory slot");
-        }
-        finally
-        {
-            savedField.SetValue(null, previousSaved);
-            tempField.SetValue(null, previousTemp);
-            writerField.SetValue(null, previousWriter);
-        }
+            var savedMap = saved.Cast<object>().ToDictionary(item => (int) Get(item, "slot"));
+            var tempMap = temp.Cast<object>().ToDictionary(item => (int) Get(item, "slot"));
+            foreach (var slot in new[] {-1, -2, -3, -4, -5, 10000, 10001})
+            {
+                Equal(true, savedMap.ContainsKey(slot) && tempMap.ContainsKey(slot), "both exact snapshots retain destination " + slot);
+                Equal(false, ReferenceEquals(savedMap[slot], tempMap[slot]), "exact snapshots create independent wrappers at " + slot);
+            }
+            foreach (var slot in new[] {-2, -3, -4, -5})
+            {
+                Equal(0, (int) Get(savedMap[slot], "id"), "saved snapshot explicitly retains empty destination " + slot);
+                Equal(0, (int) Get(tempMap[slot], "id"), "temporary snapshot explicitly retains empty destination " + slot);
+                Equal(true, ReferenceEquals(Get(savedMap[slot], "equipment"), Get(tempMap[slot], "equipment")),
+                    "empty equipment identity survives both captures at " + slot);
+            }
+            Equal(false, savedMap.ContainsKey(-6) || tempMap.ContainsKey(-6), "locked offhand is absent from both exact maps");
+            Equal(true, ReferenceEquals(Get(head, "equipment"), Get(savedMap[-1], "equipment")), "saved exact map retains head identity");
+            Equal(true, ReferenceEquals(first, Get(savedMap[10000], "equipment")), "saved snapshot retains replaced same-ID identity");
+            Equal(true, ReferenceEquals(replacement, Get(tempMap[10000], "equipment")), "temp snapshot captures replacement same-ID identity");
+            Equal(true, ReferenceEquals(second, Get(savedMap[10001], "equipment")), "saved snapshot retains second same-ID identity");
+            Equal(true, ReferenceEquals(second, Get(tempMap[10001], "equipment")), "temp snapshot retains second same-ID identity");
+            var tempEpoch = Activator.CreateInstance(epochType, true);
+            Equal(false, ReferenceEquals(savedEpoch, tempEpoch), "independent captures own independent epoch receipts");
+            Equal(true, (bool) tempEpoch.GetType().GetMethod("Matches", InstanceMembers).Invoke(tempEpoch, null),
+                "temporary snapshot captures the actual fixture epoch");
     }
 
     private static object FixtureField(object owner, string name)
@@ -430,6 +462,23 @@ internal static class GearOptimizerChecks
         Near(1.4 * 1.8 * 2.210, Score("EnergyNgu", ring, ring), "scores sum bonuses before multiplying stats");
     }
 
+    private static void CheckCombatPrepScores()
+    {
+        var power = Candidate(100);
+        AddSpec(power, "EnergyPower", 300f);
+        AddSpec(power, "MagicPower", 800f);
+        Near(2, Score("AdvancedTraining", power), "AT uses square-root energy power");
+        Near(1, Score("Wandoos", power), "Wandoos excludes both resource powers");
+        var cap = Candidate(101);
+        AddSpec(cap, "EnergyCap", 20000f);
+        AddSpec(cap, "MagicCap", 80000f);
+        AddSpec(cap, "AdvTraining", 10000f);
+        AddSpec(cap, "Wandoos98", 10000f);
+        Near(6, Score("AdvancedTraining", cap), "AT cap and speed remain linear");
+        Near(6 * Math.Sqrt(3), Score("Wandoos", cap), "Wandoos geometric caps and linear speed");
+        Equal(3, ((Array) Relevant("Wandoos")).Length, "Wandoos dominance and bounds exclude resource powers");
+    }
+
     private static void CheckCache()
     {
         var first = Candidate(100);
@@ -483,8 +532,8 @@ internal static class GearOptimizerChecks
 
     private static void CheckEquipPreflight(FieldInfo characterField)
     {
-        Equal("Cannot equip an empty loadout.", (string) Call("EquipGear", null, false, false), "null loadout preflight");
-        Equal("Cannot equip an empty loadout.", (string) Call("EquipGear", Array.CreateInstance(_item, 0), false, false),
+        Equal("Cannot equip an empty loadout.", TypedEquipFailure(null), "null loadout preflight");
+        Equal("Cannot equip an empty loadout.", TypedEquipFailure(Array.CreateInstance(_item, 0)),
             "empty loadout preflight");
         var character = FormatterServices.GetUninitializedObject(characterField.FieldType);
         var inventoryField = character.GetType().GetField("inventory", InstanceMembers);
@@ -492,10 +541,10 @@ internal static class GearOptimizerChecks
         inventoryField.SetValue(character, inventory);
         characterField.SetValue(null, character);
         var gear = Array.CreateInstance(_item, 1);
-        Equal("Loadout contains missing or duplicate equipment instances.", (string) Call("EquipGear", gear, false, false),
+        Equal("Loadout contains missing or duplicate equipment instances.", TypedEquipFailure(gear),
             "null item rejected before game actions");
         gear.SetValue(FormatterServices.GetUninitializedObject(_item), 0);
-        Equal("Loadout contains missing or duplicate equipment instances.", (string) Call("EquipGear", gear, false, false),
+        Equal("Loadout contains missing or duplicate equipment instances.", TypedEquipFailure(gear),
             "missing equipment reference rejected before game actions");
         var head = Candidate(100);
         var equipment = Equipment(head);
@@ -507,13 +556,20 @@ internal static class GearOptimizerChecks
         gear = Array.CreateInstance(_item, 2);
         gear.SetValue(Get(head, "Item"), 0);
         gear.SetValue(Get(CopyCandidate(head), "Item"), 1);
-        Equal("Loadout contains missing or duplicate equipment instances.", (string) Call("EquipGear", gear, false, false),
+        Equal("Loadout contains missing or duplicate equipment instances.", TypedEquipFailure(gear),
             "distinct wrappers of one equipped instance rejected before resources or swaps");
         Equal(123, (int) inventory.GetType().GetField("item1", InstanceMembers).GetValue(inventory), "preflight preserves destination slot");
         Equal(456, (int) inventory.GetType().GetField("item2", InstanceMembers).GetValue(inventory), "preflight preserves source slot");
         Equal(true, ReferenceEquals(equipment, inventory.GetType().GetField("head", InstanceMembers).GetValue(inventory)),
             "preflight preserves equipped identity");
         // Missing owned items and snapshot saves require wishes/itemInfo; successful swaps require live Unity.
+    }
+
+    private static string TypedEquipFailure(Array gear)
+    {
+        var footprint = Enum.ToObject(_optimizer.Assembly.GetType("NGUInjector.Managers.GearRecallFootprint", true), 0);
+        var result = Call("EquipGearObserved", gear, footprint, false, null, null);
+        return (string)result.GetType().GetProperty("LegacyFailure", InstanceMembers).GetValue(result);
     }
 
     private static object Candidate(int id = 100)

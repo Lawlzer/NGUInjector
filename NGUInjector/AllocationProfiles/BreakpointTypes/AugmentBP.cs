@@ -43,21 +43,6 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             }
         }
 
-        internal override bool Allocate()
-        {
-            var alloc = CalculateAugCap();
-            SetInput(alloc);
-            if (Index % 2 == 0)
-            {
-                Character.augmentsController.augments[AugIndex].addEnergyAug();
-            }
-            else
-            {
-                Character.augmentsController.augments[AugIndex].addEnergyUpgrade();
-            }
-            return true;
-        }
-
         protected override bool CorrectResourceType()
         {
             return Type == ResourceType.Energy;

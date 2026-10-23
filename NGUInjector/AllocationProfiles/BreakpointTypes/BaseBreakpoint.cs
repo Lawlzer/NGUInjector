@@ -39,7 +39,6 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
         protected abstract bool Unlocked();
         protected abstract bool TargetMet();
-        internal abstract bool Allocate();
         protected abstract bool CorrectResourceType();
 
         protected float CalculateMaxAllocation()
@@ -68,12 +67,6 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
 
             var capMax = (long)Math.Ceiling(capValue * CapPercent);
             return !IsCap ? Math.Min(input, capMax) : Math.Min(capMax, idleValue);
-        }
-
-        protected void SetInput(float val)
-        {
-            Character.energyMagicPanel.energyRequested.text = val.ToString();
-            Character.energyMagicPanel.validateInput();
         }
 
         internal static IEnumerable<BaseBreakpoint> ParseBreakpointArray(string[] prios, ResourceType type, int rebirthTime)

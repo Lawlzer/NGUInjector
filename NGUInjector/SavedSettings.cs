@@ -46,7 +46,7 @@ namespace NGUInjector
         [SerializeField] private bool _autoMoneyPit;
         [SerializeField] private bool _autoSpin;
         [SerializeField] private int[] _moneyPitLoadout;
-        [SerializeField] private bool _autoRebirth;
+        [SerializeField] private bool _autoRebirth = true;
         [SerializeField] private bool _manageWandoos;
         [SerializeField] private double _moneyPitThreshold;
         [SerializeField] private bool _doGoldSwap;
@@ -83,6 +83,8 @@ namespace NGUInjector
         [SerializeField] private bool _beastMode;
         [SerializeField] private int _cubePriority;
         [SerializeField] private bool _manageNguDiff;
+        [SerializeField] private int[] _energyNguWeights = {0, 0, 0, 0, 1, 0, 1, 0, 0};
+        [SerializeField] private int[] _magicNguWeights = {1, 0, 0, 0, 0, 0, 0};
         [SerializeField] private string _allocationFile;
         [SerializeField] private bool _manageGoldLoadouts;
         [SerializeField] private int _resnipeTime;
@@ -108,9 +110,20 @@ namespace NGUInjector
         [SerializeField] private string _customPlanFile;
         [SerializeField] private bool _customAdventureEnabled;
         [SerializeField] private int _customAdventureMode;
+        [SerializeField] private int _customAdventureMaxItopodDeaths = 3;
         [SerializeField] private int _customAdventureZone;
         [SerializeField] private bool _customAdventureGoldPush;
+        [SerializeField] private AdventureRule[] _customAdventureRules = new AdventureRule[0];
         [SerializeField] private bool _customAutoMoneyPitEnabled;
+        [SerializeField] private bool _customAutoExpEnabled;
+        [SerializeField] private int _customExpEnergyRatio = 5;
+        [SerializeField] private int _customExpMagicRatio = 1;
+        [SerializeField] private int _customExpEnergyPowerRatio = 5;
+        [SerializeField] private int _customExpEnergyCapRatio = 160000;
+        [SerializeField] private int _customExpEnergyBarsRatio = 4;
+        [SerializeField] private int _customExpMagicPowerRatio = 5;
+        [SerializeField] private int _customExpMagicCapRatio = 160000;
+        [SerializeField] private int _customExpMagicBarsRatio = 4;
         [SerializeField] private bool _customAutoBoostEnabled;
         [SerializeField] private int _customAutoBoostCubePowerRatio;
         [SerializeField] private int _customAugmentsBloodEstimateSeconds;
@@ -122,47 +135,165 @@ namespace NGUInjector
         [SerializeField] private IronPillHistoryEntry[] _customIronPillHistory = new IronPillHistoryEntry[0];
         [SerializeField] private bool _manualAdventureEnabled;
         [SerializeField] private int _manualAdventureZone;
+        [SerializeField] private int _manualAdventureLoadout = -1;
+        [SerializeField] private double[] _manualAdventureGearWeights = new double[5];
+        [SerializeField] private double[] _manualAdventureBeardWeights = new double[7];
+        [SerializeField] private double[] _manualAdventureDiggerWeights = new double[12];
         [SerializeField] private bool _manualAdventureBossOnly;
         [SerializeField] private bool _manualAdventureRecoverHealth = true;
         [SerializeField] private bool _manualAdventurePrecastBuffs;
         [SerializeField] private bool _manualAdventureFastCombat = true;
         [SerializeField] private bool _manualAdventureBeastMode;
         [SerializeField] private bool _manualAdventureAllowFallback = true;
+        [SerializeField] private bool _manualTitanEnabled;
+        [SerializeField] private int _manualTitanZone = 16;
+        [SerializeField] private bool _manualTitanRequireAT = true;
+        [SerializeField] private int _manualTitanLoadout = 1;
+        [SerializeField] private int _manualTitanMaxDeaths = 3;
 
         private readonly string _savePath;
         private bool _disableSave;
         private string _lastAppliedText;
         private JSONObject _sourceJson;
+        private string _loadedRevision = string.Empty;
+        private string _liveBaseline;
+
+        private static readonly FieldInfo[] PersistentFields = typeof(SavedSettings).GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
+            .Where(field => Attribute.IsDefined(field, typeof(SerializeField))).ToArray();
 
         public SavedSettings(string dir)
         {
             if (dir != null)
                 _savePath = Path.Combine(dir, "settings.json");
+            if (_savePath != null) _liveBaseline = SerializeWithUnknownFields(this);
+        }
+
+        private string ReadDisk(out string revision)
+        {
+            byte[] bytes;
+            try { bytes = File.ReadAllBytes(_savePath); }
+            catch (IOException error) when (error is FileNotFoundException || error is DirectoryNotFoundException)
+            {
+                try { File.GetAttributes(_savePath); }
+                catch (FileNotFoundException) { revision = string.Empty; return null; }
+                catch (DirectoryNotFoundException) { revision = string.Empty; return null; }
+                throw new IOException("Settings path exists but cannot be read.", error);
+            }
+            revision = JsonFiles.ComputeRevision(bytes);
+            var offset = bytes.Length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf ? 3 : 0;
+            var text = new UTF8Encoding(false, true).GetString(bytes, offset, bytes.Length - offset);
+            JsonFiles.ParseObject(text);
+            return text;
+        }
+
+        private void RequireUnchangedDisk(string expectedRevision = null)
+        {
+            ReadDisk(out var revision);
+            if (revision != _loadedRevision || expectedRevision != null && revision != expectedRevision)
+                throw new InvalidOperationException("Settings revision conflict; explicitly reload settings before saving.");
+        }
+
+        private SavedSettings CopyPersistent()
+        {
+            var copy = new SavedSettings(null);
+            foreach (var field in PersistentFields)
+            {
+                var value = field.GetValue(this);
+                field.SetValue(copy, value is Array array ? array.Clone() : value);
+            }
+            return copy;
+        }
+
+        private void Commit(SavedSettings candidate, bool updateForm = true)
+        {
+            RequireUnchangedDisk();
+            var serialized = SerializeWithUnknownFields(candidate);
+            JsonFiles.WriteAtomic(_savePath, serialized);
+            var runChanged = _customPlanFile != candidate._customPlanFile || _useCustomRebirthPlan != candidate._useCustomRebirthPlan || _autoRebirth != candidate._autoRebirth;
+            foreach (var field in PersistentFields) field.SetValue(this, field.GetValue(candidate));
+            _lastAppliedText = serialized;
+            _loadedRevision = JsonFiles.ComputeRevision(new UTF8Encoding(false).GetBytes(serialized));
+            _sourceJson = JsonFiles.ParseObject(serialized);
+            _liveBaseline = SerializeWithUnknownFields(this);
+            if (runChanged) NotifyCustomPlanRunChanged();
+            if (updateForm) Main.UpdateForm(this);
+        }
+
+        private void SetPersistent(string fieldName, object value)
+        {
+            var field = PersistentFields.Single(item => item.Name == fieldName);
+            if (_savePath == null || _disableSave) { field.SetValue(this, value); return; }
+            lock (CustomPlans.PresetLibraryStore.SyncRoot)
+            {
+                var candidate = CopyPersistent();
+                field.SetValue(candidate, value is Array array ? array.Clone() : value);
+                Main.Log("Saving Settings");
+                Commit(candidate);
+            }
+        }
+
+        internal JSONObject ApplyExternalPatch(JSONNode patch, string expectedRevision)
+        {
+            if (expectedRevision == null || expectedRevision.Length != 0 && (expectedRevision.Length != 64
+                || expectedRevision.Any(c => !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f'))))
+                throw new FormatException("args.expectedRevision is required: lowercase SHA-256, or empty only for an absent settings file.");
+            lock (CustomPlans.PresetLibraryStore.SyncRoot)
+            {
+                RequireUnchangedDisk(expectedRevision);
+                if (SerializeWithUnknownFields(this) != _liveBaseline)
+                    throw new InvalidOperationException("Unsaved native settings exist; explicitly save or reload settings before external editing.");
+                ApplyPatch(patch);
+                var result = new JSONObject();
+                result["revision"] = _loadedRevision;
+                result["settings"] = JsonFiles.ParseObject(_lastAppliedText);
+                return result;
+            }
         }
 
         internal void SaveSettings()
         {
             if (_savePath == null) return;
             if (_disableSave) return;
-            Main.Log("Saving Settings");
-            var serialized = SerializeWithUnknownFields(this);
-            JsonFiles.WriteAtomic(_savePath, serialized);
-            _lastAppliedText = serialized;
-            Main.UpdateForm(this);
+            lock (CustomPlans.PresetLibraryStore.SyncRoot)
+            {
+                Main.Log("Saving Settings");
+                Commit(CopyPersistent());
+            }
         }
 
         internal void ApplyPatch(JSONNode patch)
+        {
+            lock (CustomPlans.PresetLibraryStore.SyncRoot) ApplyPatchCore(patch);
+        }
+
+        private void ApplyPatchCore(JSONNode patch)
         {
             if (patch == null || !patch.IsObject)
                 throw new FormatException("args.patch must be a JSON object using serialized settings field names.");
             if (_savePath == null || _disableSave)
                 throw new InvalidOperationException("Settings saving is unavailable.");
+            RequireUnchangedDisk();
 
             var merged = JsonFiles.ParseObject(JsonUtility.ToJson(this));
+            merged["_manualAdventureGearWeights"] = SerializeManualAdventureWeights(ManualAdventureGearWeights, "_manualAdventureGearWeights", 5);
+            merged["_manualAdventureBeardWeights"] = SerializeManualAdventureWeights(ManualAdventureBeardWeights, "_manualAdventureBeardWeights", 7);
+            merged["_manualAdventureDiggerWeights"] = SerializeManualAdventureWeights(ManualAdventureDiggerWeights, "_manualAdventureDiggerWeights", 12);
+            var adventureRules = CustomAdventureRules;
             foreach (var item in patch.Linq)
             {
+                if (item.Key == "_energyNguWeights" || item.Key == "_magicNguWeights")
+                    CustomPlans.CustomPlanStore.ReadNguWeights(item.Value, item.Key, item.Key == "_energyNguWeights" ? 9 : 7);
+                if (item.Key == "_manualAdventureGearWeights" || item.Key == "_manualAdventureBeardWeights" || item.Key == "_manualAdventureDiggerWeights")
+                    ReadManualAdventureWeights(item.Value, item.Key, item.Key == "_manualAdventureGearWeights" ? 5 : item.Key == "_manualAdventureBeardWeights" ? 7 : 12);
                 if (item.Key == "_customIronPillHistory")
                     throw new FormatException("Iron Pill history is backend-owned and read-only.");
+                if (item.Key == "_customAdventureRules")
+                {
+                    if (!item.Value.IsArray)
+                        throw new FormatException("_customAdventureRules must be an array.");
+                    adventureRules = AdventureRule.Parse(item.Value);
+                    continue;
+                }
                 var field = typeof(SavedSettings).GetField(item.Key, BindingFlags.NonPublic | BindingFlags.Instance);
                 if (field == null || !Attribute.IsDefined(field, typeof(SerializeField)))
                     throw new FormatException("Unknown settings field: " + item.Key);
@@ -176,7 +307,7 @@ namespace NGUInjector
                     var valid = elementType == typeof(bool) ? value.IsBoolean
                         : elementType == typeof(string) ? value.IsString
                         : value.IsNumber && !double.IsNaN(value.AsDouble) && !double.IsInfinity(value.AsDouble)
-                          && (elementType != typeof(int) || value.AsDouble >= int.MinValue && value.AsDouble <= int.MaxValue && value.AsDouble == Math.Truncate(value.AsDouble));
+                          && (elementType != typeof(int) || IsExactInt32(value));
                     if (!valid)
                         throw new FormatException("Invalid value type for " + item.Key);
                 }
@@ -194,6 +325,24 @@ namespace NGUInjector
                     || (item.Key == "_customBloodSpaghettiGoalPercent" || item.Key == "_customBloodCounterfeitGoalPercent")
                        && (item.Value.AsDouble < 0d || item.Value.AsDouble > 100000d))
                     throw new FormatException("Custom setting is out of range: " + item.Key);
+                if (item.Key.StartsWith("_customExp", StringComparison.Ordinal)
+                    && (item.Value.AsDouble < 1d || item.Value.AsDouble > 1000000000d))
+                    throw new FormatException("EXP ratios must be whole numbers between 1 and 1000000000: " + item.Key);
+                if (item.Key == "_customAdventureMode" && (item.Value.AsDouble < 0 || item.Value.AsDouble > 3)
+                    || item.Key == "_customAdventureMaxItopodDeaths" && (item.Value.AsDouble < 1 || item.Value.AsDouble > 1000))
+                    throw new FormatException("Adventure setting is out of range: " + item.Key);
+                if (item.Key == "_manualAdventureLoadout" || item.Key == "_manualTitanLoadout"
+                    || item.Key == "_manualTitanMaxDeaths" || item.Key == "_manualTitanZone")
+                {
+                    // Validate the source token, not a fraction/underflow rounded to an integer by double.
+                    int manualValue;
+                    if (!int.TryParse(item.Value.Value, System.Globalization.NumberStyles.AllowLeadingSign,
+                            System.Globalization.CultureInfo.InvariantCulture, out manualValue)
+                        || (item.Key == "_manualAdventureLoadout" || item.Key == "_manualTitanLoadout") && (manualValue < -1 || manualValue > 2)
+                        || item.Key == "_manualTitanMaxDeaths" && (manualValue < 1 || manualValue > 1000)
+                        || item.Key == "_manualTitanZone" && !Managers.ZoneHelpers.TitanZones.Contains(manualValue))
+                        throw new FormatException("Manual combat setting is out of range: " + item.Key);
+                }
                 if (item.Key == "_titanGoldTargets" || item.Key == "_titanSwapTargets" || item.Key == "_titanMoneyDone")
                 {
                     if (item.Value.Count != Managers.ZoneHelpers.TitanZones.Length)
@@ -203,13 +352,43 @@ namespace NGUInjector
             }
 
             // Merge against live state, not a UI snapshot; persist before publishing the candidate.
+            merged.Remove("_customIronPillHistory");
+            merged.Remove("_customAdventureRules");
             var candidate = new SavedSettings(null);
-            candidate.MassUpdate(JsonUtility.FromJson<SavedSettings>(merged.ToString()));
-            var serialized = SerializeWithUnknownFields(candidate);
-            JsonFiles.WriteAtomic(_savePath, serialized);
-            MassUpdate(candidate);
-            _lastAppliedText = serialized;
-            Main.UpdateForm(this);
+            var unityCandidate = JsonFiles.ParseObject(merged.ToString());
+            unityCandidate.Remove("_energyNguWeights");
+            unityCandidate.Remove("_magicNguWeights");
+            unityCandidate.Remove("_manualAdventureGearWeights");
+            unityCandidate.Remove("_manualAdventureBeardWeights");
+            unityCandidate.Remove("_manualAdventureDiggerWeights");
+            var parsed = JsonUtility.FromJson<SavedSettings>(unityCandidate.ToString());
+            parsed._energyNguWeights = CustomPlans.CustomPlanStore.ReadNguWeights(merged["_energyNguWeights"], "_energyNguWeights", 9);
+            parsed._magicNguWeights = CustomPlans.CustomPlanStore.ReadNguWeights(merged["_magicNguWeights"], "_magicNguWeights", 7);
+            parsed._manualAdventureGearWeights = ReadManualAdventureWeights(merged["_manualAdventureGearWeights"], "_manualAdventureGearWeights", 5);
+            parsed._manualAdventureBeardWeights = ReadManualAdventureWeights(merged["_manualAdventureBeardWeights"], "_manualAdventureBeardWeights", 7);
+            parsed._manualAdventureDiggerWeights = ReadManualAdventureWeights(merged["_manualAdventureDiggerWeights"], "_manualAdventureDiggerWeights", 12);
+            candidate.MassUpdate(parsed);
+            candidate._customIronPillHistory = CustomIronPillHistory.Where(IsValidIronPillHistoryEntry).Take(10).ToArray();
+            candidate._customAdventureRules = AdventureRule.Parse(AdventureRule.ToJson(adventureRules));
+            Commit(candidate);
+        }
+
+        private static bool IsExactInt32(JSONNode value)
+        {
+            var parts = value.Value.Split(new[] {'e', 'E'});
+            var point = parts[0].IndexOf('.');
+            var digits = parts[0].Replace(".", "").TrimStart('-').TrimStart('0');
+            if (digits.Length == 0) return true;
+            long exponent = 0;
+            if (parts.Length > 1 && !long.TryParse(parts[1], System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out exponent)) return false;
+            var significant = digits.TrimEnd('0');
+            var fractional = point < 0 ? 0 : parts[0].Length - point - 1;
+            var adjustment = (long) digits.Length - significant.Length - fractional;
+            if (exponent < -adjustment || exponent > 10 - significant.Length - adjustment) return false;
+            var integer = (parts[0][0] == '-' ? "-" : "") + significant + new string('0', (int) (exponent + adjustment));
+            return int.TryParse(integer, System.Globalization.NumberStyles.AllowLeadingSign,
+                System.Globalization.CultureInfo.InvariantCulture, out _);
         }
 
         private string SerializeWithUnknownFields(SavedSettings live)
@@ -217,7 +396,86 @@ namespace NGUInjector
             var root = JsonFiles.ParseObject(_sourceJson?.ToString() ?? "{}");
             foreach (var item in JsonFiles.ParseObject(JsonUtility.ToJson(live)).Linq)
                 root[item.Key] = item.Value;
+            // Injected custom record arrays are not reliably supported by Unity's serializer.
+            var history = new JSONArray();
+            var sourceHistory = _sourceJson?["_customIronPillHistory"]?.Children.ToList() ?? new List<JSONNode>();
+            foreach (var entry in live.CustomIronPillHistory.Where(IsValidIronPillHistoryEntry).Take(10))
+            {
+                // Retain extensions on unchanged history rows, including after a prepend.
+                var retained = sourceHistory.FirstOrDefault(source => source.IsObject && source["CastAtUtc"].IsString
+                    && source["CastAtUtc"].Value == entry.CastAtUtc && source["WaitSeconds"].IsNumber && source["WaitSeconds"].AsDouble == entry.WaitSeconds
+                    && source["Worth"].IsNumber && source["Worth"].AsDouble == entry.Worth
+                    && source["RebirthSeconds"].IsNumber && source["RebirthSeconds"].AsDouble == entry.RebirthSeconds);
+                if (retained != null)
+                {
+                    history.Add(JsonFiles.ParseObject(retained.ToString()));
+                    sourceHistory.Remove(retained);
+                    continue;
+                }
+                var row = new JSONObject();
+                row["CastAtUtc"] = entry.CastAtUtc ?? string.Empty;
+                row["WaitSeconds"] = entry.WaitSeconds;
+                row["Worth"] = entry.Worth;
+                row["RebirthSeconds"] = entry.RebirthSeconds;
+                history.Add(row);
+            }
+            root["_customIronPillHistory"] = history;
+            root["_customAdventureRules"] = AdventureRule.ToJson(live.CustomAdventureRules);
+            root["_energyNguWeights"] = CustomPlans.CustomPlanStore.SerializeNguWeights(live._energyNguWeights, 9, "_energyNguWeights");
+            root["_magicNguWeights"] = CustomPlans.CustomPlanStore.SerializeNguWeights(live._magicNguWeights, 7, "_magicNguWeights");
+            root["_manualAdventureGearWeights"] = SerializeManualAdventureWeights(live.ManualAdventureGearWeights, "_manualAdventureGearWeights", 5);
+            root["_manualAdventureBeardWeights"] = SerializeManualAdventureWeights(live.ManualAdventureBeardWeights, "_manualAdventureBeardWeights", 7);
+            root["_manualAdventureDiggerWeights"] = SerializeManualAdventureWeights(live.ManualAdventureDiggerWeights, "_manualAdventureDiggerWeights", 12);
             return root.ToString(2);
+        }
+
+        private static double[] ReadManualAdventureWeights(JSONNode node, string key, int count)
+        {
+            if (node == null || !node.IsArray || node.Count != count || node.Children.Any(value => !value.IsNumber))
+                throw new FormatException(key + " must contain exactly " + count + " finite numbers between 0 and 1000000.");
+            var weights = node.Children.Select(value => value.AsDouble).ToArray();
+            SerializeManualAdventureWeights(weights, key, count);
+            return weights;
+        }
+
+        private static JSONArray SerializeManualAdventureWeights(double[] weights, string key, int count)
+        {
+            if (weights == null || weights.Length != count || weights.Any(value => !(value >= 0d && value <= 1000000d)))
+                throw new FormatException(key + " must contain exactly " + count + " finite numbers between 0 and 1000000.");
+            var array = new JSONArray();
+            foreach (var value in weights) array.Add(value);
+            return array;
+        }
+
+        private static bool IsValidIronPillHistoryEntry(IronPillHistoryEntry entry)
+        {
+            // These inclusive ranges also reject NaN and infinities.
+            return entry != null && entry.WaitSeconds >= 0d && entry.WaitSeconds <= double.MaxValue
+                   && entry.RebirthSeconds >= 0d && entry.RebirthSeconds <= double.MaxValue
+                   && entry.Worth >= 0d && entry.Worth <= 1e8d;
+        }
+
+        private static IronPillHistoryEntry[] ReadIronPillHistory(JSONNode node)
+        {
+            if (node == null || node.IsNull) return new IronPillHistoryEntry[0];
+            if (!node.IsArray) throw new FormatException("Iron Pill history must be an array.");
+            var entries = new List<IronPillHistoryEntry>();
+            foreach (var row in node.Children)
+            {
+                if (!row.IsObject || !row["CastAtUtc"].IsString || !row["WaitSeconds"].IsNumber
+                    || !row["Worth"].IsNumber || !row["RebirthSeconds"].IsNumber)
+                    continue;
+                var entry = new IronPillHistoryEntry {
+                    CastAtUtc = row["CastAtUtc"].Value,
+                    WaitSeconds = row["WaitSeconds"].AsDouble,
+                    Worth = row["Worth"].AsDouble,
+                    RebirthSeconds = row["RebirthSeconds"].AsDouble
+                };
+                if (!IsValidIronPillHistoryEntry(entry)) continue;
+                entries.Add(entry);
+                if (entries.Count == 10) break;
+            }
+            return entries.ToArray();
         }
 
         internal void SetSaveDisabled(bool disabled)
@@ -227,19 +485,49 @@ namespace NGUInjector
 
         internal bool HasSettingsFileChanged()
         {
-            return File.ReadAllText(_savePath) != _lastAppliedText;
+            ReadDisk(out var revision);
+            return revision != _loadedRevision;
         }
 
         internal bool LoadSettings()
+        {
+            lock (CustomPlans.PresetLibraryStore.SyncRoot) return LoadSettingsCore();
+        }
+
+        private bool LoadSettingsCore()
         {
             if (File.Exists(_savePath))
             {
                 try
                 {
-                    var text = File.ReadAllText(_savePath);
-                    if (text == _lastAppliedText)
+                    var text = ReadDisk(out var revision);
+                    if (text == null) return false;
+                    if (revision == _loadedRevision && SerializeWithUnknownFields(this) == _liveBaseline)
                         return true;
                     var root = JsonFiles.ParseObject(text);
+                    var hasEnergyNguWeights = root.Linq.Any(item => item.Key == "_energyNguWeights");
+                    var hasMagicNguWeights = root.Linq.Any(item => item.Key == "_magicNguWeights");
+                    JSONObject legacyPlan = null;
+                    // Read the selected raw plan before any store construction can repair it.
+                    // Once initialized in this process, removing a global key cannot replay migration.
+                    if ((!hasEnergyNguWeights || !hasMagicNguWeights) && _sourceJson == null)
+                    {
+                        var selected = root["_customPlanFile"];
+                        if (selected != null && selected.IsString && !string.IsNullOrWhiteSpace(selected.Value))
+                        {
+                            var name = selected.Value;
+                            if (name != Path.GetFileName(name) || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                                throw new FormatException("Invalid selected custom plan file.");
+                            var path = Path.Combine(Path.GetDirectoryName(_savePath), "custom-plans", name + ".json");
+                            if (File.Exists(path)) legacyPlan = JsonFiles.ParseObject(File.ReadAllText(path));
+                        }
+                    }
+                    var energyWeights = hasEnergyNguWeights
+                        ? CustomPlans.CustomPlanStore.ReadNguWeights(root["_energyNguWeights"], "_energyNguWeights", 9)
+                        : legacyPlan != null ? CustomPlans.CustomPlanStore.ReadLegacyNguWeights(legacyPlan, true) : EnergyNguWeights;
+                    var magicWeights = hasMagicNguWeights
+                        ? CustomPlans.CustomPlanStore.ReadNguWeights(root["_magicNguWeights"], "_magicNguWeights", 7)
+                        : legacyPlan != null ? CustomPlans.CustomPlanStore.ReadLegacyNguWeights(legacyPlan, false) : MagicNguWeights;
                     var hasCustomAdventureGoldPush = root["_customAdventureGoldPush"] != null;
                     var hasCustomAutoMoneyPitEnabled = root["_customAutoMoneyPitEnabled"] != null;
                     var hasCustomAutoBoostEnabled = root["_customAutoBoostEnabled"] != null;
@@ -251,10 +539,59 @@ namespace NGUInjector
                     var hasManualAdventureRecoverHealth = root["_manualAdventureRecoverHealth"] != null;
                     var hasManualAdventureFastCombat = root["_manualAdventureFastCombat"] != null;
                     var hasManualAdventureAllowFallback = root["_manualAdventureAllowFallback"] != null;
-                    var newSettings = JsonUtility.FromJson<SavedSettings>(text);
+                    var history = ReadIronPillHistory(root["_customIronPillHistory"]);
+                    var adventureRules = AdventureRule.Parse(root["_customAdventureRules"]);
+                    var gearWeights = root.Linq.Any(item => item.Key == "_manualAdventureGearWeights")
+                        ? ReadManualAdventureWeights(root["_manualAdventureGearWeights"], "_manualAdventureGearWeights", 5) : new double[5];
+                    var beardWeights = root.Linq.Any(item => item.Key == "_manualAdventureBeardWeights")
+                        ? ReadManualAdventureWeights(root["_manualAdventureBeardWeights"], "_manualAdventureBeardWeights", 7) : new double[7];
+                    var diggerWeights = root.Linq.Any(item => item.Key == "_manualAdventureDiggerWeights")
+                        ? ReadManualAdventureWeights(root["_manualAdventureDiggerWeights"], "_manualAdventureDiggerWeights", 12) : new double[12];
+                    var unityRoot = JsonFiles.ParseObject(text);
+                    unityRoot.Remove("_customIronPillHistory");
+                    unityRoot.Remove("_customAdventureRules");
+                    unityRoot.Remove("_energyNguWeights");
+                    unityRoot.Remove("_magicNguWeights");
+                    unityRoot.Remove("_manualAdventureGearWeights");
+                    unityRoot.Remove("_manualAdventureBeardWeights");
+                    unityRoot.Remove("_manualAdventureDiggerWeights");
+                    var newSettings = JsonUtility.FromJson<SavedSettings>(unityRoot.ToString());
+                    // Unity does not apply field initializers to missing serialized fields.
+                    if (root["_autoRebirth"] == null)
+                        newSettings._autoRebirth = true;
+                    if (root["_manualAdventureLoadout"] == null)
+                        newSettings._manualAdventureLoadout = -1;
+                    if (root["_manualTitanZone"] == null)
+                        newSettings._manualTitanZone = 16;
+                    if (root["_manualTitanRequireAT"] == null)
+                        newSettings._manualTitanRequireAT = true;
+                    if (root["_manualTitanLoadout"] == null)
+                        newSettings._manualTitanLoadout = 1;
+                    if (root["_manualTitanMaxDeaths"] == null)
+                        newSettings._manualTitanMaxDeaths = 3;
+                    newSettings._customIronPillHistory = history;
+                    newSettings._customAdventureRules = adventureRules;
+                    newSettings._energyNguWeights = energyWeights;
+                    newSettings._magicNguWeights = magicWeights;
+                    newSettings._manualAdventureGearWeights = gearWeights;
+                    newSettings._manualAdventureBeardWeights = beardWeights;
+                    newSettings._manualAdventureDiggerWeights = diggerWeights;
+                    if (!hasEnergyNguWeights || !hasMagicNguWeights)
+                    {
+                        if (_disableSave) throw new InvalidOperationException("NGU settings migration requires saving to be enabled.");
+                        root["_energyNguWeights"] = CustomPlans.CustomPlanStore.SerializeNguWeights(energyWeights, 9, "_energyNguWeights");
+                        root["_magicNguWeights"] = CustomPlans.CustomPlanStore.SerializeNguWeights(magicWeights, 7, "_magicNguWeights");
+                        text = root.ToString(2);
+                        ReadDisk(out var currentRevision);
+                        if (currentRevision != revision) throw new InvalidOperationException("Settings changed during migration; explicitly reload settings.");
+                        JsonFiles.WriteAtomic(_savePath, text);
+                        revision = JsonFiles.ComputeRevision(new UTF8Encoding(false).GetBytes(text));
+                    }
                     MassUpdate(newSettings);
                     if (root["_customIronPillSaveSeconds"] == null)
                         _customIronPillSaveSeconds = 900;
+                    if (root["_customAdventureMaxItopodDeaths"] == null)
+                        _customAdventureMaxItopodDeaths = 3;
                     if (!hasCustomAdventureGoldPush)
                     {
                         _customAdventureGoldPush = true;
@@ -314,6 +651,8 @@ namespace NGUInjector
                     Main.Log(JsonUtility.ToJson(this, true));
                     _lastAppliedText = text;
                     _sourceJson = root;
+                    _loadedRevision = revision;
+                    _liveBaseline = SerializeWithUnknownFields(this);
                     return true;
                 }
                 catch (Exception e)
@@ -327,8 +666,17 @@ namespace NGUInjector
             return false;
         }
 
+        internal void EnsureGlobalNguWeightsSaved()
+        {
+            // Fresh settings must also be durable before plan/preset stores can remove old arrays.
+            if (_sourceJson == null) SaveSettings();
+        }
+
         internal void MassUpdate(SavedSettings other)
         {
+            var adventureRules = AdventureRule.Parse(AdventureRule.ToJson(other.CustomAdventureRules));
+            var energyWeights = CustomPlans.CustomPlanStore.SerializeNguWeights(other._energyNguWeights, 9, "_energyNguWeights");
+            var magicWeights = CustomPlans.CustomPlanStore.SerializeNguWeights(other._magicNguWeights, 7, "_magicNguWeights");
             var planRunChanged = _customPlanFile != other.CustomPlanFile
                                  || _useCustomRebirthPlan != other.UseCustomRebirthPlan
                                  || _autoRebirth != other.AutoRebirth;
@@ -403,6 +751,8 @@ namespace NGUInjector
             _beastMode = other.BeastMode;
             _cubePriority = other.CubePriority;
             _manageNguDiff = other.ManageNGUDiff;
+            _energyNguWeights = energyWeights.Children.Select(weight => weight.AsInt).ToArray();
+            _magicNguWeights = magicWeights.Children.Select(weight => weight.AsInt).ToArray();
             _allocationFile = other.AllocationFile;
             _manageGoldLoadouts = other.ManageGoldLoadouts;
             _titanGoldTargets = other.TitanGoldTargets;
@@ -429,9 +779,20 @@ namespace NGUInjector
             _customPlanFile = other.CustomPlanFile;
             _customAdventureEnabled = other.CustomAdventureEnabled;
             _customAdventureMode = other.CustomAdventureMode;
+            _customAdventureMaxItopodDeaths = other.CustomAdventureMaxItopodDeaths;
             _customAdventureZone = other.CustomAdventureZone;
             _customAdventureGoldPush = other.CustomAdventureGoldPush;
+            _customAdventureRules = adventureRules;
             _customAutoMoneyPitEnabled = other.CustomAutoMoneyPitEnabled;
+            _customAutoExpEnabled = other.CustomAutoExpEnabled;
+            _customExpEnergyRatio = other.CustomExpEnergyRatio;
+            _customExpMagicRatio = other.CustomExpMagicRatio;
+            _customExpEnergyPowerRatio = other.CustomExpEnergyPowerRatio;
+            _customExpEnergyCapRatio = other.CustomExpEnergyCapRatio;
+            _customExpEnergyBarsRatio = other.CustomExpEnergyBarsRatio;
+            _customExpMagicPowerRatio = other.CustomExpMagicPowerRatio;
+            _customExpMagicCapRatio = other.CustomExpMagicCapRatio;
+            _customExpMagicBarsRatio = other.CustomExpMagicBarsRatio;
             _customAutoBoostEnabled = other.CustomAutoBoostEnabled;
             _customAutoBoostCubePowerRatio = other.CustomAutoBoostCubePowerRatio;
             _customAugmentsBloodEstimateSeconds = other.CustomAugmentsBloodEstimateSeconds;
@@ -440,15 +801,24 @@ namespace NGUInjector
             _customBloodCounterfeitGoalPercent = other.CustomBloodCounterfeitGoalPercent;
             _customIronPillSaveSeconds = other.CustomIronPillSaveSeconds;
             _customIronPillMinWorth = other.CustomIronPillMinWorth;
-            _customIronPillHistory = other.CustomIronPillHistory.Where(entry => entry != null).Take(10).ToArray();
+            _customIronPillHistory = other.CustomIronPillHistory.Where(IsValidIronPillHistoryEntry).Take(10).ToArray();
             _manualAdventureEnabled = other.ManualAdventureEnabled;
             _manualAdventureZone = other.ManualAdventureZone;
+            _manualAdventureLoadout = other.ManualAdventureLoadout;
+            _manualAdventureGearWeights = other.ManualAdventureGearWeights;
+            _manualAdventureBeardWeights = other.ManualAdventureBeardWeights;
+            _manualAdventureDiggerWeights = other.ManualAdventureDiggerWeights;
             _manualAdventureBossOnly = other.ManualAdventureBossOnly;
             _manualAdventureRecoverHealth = other.ManualAdventureRecoverHealth;
             _manualAdventurePrecastBuffs = other.ManualAdventurePrecastBuffs;
             _manualAdventureFastCombat = other.ManualAdventureFastCombat;
             _manualAdventureBeastMode = other.ManualAdventureBeastMode;
             _manualAdventureAllowFallback = other.ManualAdventureAllowFallback;
+            _manualTitanEnabled = other.ManualTitanEnabled;
+            _manualTitanZone = other.ManualTitanZone;
+            _manualTitanRequireAT = other.ManualTitanRequireAT;
+            _manualTitanLoadout = other.ManualTitanLoadout;
+            _manualTitanMaxDeaths = other.ManualTitanMaxDeaths;
             if (planRunChanged)
                 NotifyCustomPlanRunChanged();
         }
@@ -466,8 +836,7 @@ namespace NGUInjector
             set
             {
                 if (value == _snipeZone) return;
-                _snipeZone = value;
-                SaveSettings();
+                SetPersistent("_snipeZone", value);
             }
         }
 
@@ -477,7 +846,7 @@ namespace NGUInjector
             set
             {
                 if (value == _precastBuffs) return;
-                _precastBuffs = value; SaveSettings();
+                SetPersistent("_precastBuffs", value);
             }
         }
 
@@ -487,8 +856,7 @@ namespace NGUInjector
             set
             {
                 if (value == _swapTitanLoadouts) return;
-                _swapTitanLoadouts = value;
-                SaveSettings();
+                SetPersistent("_swapTitanLoadouts", value);
             }
         }
 
@@ -498,7 +866,7 @@ namespace NGUInjector
             set
             {
                 if (value == _swapYggdrasilLoadouts) return;
-                _swapYggdrasilLoadouts = value; SaveSettings();
+                SetPersistent("_swapYggdrasilLoadouts", value);
             }
         }
 
@@ -507,8 +875,7 @@ namespace NGUInjector
             get => _priorityBoosts;
             set
             {
-                _priorityBoosts = value;
-                SaveSettings();
+                SetPersistent("_priorityBoosts", value);
             }
         }
 
@@ -517,7 +884,7 @@ namespace NGUInjector
             get => _manageEnergy;
             set
             {
-                if (value == _manageEnergy) return; _manageEnergy = value; SaveSettings();
+                if (value == _manageEnergy) return; SetPersistent("_manageEnergy", value);
             }
         }
 
@@ -526,7 +893,7 @@ namespace NGUInjector
             get => _manageMagic;
             set
             {
-                if (value == _manageMagic) return; _manageMagic = value; SaveSettings();
+                if (value == _manageMagic) return; SetPersistent("_manageMagic", value);
             }
         }
 
@@ -536,7 +903,7 @@ namespace NGUInjector
             set
             {
                 if (value == _fastCombat) return;
-                _fastCombat = value; SaveSettings();
+                SetPersistent("_fastCombat", value);
             }
         }
 
@@ -545,7 +912,7 @@ namespace NGUInjector
             get => _manageGear;
             set
             {
-                if (value == _manageGear) return; _manageGear = value; SaveSettings();
+                if (value == _manageGear) return; SetPersistent("_manageGear", value);
             }
         }
 
@@ -554,8 +921,7 @@ namespace NGUInjector
             get => _titanLoadout;
             set
             {
-                _titanLoadout = value;
-                SaveSettings();
+                SetPersistent("_titanLoadout", value);
             }
         }
 
@@ -564,8 +930,7 @@ namespace NGUInjector
             get => _yggdrasilLoadout;
             set
             {
-                _yggdrasilLoadout = value;
-                SaveSettings();
+                SetPersistent("_yggdrasilLoadout", value);
             }
         }
 
@@ -575,7 +940,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manageYggdrasil) return;
-                _manageYggdrasil = value; SaveSettings();
+                SetPersistent("_manageYggdrasil", value);
             }
         }
 
@@ -585,7 +950,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manageDiggers) return;
-                _manageDiggers = value; SaveSettings();
+                SetPersistent("_manageDiggers", value);
             }
         }
 
@@ -595,7 +960,7 @@ namespace NGUInjector
             set
             {
                 if (value == _upgradeDiggers) return;
-                _upgradeDiggers = value; SaveSettings();
+                SetPersistent("_upgradeDiggers", value);
             }
         }
 
@@ -605,7 +970,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manageInventory) return;
-                _manageInventory = value; SaveSettings();
+                SetPersistent("_manageInventory", value);
             }
         }
 
@@ -615,7 +980,7 @@ namespace NGUInjector
             set
             {
                 if (value == _autoFight) return;
-                _autoFight = value; SaveSettings();
+                SetPersistent("_autoFight", value);
             }
         }
 
@@ -625,8 +990,7 @@ namespace NGUInjector
             set
             {
                 if (value == _autoQuest) return;
-                _autoQuest = value;
-                SaveSettings();
+                SetPersistent("_autoQuest", value);
             }
         }
 
@@ -636,8 +1000,7 @@ namespace NGUInjector
             set
             {
                 if (value == _allowMajorQuests) return;
-                _allowMajorQuests = value;
-                SaveSettings();
+                SetPersistent("_allowMajorQuests", value);
             }
         }
 
@@ -647,8 +1010,7 @@ namespace NGUInjector
             set
             {
                 if (value == _autoConvertBoosts) return;
-                _autoConvertBoosts = value;
-                SaveSettings();
+                SetPersistent("_autoConvertBoosts", value);
             }
         }
 
@@ -658,8 +1020,7 @@ namespace NGUInjector
             set
             {
                 if (value == _autoQuestItopod) return;
-                _autoQuestItopod = value;
-                SaveSettings();
+                SetPersistent("_autoQuestItopod", value);
             }
         }
 
@@ -668,8 +1029,7 @@ namespace NGUInjector
             get => _goldDropLoadout;
             set
             {
-                _goldDropLoadout = value;
-                SaveSettings();
+                SetPersistent("_goldDropLoadout", value);
             }
         }
 
@@ -678,8 +1038,7 @@ namespace NGUInjector
             get => _moneyPitLoadout;
             set
             {
-                _moneyPitLoadout = value;
-                SaveSettings();
+                SetPersistent("_moneyPitLoadout", value);
             }
         }
 
@@ -689,8 +1048,7 @@ namespace NGUInjector
             set
             {
                 if (value == _autoMoneyPit) return;
-                _autoMoneyPit = value;
-                SaveSettings();
+                SetPersistent("_autoMoneyPit", value);
             }
         }
 
@@ -700,8 +1058,7 @@ namespace NGUInjector
             set
             {
                 if (value == _autoSpin) return;
-                _autoSpin = value;
-                SaveSettings();
+                SetPersistent("_autoSpin", value);
             }
         }
 
@@ -711,9 +1068,17 @@ namespace NGUInjector
             set
             {
                 if (value == _autoRebirth) return;
-                _autoRebirth = value;
-                SaveSettings();
-                NotifyCustomPlanRunChanged();
+                if (_savePath != null && !_disableSave)
+                {
+                    var patch = new JSONObject();
+                    patch["_autoRebirth"] = value;
+                    ApplyPatch(patch);
+                }
+                else
+                {
+                    _autoRebirth = value;
+                    NotifyCustomPlanRunChanged();
+                }
             }
         }
 
@@ -723,8 +1088,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manageWandoos) return;
-                _manageWandoos = value;
-                SaveSettings();
+                SetPersistent("_manageWandoos", value);
             }
         }
 
@@ -733,8 +1097,7 @@ namespace NGUInjector
             get => _moneyPitThreshold;
             set
             {
-                _moneyPitThreshold = value;
-                SaveSettings();
+                SetPersistent("_moneyPitThreshold", value);
             }
         }
 
@@ -744,8 +1107,7 @@ namespace NGUInjector
             set
             {
                 if (value == _doGoldSwap) return;
-                _doGoldSwap = value;
-                SaveSettings();
+                SetPersistent("_doGoldSwap", value);
             }
         }
         
@@ -755,8 +1117,7 @@ namespace NGUInjector
             set
             {
                 if (value == _snipeBossOnly) return;
-                _snipeBossOnly = value;
-                SaveSettings();
+                SetPersistent("_snipeBossOnly", value);
             }
         }
 
@@ -765,8 +1126,7 @@ namespace NGUInjector
             get => _boostBlacklist;
             set
             {
-                _boostBlacklist = value;
-                SaveSettings();
+                SetPersistent("_boostBlacklist", value);
             }
         }
 
@@ -776,8 +1136,7 @@ namespace NGUInjector
             set
             {
                 if (value == _recoverHealth) return;
-                _recoverHealth = value;
-                SaveSettings();
+                SetPersistent("_recoverHealth", value);
             }
         }
 
@@ -787,8 +1146,7 @@ namespace NGUInjector
             set
             {
                 if (value == _combatMode) return;
-                _combatMode = value;
-                SaveSettings();
+                SetPersistent("_combatMode", value);
             }
         }
 
@@ -798,8 +1156,7 @@ namespace NGUInjector
             set
             {
                 if (value == _allowZoneFallback) return;
-                _allowZoneFallback = value;
-                SaveSettings();
+                SetPersistent("_allowZoneFallback", value);
             }
         }
 
@@ -809,8 +1166,7 @@ namespace NGUInjector
             set
             {
                 if (value == _abandonMinors) return;
-                _abandonMinors = value;
-                SaveSettings();
+                SetPersistent("_abandonMinors", value);
             }
         }
 
@@ -820,8 +1176,7 @@ namespace NGUInjector
             set
             {
                 if (value == _minorAbandonThreshold) return;
-                _minorAbandonThreshold = value;
-                SaveSettings();
+                SetPersistent("_minorAbandonThreshold", value);
             }
         }
 
@@ -831,8 +1186,7 @@ namespace NGUInjector
             set
             {
                 if (value == _questCombatMode) return;
-                _questCombatMode = value;
-                SaveSettings();
+                SetPersistent("_questCombatMode", value);
             }
         }
 
@@ -842,8 +1196,7 @@ namespace NGUInjector
             set
             {
                 if (value == _questFastCombat) return;
-                _questFastCombat = value;
-                SaveSettings();
+                SetPersistent("_questFastCombat", value);
             }
         }
 
@@ -853,8 +1206,7 @@ namespace NGUInjector
             set
             {
                 if (value == _autoSpellSwap) return;
-                _autoSpellSwap = value;
-                SaveSettings();
+                SetPersistent("_autoSpellSwap", value);
             }
         }
 
@@ -864,8 +1216,7 @@ namespace NGUInjector
             set
             {
                 if (value == _spaghettiThreshold) return;
-                _spaghettiThreshold = value;
-                SaveSettings();
+                SetPersistent("_spaghettiThreshold", value);
             }
         }
 
@@ -875,8 +1226,7 @@ namespace NGUInjector
             set
             {
                 if (value == _castBloodSpells) return;
-                _castBloodSpells = value;
-                SaveSettings();
+                SetPersistent("_castBloodSpells", value);
             }
         }
 
@@ -886,8 +1236,7 @@ namespace NGUInjector
             set
             {
                 if (value == _ironPillThreshold) return;
-                _ironPillThreshold = value;
-                SaveSettings();
+                SetPersistent("_ironPillThreshold", value);
             }
         }
 
@@ -897,8 +1246,7 @@ namespace NGUInjector
             set
             {
                 if (value == _bloodMacGuffinAThreshold) return;
-                _bloodMacGuffinAThreshold = value;
-                SaveSettings();
+                SetPersistent("_bloodMacGuffinAThreshold", value);
             }
         }
 
@@ -908,8 +1256,7 @@ namespace NGUInjector
             set
             {
                 if (value == _bloodMacGuffinBThreshold) return;
-                _bloodMacGuffinBThreshold = value;
-                SaveSettings();
+                SetPersistent("_bloodMacGuffinBThreshold", value);
             }
         }
 
@@ -919,8 +1266,7 @@ namespace NGUInjector
             set
             {
                 if (value == _counterfeitThreshold) return;
-                _counterfeitThreshold = value;
-                SaveSettings();
+                SetPersistent("_counterfeitThreshold", value);
             }
         }
 
@@ -930,8 +1276,7 @@ namespace NGUInjector
             set
             {
                 if (value == _autoBuyEm) return;
-                _autoBuyEm = value;
-                SaveSettings();
+                SetPersistent("_autoBuyEm", value);
             }
         }
 
@@ -941,8 +1286,7 @@ namespace NGUInjector
             set
             {
                 if (value == _bloodNumberThreshold) return;
-                _bloodNumberThreshold = value;
-                SaveSettings();
+                SetPersistent("_bloodNumberThreshold", value);
             }
         }
 
@@ -964,8 +1308,13 @@ namespace NGUInjector
             set
             {
                 if (value == _globalEnabled) return;
-                _globalEnabled = value;
-                SaveSettings();
+                if (_savePath != null && !_disableSave)
+                {
+                    var patch = new JSONObject();
+                    patch["_globalEnabled"] = value;
+                    ApplyPatch(patch);
+                }
+                else _globalEnabled = value;
             }
         }
 
@@ -975,8 +1324,13 @@ namespace NGUInjector
             set
             {
                 if (value == _combatEnabled) return;
-                _combatEnabled = value;
-                SaveSettings();
+                if (_savePath != null && !_disableSave)
+                {
+                    var patch = new JSONObject();
+                    patch["_combatEnabled"] = value;
+                    ApplyPatch(patch);
+                }
+                else _combatEnabled = value;
             }
         }
 
@@ -986,8 +1340,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manualMinors) return;
-                _manualMinors = value;
-                SaveSettings();
+                SetPersistent("_manualMinors", value);
             }
         }
 
@@ -997,8 +1350,7 @@ namespace NGUInjector
             set
             {
                 if (value == _useButterMajor) return;
-                _useButterMajor = value;
-                SaveSettings();
+                SetPersistent("_useButterMajor", value);
             }
         }
 
@@ -1008,8 +1360,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manageR3) return;
-                _manageR3 = value;
-                SaveSettings();
+                SetPersistent("_manageR3", value);
             }
         }
 
@@ -1019,8 +1370,7 @@ namespace NGUInjector
             set
             {
                 if (value == _useButterMinor) return;
-                _useButterMinor = value;
-                SaveSettings();
+                SetPersistent("_useButterMinor", value);
             }
         }
 
@@ -1030,8 +1380,7 @@ namespace NGUInjector
             set
             {
                 if (value == _activateFruits) return;
-                _activateFruits = value;
-                SaveSettings();
+                SetPersistent("_activateFruits", value);
             }
         }
         public int[] WishPriorities
@@ -1040,8 +1389,7 @@ namespace NGUInjector
             set
             {
                 if (value == _wishPriorities) return;
-                _wishPriorities = value;
-                SaveSettings();
+                SetPersistent("_wishPriorities", value);
             }
         }
 
@@ -1051,8 +1399,7 @@ namespace NGUInjector
             set
             {
                 if (value == _wishSortPriorities) return;
-                _wishSortPriorities = value;
-                SaveSettings();
+                SetPersistent("_wishSortPriorities", value);
             }
         }
 
@@ -1062,8 +1409,7 @@ namespace NGUInjector
             set
             {
                 if (value == _wishSortOrder) return;
-                _wishSortOrder = value;
-                SaveSettings();
+                SetPersistent("_wishSortOrder", value);
             }
         }
 
@@ -1073,8 +1419,7 @@ namespace NGUInjector
             set
             {
                 if (value == _beastMode) return;
-                _beastMode = value;
-                SaveSettings();
+                SetPersistent("_beastMode", value);
             }
         }
 
@@ -1084,8 +1429,7 @@ namespace NGUInjector
             set
             {
                 if (value == _cubePriority) return;
-                _cubePriority = value;
-                SaveSettings();
+                SetPersistent("_cubePriority", value);
             }
         }
 
@@ -1095,8 +1439,31 @@ namespace NGUInjector
             set
             {
                 if (value == _manageNguDiff) return;
-                _manageNguDiff = value;
-                SaveSettings();
+                SetPersistent("_manageNguDiff", value);
+            }
+        }
+
+        public int[] EnergyNguWeights
+        {
+            get => (int[]) _energyNguWeights.Clone();
+            set
+            {
+                var patch = new JSONObject();
+                patch["_energyNguWeights"] = CustomPlans.CustomPlanStore.SerializeNguWeights(value, 9, "_energyNguWeights");
+                if (_savePath != null && !_disableSave) ApplyPatch(patch);
+                else _energyNguWeights = (int[]) value.Clone();
+            }
+        }
+
+        public int[] MagicNguWeights
+        {
+            get => (int[]) _magicNguWeights.Clone();
+            set
+            {
+                var patch = new JSONObject();
+                patch["_magicNguWeights"] = CustomPlans.CustomPlanStore.SerializeNguWeights(value, 7, "_magicNguWeights");
+                if (_savePath != null && !_disableSave) ApplyPatch(patch);
+                else _magicNguWeights = (int[]) value.Clone();
             }
         }
 
@@ -1106,8 +1473,7 @@ namespace NGUInjector
             set
             {
                 if (value == _allocationFile) return;
-                _allocationFile = value;
-                SaveSettings();
+                SetPersistent("_allocationFile", value);
             }
         }
 
@@ -1117,8 +1483,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manageGoldLoadouts) return;
-                _manageGoldLoadouts = value;
-                SaveSettings();
+                SetPersistent("_manageGoldLoadouts", value);
             }
         }
 
@@ -1128,8 +1493,7 @@ namespace NGUInjector
             set
             {
                 if (value == _resnipeTime) return;
-                _resnipeTime = value;
-                SaveSettings();
+                SetPersistent("_resnipeTime", value);
             }
         }
 
@@ -1139,8 +1503,7 @@ namespace NGUInjector
             set
             {
                 if (_titanMoneyDone != null && _titanMoneyDone.SequenceEqual(value)) return;
-                _titanMoneyDone = value;
-                SaveSettings();
+                SetPersistent("_titanMoneyDone", value);
             }
         }
 
@@ -1150,8 +1513,7 @@ namespace NGUInjector
             set
             {
                 if (_titanGoldTargets != null && _titanGoldTargets.SequenceEqual(value)) return;
-                _titanGoldTargets = value;
-                SaveSettings();
+                SetPersistent("_titanGoldTargets", value);
             }
         }
 
@@ -1161,8 +1523,7 @@ namespace NGUInjector
             set
             {
                 if (_titanSwapTargets != null && _titanSwapTargets.SequenceEqual(value)) return;
-                _titanSwapTargets = value;
-                SaveSettings();
+                SetPersistent("_titanSwapTargets", value);
             }
         }
 
@@ -1172,8 +1533,7 @@ namespace NGUInjector
             set
             {
                 if (value == _goldCBlockMode) return;
-                _goldCBlockMode = value;
-                SaveSettings();
+                SetPersistent("_goldCBlockMode", value);
             }
         }
 
@@ -1189,8 +1549,7 @@ namespace NGUInjector
             set
             {
                 if (value == _optimizeItopodFloor) return;
-                _optimizeItopodFloor = value;
-                SaveSettings();
+                SetPersistent("_optimizeItopodFloor", value);
             }
         }
 
@@ -1200,8 +1559,7 @@ namespace NGUInjector
             set
             {
                 if (value == _adventureTargetItopod) return;
-                _adventureTargetItopod = value;
-                SaveSettings();
+                SetPersistent("_adventureTargetItopod", value);
             }
         }
 
@@ -1211,8 +1569,7 @@ namespace NGUInjector
             set
             {
                 if (value == _itopodCombatMode) return;
-                _itopodCombatMode = value;
-                SaveSettings();
+                SetPersistent("_itopodCombatMode", value);
             }
         }
 
@@ -1222,8 +1579,7 @@ namespace NGUInjector
             set
             {
                 if (value == _itopodBeastMode) return;
-                _itopodBeastMode = value;
-                SaveSettings();
+                SetPersistent("_itopodBeastMode", value);
             }
         }
 
@@ -1233,8 +1589,7 @@ namespace NGUInjector
             set
             {
                 if (value == _itopodFastCombat) return;
-                _itopodFastCombat = value;
-                SaveSettings();
+                SetPersistent("_itopodFastCombat", value);
             }
         }
 
@@ -1244,8 +1599,7 @@ namespace NGUInjector
             set
             {
                 if (value == _itopodRecoverHp) return;
-                _itopodRecoverHp = value;
-                SaveSettings();
+                SetPersistent("_itopodRecoverHp", value);
             }
         }
 
@@ -1255,8 +1609,7 @@ namespace NGUInjector
             set
             {
                 if (value == _itopodPrecastBuffs) return;
-                _itopodPrecastBuffs = value;
-                SaveSettings();
+                SetPersistent("_itopodPrecastBuffs", value);
             }
         }
 
@@ -1266,8 +1619,7 @@ namespace NGUInjector
             set
             {
                 if (value == _disableOverlay) return;
-                _disableOverlay = value;
-                SaveSettings();
+                SetPersistent("_disableOverlay", value);
             }
         }
 
@@ -1277,8 +1629,7 @@ namespace NGUInjector
             set
             {
                 if (value == _yggSwapThreshold) return;
-                _yggSwapThreshold = value;
-                SaveSettings();
+                SetPersistent("_yggSwapThreshold", value);
             }
         }
 
@@ -1288,8 +1639,7 @@ namespace NGUInjector
             set
             {
                 if (value == _moreBlockParry) return;
-                _moreBlockParry = value;
-                SaveSettings();
+                SetPersistent("_moreBlockParry", value);
             }
         }
 
@@ -1299,8 +1649,7 @@ namespace NGUInjector
             set
             {
                 if (_specialBoostBlacklist != null && _specialBoostBlacklist.SequenceEqual(value)) return;
-                _specialBoostBlacklist = value;
-                SaveSettings();
+                SetPersistent("_specialBoostBlacklist", value);
             }
         }
 
@@ -1310,8 +1659,7 @@ namespace NGUInjector
             set
             {
                 if (_blacklistedBosses != null && _blacklistedBosses.SequenceEqual(value)) return;
-                _blacklistedBosses = value;
-                SaveSettings();
+                SetPersistent("_blacklistedBosses", value);
             }
         }
 
@@ -1335,8 +1683,7 @@ namespace NGUInjector
             set
             {
                 if (value == _hackAdvance) return;
-                _hackAdvance = value;
-                SaveSettings();
+                SetPersistent("_hackAdvance", value);
             }
         }
 
@@ -1346,9 +1693,17 @@ namespace NGUInjector
             set
             {
                 if (value == _useCustomRebirthPlan) return;
-                _useCustomRebirthPlan = value;
-                SaveSettings();
-                NotifyCustomPlanRunChanged();
+                if (_savePath != null && !_disableSave)
+                {
+                    var patch = new JSONObject();
+                    patch["_useCustomRebirthPlan"] = value;
+                    ApplyPatch(patch);
+                }
+                else
+                {
+                    _useCustomRebirthPlan = value;
+                    NotifyCustomPlanRunChanged();
+                }
             }
         }
 
@@ -1358,9 +1713,17 @@ namespace NGUInjector
             set
             {
                 if (value == _customPlanFile) return;
-                _customPlanFile = value;
-                SaveSettings();
-                NotifyCustomPlanRunChanged();
+                if (_savePath != null && !_disableSave)
+                {
+                    var patch = new JSONObject();
+                    patch["_customPlanFile"] = value;
+                    ApplyPatch(patch);
+                }
+                else
+                {
+                    _customPlanFile = value;
+                    NotifyCustomPlanRunChanged();
+                }
             }
         }
 
@@ -1370,10 +1733,11 @@ namespace NGUInjector
             set
             {
                 if (value == _customAdventureEnabled) return;
-                _customAdventureEnabled = value;
-                SaveSettings();
+                SetPersistent("_customAdventureEnabled", value);
             }
         }
+
+        public AdventureRule[] CustomAdventureRules => _customAdventureRules ?? new AdventureRule[0];
 
         public int CustomAdventureMode
         {
@@ -1381,8 +1745,19 @@ namespace NGUInjector
             set
             {
                 if (value == _customAdventureMode) return;
-                _customAdventureMode = value;
-                SaveSettings();
+                if (value < 0 || value > 3) throw new ArgumentOutOfRangeException(nameof(value));
+                SetPersistent("_customAdventureMode", value);
+            }
+        }
+
+        public int CustomAdventureMaxItopodDeaths
+        {
+            get => _customAdventureMaxItopodDeaths < 1 ? 3 : Math.Min(1000, _customAdventureMaxItopodDeaths);
+            set
+            {
+                if (value < 1 || value > 1000) throw new ArgumentOutOfRangeException(nameof(value));
+                if (value == _customAdventureMaxItopodDeaths) return;
+                SetPersistent("_customAdventureMaxItopodDeaths", value);
             }
         }
 
@@ -1392,8 +1767,7 @@ namespace NGUInjector
             set
             {
                 if (value == _customAdventureZone) return;
-                _customAdventureZone = value;
-                SaveSettings();
+                SetPersistent("_customAdventureZone", value);
             }
         }
 
@@ -1403,8 +1777,7 @@ namespace NGUInjector
             set
             {
                 if (value == _customAdventureGoldPush) return;
-                _customAdventureGoldPush = value;
-                SaveSettings();
+                SetPersistent("_customAdventureGoldPush", value);
             }
         }
 
@@ -1414,10 +1787,21 @@ namespace NGUInjector
             set
             {
                 if (value == _customAutoBoostEnabled) return;
-                _customAutoBoostEnabled = value;
-                SaveSettings();
+                SetPersistent("_customAutoBoostEnabled", value);
             }
         }
+
+        public bool CustomAutoExpEnabled => _customAutoExpEnabled;
+        public int CustomExpEnergyRatio => ExpRatio(_customExpEnergyRatio, 5);
+        public int CustomExpMagicRatio => ExpRatio(_customExpMagicRatio, 1);
+        public int CustomExpEnergyPowerRatio => ExpRatio(_customExpEnergyPowerRatio, 5);
+        public int CustomExpEnergyCapRatio => ExpRatio(_customExpEnergyCapRatio, 160000);
+        public int CustomExpEnergyBarsRatio => ExpRatio(_customExpEnergyBarsRatio, 4);
+        public int CustomExpMagicPowerRatio => ExpRatio(_customExpMagicPowerRatio, 5);
+        public int CustomExpMagicCapRatio => ExpRatio(_customExpMagicCapRatio, 160000);
+        public int CustomExpMagicBarsRatio => ExpRatio(_customExpMagicBarsRatio, 4);
+
+        private static int ExpRatio(int value, int fallback) => value < 1 ? fallback : Math.Min(1000000000, value);
 
         public bool CustomAutoMoneyPitEnabled
         {
@@ -1425,8 +1809,7 @@ namespace NGUInjector
             set
             {
                 if (value == _customAutoMoneyPitEnabled) return;
-                _customAutoMoneyPitEnabled = value;
-                SaveSettings();
+                SetPersistent("_customAutoMoneyPitEnabled", value);
             }
         }
 
@@ -1437,8 +1820,7 @@ namespace NGUInjector
             {
                 var normalized = Math.Max(1, Math.Min(4, value));
                 if (normalized == _customAutoBoostCubePowerRatio) return;
-                _customAutoBoostCubePowerRatio = normalized;
-                SaveSettings();
+                SetPersistent("_customAutoBoostCubePowerRatio", normalized);
             }
         }
 
@@ -1449,8 +1831,7 @@ namespace NGUInjector
             {
                 var normalized = Math.Max(1, Math.Min(100000, value));
                 if (normalized == _customAugmentsBloodEstimateSeconds) return;
-                _customAugmentsBloodEstimateSeconds = normalized;
-                SaveSettings();
+                SetPersistent("_customAugmentsBloodEstimateSeconds", normalized);
             }
         }
 
@@ -1460,8 +1841,7 @@ namespace NGUInjector
             set
             {
                 if (value == _customAutoBloodSpellsEnabled) return;
-                _customAutoBloodSpellsEnabled = value;
-                SaveSettings();
+                SetPersistent("_customAutoBloodSpellsEnabled", value);
             }
         }
 
@@ -1472,8 +1852,7 @@ namespace NGUInjector
             {
                 var normalized = Math.Max(0, Math.Min(100000, value));
                 if (normalized == _customBloodSpaghettiGoalPercent) return;
-                _customBloodSpaghettiGoalPercent = normalized;
-                SaveSettings();
+                SetPersistent("_customBloodSpaghettiGoalPercent", normalized);
             }
         }
 
@@ -1484,8 +1863,7 @@ namespace NGUInjector
             {
                 var normalized = Math.Max(0, Math.Min(100000, value));
                 if (normalized == _customBloodCounterfeitGoalPercent) return;
-                _customBloodCounterfeitGoalPercent = normalized;
-                SaveSettings();
+                SetPersistent("_customBloodCounterfeitGoalPercent", normalized);
             }
         }
 
@@ -1496,8 +1874,7 @@ namespace NGUInjector
             {
                 var normalized = Math.Max(0, Math.Min(604800, value));
                 if (normalized == _customIronPillSaveSeconds) return;
-                _customIronPillSaveSeconds = normalized;
-                SaveSettings();
+                SetPersistent("_customIronPillSaveSeconds", normalized);
             }
         }
 
@@ -1510,8 +1887,7 @@ namespace NGUInjector
                 if (double.IsNaN(value) || double.IsInfinity(value) || value < 0d || value > 1e8)
                     throw new ArgumentOutOfRangeException(nameof(value));
                 if (value == _customIronPillMinWorth) return;
-                _customIronPillMinWorth = value;
-                SaveSettings();
+                SetPersistent("_customIronPillMinWorth", value);
             }
         }
 
@@ -1519,12 +1895,15 @@ namespace NGUInjector
 
         internal void AddIronPillHistory(IronPillHistoryEntry entry)
         {
-            _customIronPillHistory = new[] {entry}.Concat(CustomIronPillHistory).Take(10).ToArray();
-            if (_savePath == null || _disableSave) return;
-            // Runtime history refreshes independently; do not rebuild an editor mid-edit.
-            var serialized = SerializeWithUnknownFields(this);
-            JsonFiles.WriteAtomic(_savePath, serialized);
-            _lastAppliedText = serialized;
+            if (!IsValidIronPillHistoryEntry(entry)) throw new ArgumentOutOfRangeException(nameof(entry));
+            var history = new[] {entry}.Concat(CustomIronPillHistory.Where(IsValidIronPillHistoryEntry)).Take(10).ToArray();
+            if (_savePath == null || _disableSave) { _customIronPillHistory = history; return; }
+            lock (CustomPlans.PresetLibraryStore.SyncRoot)
+            {
+                var candidate = CopyPersistent();
+                candidate._customIronPillHistory = history;
+                Commit(candidate, false);
+            }
         }
 
         public bool ManualAdventureEnabled
@@ -1533,8 +1912,43 @@ namespace NGUInjector
             set
             {
                 if (value == _manualAdventureEnabled) return;
-                _manualAdventureEnabled = value;
-                SaveSettings();
+                SetPersistent("_manualAdventureEnabled", value);
+            }
+        }
+
+        public double[] ManualAdventureGearWeights
+        {
+            get => (double[]) (_manualAdventureGearWeights ?? new double[5]).Clone();
+            set
+            {
+                var patch = new JSONObject();
+                patch["_manualAdventureGearWeights"] = SerializeManualAdventureWeights(value, "_manualAdventureGearWeights", 5);
+                if (_savePath != null && !_disableSave) ApplyPatch(patch);
+                else _manualAdventureGearWeights = (double[]) value.Clone();
+            }
+        }
+
+        public double[] ManualAdventureBeardWeights
+        {
+            get => (double[]) (_manualAdventureBeardWeights ?? new double[7]).Clone();
+            set
+            {
+                var patch = new JSONObject();
+                patch["_manualAdventureBeardWeights"] = SerializeManualAdventureWeights(value, "_manualAdventureBeardWeights", 7);
+                if (_savePath != null && !_disableSave) ApplyPatch(patch);
+                else _manualAdventureBeardWeights = (double[]) value.Clone();
+            }
+        }
+
+        public double[] ManualAdventureDiggerWeights
+        {
+            get => (double[]) (_manualAdventureDiggerWeights ?? new double[12]).Clone();
+            set
+            {
+                var patch = new JSONObject();
+                patch["_manualAdventureDiggerWeights"] = SerializeManualAdventureWeights(value, "_manualAdventureDiggerWeights", 12);
+                if (_savePath != null && !_disableSave) ApplyPatch(patch);
+                else _manualAdventureDiggerWeights = (double[]) value.Clone();
             }
         }
 
@@ -1544,8 +1958,71 @@ namespace NGUInjector
             set
             {
                 if (value == _manualAdventureZone) return;
-                _manualAdventureZone = value;
-                SaveSettings();
+                SetPersistent("_manualAdventureZone", value);
+            }
+        }
+
+        public int ManualAdventureLoadout
+        {
+            get => _manualAdventureLoadout < -1 || _manualAdventureLoadout > 2 ? -1 : _manualAdventureLoadout;
+            set
+            {
+                if (value < -1 || value > 2) throw new ArgumentOutOfRangeException(nameof(value));
+                if (value == _manualAdventureLoadout) return;
+                SetPersistent("_manualAdventureLoadout", value);
+            }
+        }
+
+        public bool ManualTitanEnabled
+        {
+            get => _manualTitanEnabled;
+            set
+            {
+                if (value == _manualTitanEnabled) return;
+                SetPersistent("_manualTitanEnabled", value);
+            }
+        }
+
+        public int ManualTitanZone
+        {
+            get => Managers.ZoneHelpers.TitanZones.Contains(_manualTitanZone) ? _manualTitanZone : 16;
+            set
+            {
+                if (!Managers.ZoneHelpers.TitanZones.Contains(value)) throw new ArgumentOutOfRangeException(nameof(value));
+                if (value == _manualTitanZone) return;
+                SetPersistent("_manualTitanZone", value);
+            }
+        }
+
+        public bool ManualTitanRequireAT
+        {
+            get => _manualTitanRequireAT;
+            set
+            {
+                if (value == _manualTitanRequireAT) return;
+                SetPersistent("_manualTitanRequireAT", value);
+            }
+        }
+
+        public int ManualTitanLoadout
+        {
+            get => _manualTitanLoadout < -1 || _manualTitanLoadout > 2 ? 1 : _manualTitanLoadout;
+            set
+            {
+                if (value < -1 || value > 2) throw new ArgumentOutOfRangeException(nameof(value));
+                if (value == _manualTitanLoadout) return;
+                SetPersistent("_manualTitanLoadout", value);
+            }
+        }
+
+        public int ManualTitanMaxDeaths
+        {
+            get => _manualTitanMaxDeaths < 1 ? 3 : Math.Min(1000, _manualTitanMaxDeaths);
+            set
+            {
+                if (value < 1 || value > 1000) throw new ArgumentOutOfRangeException(nameof(value));
+                if (value == _manualTitanMaxDeaths) return;
+                SetPersistent("_manualTitanMaxDeaths", value);
             }
         }
 
@@ -1555,8 +2032,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manualAdventureBossOnly) return;
-                _manualAdventureBossOnly = value;
-                SaveSettings();
+                SetPersistent("_manualAdventureBossOnly", value);
             }
         }
 
@@ -1566,8 +2042,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manualAdventureRecoverHealth) return;
-                _manualAdventureRecoverHealth = value;
-                SaveSettings();
+                SetPersistent("_manualAdventureRecoverHealth", value);
             }
         }
 
@@ -1577,8 +2052,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manualAdventurePrecastBuffs) return;
-                _manualAdventurePrecastBuffs = value;
-                SaveSettings();
+                SetPersistent("_manualAdventurePrecastBuffs", value);
             }
         }
 
@@ -1588,8 +2062,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manualAdventureFastCombat) return;
-                _manualAdventureFastCombat = value;
-                SaveSettings();
+                SetPersistent("_manualAdventureFastCombat", value);
             }
         }
 
@@ -1599,8 +2072,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manualAdventureBeastMode) return;
-                _manualAdventureBeastMode = value;
-                SaveSettings();
+                SetPersistent("_manualAdventureBeastMode", value);
             }
         }
 
@@ -1610,8 +2082,7 @@ namespace NGUInjector
             set
             {
                 if (value == _manualAdventureAllowFallback) return;
-                _manualAdventureAllowFallback = value;
-                SaveSettings();
+                SetPersistent("_manualAdventureAllowFallback", value);
             }
         }
     }

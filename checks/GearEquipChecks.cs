@@ -230,7 +230,7 @@ internal static class GearEquipChecks
     private static object[] Plan(object inv, Array gear, bool offhand, int accessories, int spaces, bool restore, string failure)
     {
         var before = Slots(inv);
-        object[] args = {gear, inv, offhand, accessories, spaces, restore, null, null};
+        object[] args = {gear, inv, offhand, accessories, spaces, restore, null, null, null};
         Equal(failure, (string) _optimizer.GetMethod("PlanEquipGear", Static).Invoke(null, args), "plan result");
         foreach (var slot in before) Same(slot.Value, At(inv, slot.Key), "planning never mutates instance positions");
         Equal(123, (int) Get(inv, "item1"), "planning preserves item1");

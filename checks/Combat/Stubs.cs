@@ -3,56 +3,27 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 
-// Game/Unity state and action boundaries only. Combat and zone policy are source-linked.
+// Decision inputs and record-only move requests. There is deliberately no setup,
+// route producer, selected-support, grant, lease, snapshot or restoration model.
 namespace NGUInjector
 {
     internal enum enemyType { normal, boss, waldo1, waldo2, waldo3, waldo4, bigBoss5, bigBoss6V1, bigBoss6V2, bigBoss6V3, bigBoss6V4 }
     internal enum AI { normal, charger, rapid, exploder }
-
     internal partial class Main
     {
         internal static Character Character;
         internal static PlayerController PlayerController;
         internal static CombatSettings Settings;
         internal static bool Test;
-        internal static object CustomPlanStore;
-        internal static string Status;
-        internal string BlockedReason;
-        internal bool TitanRouteActive;
-        private readonly Managers.CombatManager _combManager;
-        private readonly QuestManager _questManager = new QuestManager();
-        internal Main(Managers.CombatManager manager)
-        {
-            _combManager = manager;
-            CustomPlanStore = null;
-            Status = null;
-            Test = false;
-        }
-        private object LoadRuntimeCustomPlan() => CustomPlanStore;
-        private bool CustomGoalBlocksAdventureGoldPush(object plan, out string reason)
-        { reason = BlockedReason; return reason != null; }
-        private bool TryRouteCustomTitanGoldKill() => TitanRouteActive;
-        private void CancelCustomTitanGoldKill(string reason) { }
-        private static void FocusSettle() => Managers.LoadoutManager.Calls.Add("settle");
-        private static string ZoneName(int zone) => Character.adventureController.zoneName(zone);
-        private static void SetCustomAutomationStatus(string status) => Status = status;
-        private Managers.FightScoreMode GetActiveFightScoreMode() => Managers.FightScoreMode.PowerTimesToughness;
-        internal static void Log(string message) { }
-        internal static void LogCombat(string message) { }
+        internal static void Log(string text) { }
     }
-
-    internal sealed class QuestManager { internal int IsQuesting() => -1; }
-
     internal sealed class CombatSettings
     {
-        internal bool MoreBlockParry, BeastMode, DoGoldSwap, ManageGoldLoadouts, SwapTitanLoadouts, OptimizeITOPODFloor;
-        internal int ITOPODCombatMode;
-        internal bool CustomAdventureEnabled, CustomAdventureGoldPush, UseCustomRebirthPlan;
-        internal int CustomAdventureMode, CustomAdventureZone;
-        internal int[] BlacklistedBosses = Array.Empty<int>();
+        internal bool MoreBlockParry, ManageGoldLoadouts, SwapTitanLoadouts, OptimizeITOPODFloor;
+        internal int CustomAdventureMode, CustomAdventureZone, ITOPODCombatMode;
+        internal AdventureRule[] CustomAdventureRules = Array.Empty<AdventureRule>();
         internal bool[] TitanGoldTargets, TitanMoneyDone, TitanSwapTargets;
     }
-
     internal sealed class Character
     {
         internal Adventure adventure = new Adventure();
@@ -64,197 +35,169 @@ namespace NGUInjector
         internal Buttons buttons = new Buttons();
         internal Arbitrary arbitrary = new Arbitrary();
         internal int bossID = 1000, EffectiveBossId = 1000;
-        internal PlayerTime rebirthTime = new PlayerTime();
-        internal Challenges challenges = new Challenges();
         internal float totalAdvHP() => 100;
         internal float chargeCooldown() => 10;
-        internal float ultimateAttackCooldown() => 10;
+        internal float RegularCooldown = 1, StrongCooldown = 6, PierceCooldown = 10, UltimateCooldown = 15;
+        internal Inventory inventory = new Inventory();
+        internal float regAttackCooldown() => RegularCooldown;
+        internal float strongAttackCooldown() => StrongCooldown;
+        internal float pierceAttackCooldown() => PierceCooldown;
+        internal float ultimateAttackCooldown() => UltimateCooldown;
         internal float ultimateBuffDuration() => 10;
         internal float defenseBuffDuration() => 10;
         internal int effectiveBossID() => EffectiveBossId;
-        internal float totalAdvAttack() => 1000;
+        internal float AdventureAttack = 1000, AdventureDefense, AdventureRegen;
+        internal float totalAdvAttack() => AdventureAttack;
+        internal float totalAdvDefense() => AdventureDefense;
+        internal float totalAdvHPRegen() => AdventureRegen;
         internal float idleAttackPower() => 1;
         internal float regAttackPower() => 1;
     }
-
-    internal sealed class Adventure
+    internal class Adventure { internal int zone = 19, boss5Kills, highestItopodLevel; internal float curHP = 100; }
+    internal sealed class Arbitrary { internal bool boughtLazyITOPOD, lazyITOPODOn; }
+    internal sealed class InputField { internal string text; }
+    internal sealed class ZoneSelector { internal void changeZone(int zone) => throw new NotSupportedException("Native route belongs to the compiled fixture."); }
+    internal sealed class TitanAdventure : Adventure
     {
-        internal int zone = 19, highestItopodLevel;
-        internal float curHP = 100;
-        internal bool autoattacking, beastModeOn;
+        public PlayerTime boss1Spawn = new PlayerTime(), boss2Spawn = new PlayerTime(), boss3Spawn = new PlayerTime(),
+            boss4Spawn = new PlayerTime(), boss5Spawn = new PlayerTime(), boss6Spawn = new PlayerTime(),
+            boss7Spawn = new PlayerTime(), boss8Spawn = new PlayerTime(), boss9Spawn = new PlayerTime(),
+            boss10Spawn = new PlayerTime(), boss11Spawn = new PlayerTime(), boss12Spawn = new PlayerTime();
+        public bool titan6Unlocked, titan7Unlocked, titan8Unlocked, titan9Unlocked, titan10Unlocked, titan11Unlocked, titan12Unlocked;
+        public int titan6Version, titan7Version, titan8Version, titan9Version, titan10Version, titan11Version, titan12Version;
     }
+    internal sealed class UnversionedTitanAdventure : Adventure { public bool titan6Unlocked = true; }
     internal sealed class Training { internal long[] attackTraining = { 5000, 1, 0, 0, 0, 0 }, defenseTraining = new long[6]; }
     internal sealed class Wish { internal int level; }
     internal sealed class Wishes { internal Wish[] wishes = Enumerable.Range(0, 59).Select(_ => new Wish()).ToArray(); }
-    internal sealed class Challenges
-    {
-        internal TimeMachineChallenge timeMachineChallenge = new TimeMachineChallenge();
-        internal bool hasParalyze() => false;
-    }
-    internal sealed class TimeMachineChallenge { internal bool inChallenge; }
-    internal sealed class GameSettings { internal bool hasHyperRegen; }
-    internal sealed class Buttons { internal Button adventure = new Button(), brokenTimeMachine = new Button(); }
-    internal sealed class Arbitrary { internal bool boughtLazyITOPOD, lazyITOPODOn; }
+    internal sealed class Challenges { internal bool ParalyzeUnlocked; internal bool hasParalyze() => ParalyzeUnlocked; }
+    internal sealed class GameSettings { internal bool hasHyperRegen, autoKillTitans; }
+    internal sealed class Inventory { internal ItemList itemList = new ItemList(); }
+    internal sealed class ItemList { internal bool redLiquidComplete; internal bool[] itemMaxxed = new bool[136]; }
+    internal sealed class Buttons { internal Button adventure = new Button(); }
     internal sealed class PlayerTime { internal double totalseconds; }
-    internal sealed class InputField { internal string text; }
-
     internal sealed class PlayerController
     {
         internal bool CanMove = true, isParrying, isBlocking;
-        internal float moveTimer, chargeFactor = 1, ultimateBuffTime, defenseBuffTime;
+        internal float moveTimer, chargeFactor = 1, ultimateBuffTime, defenseBuffTime, hyperRegenTime;
+        internal float CooldownSpeed = 1;
         internal bool moveCheck() => CanMove;
+        internal float timeDilation(float seconds) => seconds * CooldownSpeed;
     }
-
     internal sealed class Enemy
     {
         internal string name = "Unremarkable enemy";
         internal enemyType enemyType;
         internal AI AI;
-        internal int spriteID;
         internal float curHP = 100, maxHP = 100, attackRate = 10;
     }
-
     internal class EnemyAI
     {
         public int chargeCooldown, rapidEffect;
-        public float enemyAttackTimer;
-        // Reflection adapter for the game's fields, not a replacement combat decision.
+        public float enemyAttackTimer, paralyzeTime;
+        public bool firstStrike, rapidMode;
         internal T GetPV<T>(string name) => (T)GetType().GetField(name,
             BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance).GetValue(this);
     }
-    internal sealed class WalderpAI : EnemyAI
-    {
-        public bool inWaldoSaysLoop, waldoSays;
-        public int waldoAttackID = 3, growCount = 2;
-    }
+    internal sealed class WalderpAI : EnemyAI { public bool inWaldoSaysLoop, waldoSays; public int waldoAttackID = 3, growCount = 2; }
     internal sealed class MissingAttackPromptAI : EnemyAI { public bool inWaldoSaysLoop = true, waldoSays = true; }
     internal sealed class MissingSaysPromptAI : EnemyAI { public bool inWaldoSaysLoop = true; public int waldoAttackID = 3; }
-
-    internal sealed class Button
-    {
-        internal bool interactable;
-        internal bool IsInteractable() => interactable;
-    }
-
+    internal sealed class MissingCountAI : EnemyAI { public bool inWaldoSaysLoop; }
+    internal sealed class MissingPromptStateAI : EnemyAI { public int growCount = 2; }
+    internal sealed class Button { internal bool interactable; internal bool IsInteractable() => interactable; }
     internal sealed class Move
     {
         internal readonly Button button = new Button();
         private readonly List<string> _calls;
         private readonly string _name;
         public float chargeTimer, ultimateAttackTimer;
+        internal Action OnUse;
         internal Move(List<string> calls, string name) { _calls = calls; _name = name; }
         internal void doMove()
         {
-            if (!button.IsInteractable()) throw new InvalidOperationException("Unavailable move called: " + _name);
+            if (!button.IsInteractable()) throw new InvalidOperationException("Unavailable move requested: " + _name);
             _calls.Add(_name);
-        }
-        internal void setToggle()
-        {
-            Main.Character.adventure.autoattacking = !Main.Character.adventure.autoattacking;
-            _calls.Add(Main.Character.adventure.autoattacking ? "idle:on" : "idle:off");
+            OnUse?.Invoke();
         }
     }
-
-    internal sealed class ZoneSelector
+    internal class AdventureController
     {
-        private readonly List<string> _calls;
-        internal ZoneSelector(List<string> calls) { _calls = calls; }
-        internal void changeZone(int zone) { _calls.Add("zone:" + zone); Main.Character.adventure.zone = zone; }
-    }
-
-    internal sealed class AdventureController
-    {
+        internal List<List<Enemy>> enemyList = new List<List<Enemy>>();
+        internal int itopodLevel;
+        internal InputField itopodStartInput = new InputField(), itopodEndInput = new InputField();
+        internal ZoneSelector zoneSelector = new ZoneSelector();
+        internal int maxItopodLevel() => 100;
+        internal void verifyItopodInputs() => throw new NotSupportedException("Native settings belong to the compiled fixture.");
         internal Enemy currentEnemy;
         internal EnemyAI enemyAI;
         internal readonly Move regularAttackMove, strongAttackMove, pierceMove, ultimateAttackMove,
             chargeMove, parryMove, blockMove, healMove, hyperRegenMove, ultimateBuffMove, megaBuffMove,
-            offenseBuffMove, defenseBuffMove, paralyzeMove, ohShitMove, beastModeMove, idleAttackMove;
-        internal readonly ZoneSelector zoneSelector;
-        internal List<List<Enemy>> enemyList = new List<List<Enemy>>();
-        internal int itopodLevel;
-        internal InputField itopodStartInput = new InputField(), itopodEndInput = new InputField();
+            offenseBuffMove, defenseBuffMove, paralyzeMove, ohShitMove;
         internal AdventureController(List<string> calls)
         {
             regularAttackMove = new Move(calls, "regular"); strongAttackMove = new Move(calls, "strong");
             pierceMove = new Move(calls, "pierce"); ultimateAttackMove = new Move(calls, "ultimate");
-            chargeMove = new Move(calls, "charge"); parryMove = new Move(calls, "parry");
-            blockMove = new Move(calls, "block"); healMove = new Move(calls, "heal");
-            hyperRegenMove = new Move(calls, "regen"); ultimateBuffMove = new Move(calls, "ultimate-buff");
-            megaBuffMove = new Move(calls, "mega-buff"); offenseBuffMove = new Move(calls, "offense-buff");
-            defenseBuffMove = new Move(calls, "defense-buff"); paralyzeMove = new Move(calls, "paralyze");
-            ohShitMove = new Move(calls, "oh-shit"); beastModeMove = new Move(calls, "beast");
-            idleAttackMove = new Move(calls, "idle"); zoneSelector = new ZoneSelector(calls);
+            chargeMove = new Move(calls, "charge"); parryMove = new Move(calls, "parry"); blockMove = new Move(calls, "block");
+            healMove = new Move(calls, "heal"); hyperRegenMove = new Move(calls, "regen");
+            ultimateBuffMove = new Move(calls, "ultimate-buff"); megaBuffMove = new Move(calls, "mega-buff");
+            offenseBuffMove = new Move(calls, "offense-buff"); defenseBuffMove = new Move(calls, "defense-buff");
+            paralyzeMove = new Move(calls, "paralyze"); ohShitMove = new Move(calls, "oh-shit");
         }
-        internal string zoneName(int zone) => "zone " + zone;
-        internal int maxItopodLevel() => 100;
-        internal void verifyItopodInputs() { }
     }
-}
-
-namespace NGUInjector.Managers
-{
-    internal enum LockType { Titan, Yggdrasil, MoneyPit, Gold, None }
-    internal static class LoadoutManager
+    // Explicit native eligibility boundary, never executor authorization.
+    internal sealed class TitanAdventureController : AdventureController
     {
-        internal static LockType CurrentLock;
-        internal static List<string> Calls;
-        internal static string Equipped, Saved;
-        internal static void Reset(List<string> calls)
+        internal readonly float[] SpawnIntervals = Enumerable.Repeat(100f, 12).ToArray();
+        internal readonly bool[,] NativeAutokillResults = new bool[12, 4];
+        internal readonly List<string> NativeAutokillCalls = new List<string>();
+        internal bool FailSpawnInterval, FailNativeAutokill;
+        internal TitanAdventureController(List<string> calls) : base(calls) { }
+        private float SpawnInterval(int index) { if (FailSpawnInterval) throw new InvalidOperationException("native spawn failure"); return SpawnIntervals[index]; }
+        private bool NativeAutokill(int titan, int version)
         {
-            Calls = calls;
-            CurrentLock = LockType.None;
-            Equipped = "prior-gear";
-            Saved = null;
-            GearOptimizer.FailEquip = false;
-            BoostFarmHelper.Target = new BoostFarmTarget { Zone = 3, Summary = "fixture boosts", Score = 2 };
+            NativeAutokillCalls.Add($"{titan}:V{version}");
+            if (FailNativeAutokill) throw new InvalidOperationException("native autokill failure");
+            return NativeAutokillResults[titan - 1, version - 1];
         }
-        internal static bool CanSwap() => CurrentLock == LockType.None;
-        internal static void SaveCurrentLoadout() { Saved = Equipped; Calls.Add("save:" + Saved); }
-        internal static void AcquireLock(LockType type)
-        {
-            if (!CanSwap()) throw new InvalidOperationException("Acquired busy gear lock");
-            CurrentLock = type;
-            Calls.Add("acquire:" + type);
-        }
-        internal static void RestoreGear()
-        {
-            if (Saved == null) throw new InvalidOperationException("Restored without a gear snapshot");
-            Equipped = Saved;
-            Calls.Add("restore:" + Equipped);
-        }
-        internal static void ReleaseLock() { Calls.Add("release:" + CurrentLock); CurrentLock = LockType.None; }
-    }
-
-    internal enum GearOptimizationGoal { Gold }
-    internal enum FightScoreMode { PowerTimesToughness }
-    internal sealed class GearOptimizationResult { internal bool Success; internal string Message; }
-    internal static class GearOptimizer
-    {
-        internal static bool FailEquip;
-        internal static GearOptimizationResult OptimizeAndEquip(GearOptimizationGoal goal, FightScoreMode mode, bool allowLocked)
-        {
-            if (LoadoutManager.CurrentLock != LockType.Gold || !allowLocked)
-                throw new InvalidOperationException("Gold optimization requires its owned lock");
-            LoadoutManager.Calls.Add("optimize:" + goal + ":" + mode + ":" + allowLocked);
-            if (!FailEquip) LoadoutManager.Equipped = "gold-gear";
-            return new GearOptimizationResult { Success = !FailEquip, Message = FailEquip ? "fixture equip failure" : "fixture gold gear" };
-        }
-    }
-    internal sealed class BoostFarmTarget
-    {
-        internal int Zone;
-        internal bool IsItopod;
-        internal string Summary;
-        internal double Score;
-    }
-    internal static class BoostFarmHelper
-    {
-        internal static BoostFarmTarget Target;
-        internal static BoostFarmTarget GetBestTarget() => Target;
-        internal static string FormatTarget(BoostFarmTarget target) => target.Summary;
-    }
-    internal static class CustomStageAllocator
-    {
-        internal static string FormatSeconds(int seconds) => seconds + "s";
+        public float boss1SpawnTime() => SpawnInterval(0);
+        public float boss2SpawnTime() => SpawnInterval(1);
+        public float boss3SpawnTime() => SpawnInterval(2);
+        public float boss4SpawnTime() => SpawnInterval(3);
+        public float boss5SpawnTime() => SpawnInterval(4);
+        public float boss6SpawnTime() => SpawnInterval(5);
+        public float boss7SpawnTime() => SpawnInterval(6);
+        public float boss8SpawnTime() => SpawnInterval(7);
+        public float boss9SpawnTime() => SpawnInterval(8);
+        public float boss10SpawnTime() => SpawnInterval(9);
+        public float boss11SpawnTime() => SpawnInterval(10);
+        public float boss12SpawnTime() => SpawnInterval(11);
+        public bool autokillTitan6V1Achieved() => NativeAutokill(6, 1);
+        public bool autokillTitan6V2Achieved() => NativeAutokill(6, 2);
+        public bool autokillTitan6V3Achieved() => NativeAutokill(6, 3);
+        public bool autokillTitan6V4Achieved() => NativeAutokill(6, 4);
+        public bool autokillTitan7V1Achieved() => NativeAutokill(7, 1);
+        public bool autokillTitan7V2Achieved() => NativeAutokill(7, 2);
+        public bool autokillTitan7V3Achieved() => NativeAutokill(7, 3);
+        public bool autokillTitan7V4Achieved() => NativeAutokill(7, 4);
+        public bool autokillTitan8V1Achieved() => NativeAutokill(8, 1);
+        public bool autokillTitan8V2Achieved() => NativeAutokill(8, 2);
+        public bool autokillTitan8V3Achieved() => NativeAutokill(8, 3);
+        public bool autokillTitan8V4Achieved() => NativeAutokill(8, 4);
+        public bool autokillTitan9V1Achieved() => NativeAutokill(9, 1);
+        public bool autokillTitan9V2Achieved() => NativeAutokill(9, 2);
+        public bool autokillTitan9V3Achieved() => NativeAutokill(9, 3);
+        public bool autokillTitan9V4Achieved() => NativeAutokill(9, 4);
+        public bool autokillTitan10V1Achieved() => NativeAutokill(10, 1);
+        public bool autokillTitan10V2Achieved() => NativeAutokill(10, 2);
+        public bool autokillTitan10V3Achieved() => NativeAutokill(10, 3);
+        public bool autokillTitan10V4Achieved() => NativeAutokill(10, 4);
+        public bool autokillTitan11V1Achieved() => NativeAutokill(11, 1);
+        public bool autokillTitan11V2Achieved() => NativeAutokill(11, 2);
+        public bool autokillTitan11V3Achieved() => NativeAutokill(11, 3);
+        public bool autokillTitan11V4Achieved() => NativeAutokill(11, 4);
+        public bool autokillTitan12V1Achieved() => NativeAutokill(12, 1);
+        public bool autokillTitan12V2Achieved() => NativeAutokill(12, 2);
+        public bool autokillTitan12V3Achieved() => NativeAutokill(12, 3);
+        public bool autokillTitan12V4Achieved() => NativeAutokill(12, 4);
     }
 }

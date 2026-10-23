@@ -9,12 +9,15 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const snapshot = (settings: JsonObject = {}, dir = 'A:/runtime'): NguiState => ({ runtime_dir: dir, marker_enabled: true, connected: true, protocol: {}, settings, runtime: { externalUiEnabled: true, status: 'running', protocolVersion: 3, updatedAt: new Date().toISOString(), supportedCommands: ['readPlan', 'savePlan', 'focusGoal', 'manualRebirth', 'applySettingsPatch', 'previewGear', 'previewAugments', 'allocateAugments', 'createPlan', 'deletePlan'] }, profiles: [], plans: [], logs: [], command_results: [] });
-const plan = (): JsonObject => ({ Version: 14, __externalUiRevision: 'a'.repeat(64), Name: 'plan', Stages: [{ Name: 'one', Percent: 100, GearGoal: -1 }], StageLoopStartIndex: -1, StageDurationSeconds: 1800, Future: 1, RebirthHistory: [{ TimestampLocal: 'old' }] });
+const settingsRevision = 'a'.repeat(64);
+const settingsSaved = (settings: JsonObject, extra: JsonObject = {}): JsonObject => ({ success: true, mode: 'connected', data: { settings, revision: 'b'.repeat(64) }, ...extra });
+const snapshot = (settings: JsonObject = {}, dir = 'A:/runtime'): NguiState => ({ runtime_dir: dir, marker_enabled: true, connected: true, protocol: {}, settings, settings_revision: settingsRevision, runtime: { externalUiEnabled: true, status: 'running', protocolVersion: 3, planVersion: 17, updatedAt: new Date().toISOString(), supportedCommands: ['readPlan', 'savePlan', 'focusGoal', 'manualRebirth', 'applySettingsPatch', 'previewGear', 'previewAugments', 'allocateAugments', 'createPlan', 'deletePlan'] }, profiles: [], plans: [], logs: [], command_results: [] });
+const plan = (): JsonObject => ({ Version: 17, __externalUiRevision: 'a'.repeat(64), Name: 'plan', Stages: [{ Name: 'one', Percent: 100, DurationSeconds: 0, DurationUnit: '%', CompletionMode: 0, GearGoal: -1 }], StageLoopStartIndex: -1, StageDurationSeconds: 1800, Future: 1, RebirthHistory: [{ TimestampLocal: 'old' }] });
 function setup(initial = snapshot()) {
+  const getState = vi.fn(async () => initial);
   const backend = { ...api,
-    getState: vi.fn(async () => initial), storeRuntimeDir: vi.fn(),
-    saveSettingsPatch: vi.fn(async (_dir: string, _patch: JsonObject) => ({ success: true, mode: 'connected' } as JsonObject)),
+    getState, storeRuntimeDir: vi.fn(),
+    saveSettingsPatch: vi.fn(async (_dir: string, patch: JsonObject, _expectedRevision: string): Promise<JsonObject> => settingsSaved({ ...(await getState.mock.results[getState.mock.results.length - 1]!.value).settings, ...patch })),
     readPlan: vi.fn(async (_dir: string, _name: string) => plan()),
     savePlan: vi.fn(async (_dir: string, _name: string, _plan: JsonObject) => ({ success: true, mode: 'connected' } as JsonObject)),
     enqueueCommand: vi.fn(async (_dir: string, _command: string, _args?: JsonObject) => 'command-id'),
@@ -28,8 +31,348 @@ function setup(initial = snapshot()) {
   return { ui, backend, confirm };
 }
 
+describe('bulk settings fresh-read regressions', () => {
+  it.each(['control', 'raw JSON'])('rejects an unpolled backend conflict from a %s edit', async editor => {
+    const base = { _moneyPitThreshold: 1 };
+    const { ui, backend } = setup(snapshot(base));
+    try {
+      await ui.refresh();
+      if (editor === 'control') ui.editSetting('_moneyPitThreshold', 2, 350);
+      else ui.applyRawSettings({ _moneyPitThreshold: 2 }, base);
+      backend.getState.mockResolvedValue(snapshot({ _moneyPitThreshold: 3 }));
+      expect(ui.current().snapshot!.settings._moneyPitThreshold).toBe(1);
+      await ui.flushAutosave();
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+      expect(ui.current().patch).toEqual({ _moneyPitThreshold: 2 });
+      expect(ui.current().saveError).toContain('Source changed at _moneyPitThreshold');
+      await ui.retryAutosave();
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+      expect(ui.current().patch).toEqual({ _moneyPitThreshold: 2 });
+    } finally { ui.dispose(); }
+  });
+
+  it.each(['returned session', 'returned folder', 'published session', 'current folder', 'read failure'])('retains pending edits after a %s change during the fresh read', async change => {
+    const initial = snapshot({ _moneyPitThreshold: 1 }); initial.runtime.startedAt = 'session-a';
+    const { ui, backend } = setup(initial);
+    const reading = deferred<NguiState>();
+    try {
+      await ui.refresh();
+      ui.setSetting('_moneyPitThreshold', 2);
+      backend.getState.mockReturnValueOnce(reading.promise);
+      const saving = ui.saveSettings();
+      await vi.waitFor(() => expect(backend.getState).toHaveBeenCalledTimes(2));
+      const next = snapshot(initial.settings); next.runtime.startedAt = 'session-a';
+      if (change === 'returned session') next.runtime.startedAt = 'session-b';
+      if (change === 'returned folder') next.runtime_dir = 'B:/runtime';
+      if (change === 'published session') {
+        const published = snapshot(initial.settings); published.runtime.startedAt = 'session-b';
+        backend.getState.mockResolvedValue(published);
+        await ui.refresh(true);
+      }
+      // Folder navigation is serialized; explicitly supersede the state for this guard case.
+      if (change === 'current folder') Object.assign(ui.current(), { runtimeDir: 'B:/runtime', snapshot: { ...initial, runtime_dir: 'B:/runtime' } });
+      if (change === 'read failure') reading.reject(new Error('Fresh settings read failed'));
+      else reading.resolve(next);
+      await saving;
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+      expect(ui.current().patch).toEqual({ _moneyPitThreshold: 2 });
+      expect(ui.current().error).toMatch(change === 'read failure' ? /Fresh settings read failed/ : /superseded|session changed/);
+    } finally { ui.dispose(); }
+  });
+
+  it('checks the captured value and retains its original baseline when newer text matches the fresh conflict', async () => {
+    const initial = snapshot({ _moneyPitThreshold: 1 });
+    const { ui, backend } = setup(initial);
+    const reading = deferred<NguiState>();
+    backend.saveSettingsPatch.mockImplementation(async (_dir, patch) => {
+      backend.getState.mockResolvedValue(snapshot({ ...initial.settings, ...patch }));
+      return settingsSaved({ ...initial.settings, ...patch });
+    });
+    try {
+      await ui.refresh();
+      ui.setSetting('_moneyPitThreshold', 2);
+      backend.getState.mockReturnValueOnce(reading.promise);
+      const saving = ui.saveSettings();
+      await vi.waitFor(() => expect(backend.getState).toHaveBeenCalledTimes(2));
+      ui.setSetting('_moneyPitThreshold', 3);
+      reading.resolve(snapshot({ _moneyPitThreshold: 3 }));
+      await saving;
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+      expect(ui.current().patch).toEqual({ _moneyPitThreshold: 3 });
+      expect(ui.current().error).toContain('Source changed at _moneyPitThreshold');
+      backend.getState.mockResolvedValue(initial);
+      await ui.saveSettings();
+      expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _moneyPitThreshold: 3 }, settingsRevision);
+      expect(ui.current().patch).toEqual({});
+      expect(ui.current().error).toBe('');
+    } finally { ui.dispose(); }
+  });
+
+  it('retains newer drafts while saving only values captured before the fresh read', async () => {
+    const initial = snapshot({ _moneyPitThreshold: 1, _customIronPillSaveSeconds: 900 });
+    const { ui, backend } = setup(initial);
+    const reading = deferred<NguiState>();
+    backend.saveSettingsPatch.mockImplementation(async (_dir, patch) => {
+      backend.getState.mockResolvedValue(snapshot({ ...initial.settings, ...patch }));
+      return settingsSaved({ ...initial.settings, ...patch });
+    });
+    try {
+      await ui.refresh();
+      ui.setSetting('_moneyPitThreshold', 2);
+      backend.getState.mockReturnValueOnce(reading.promise);
+      const saving = ui.saveSettings();
+      await vi.waitFor(() => expect(backend.getState).toHaveBeenCalledTimes(2));
+      ui.setSetting('_moneyPitThreshold', 4);
+      ui.setSetting('_customIronPillSaveSeconds', 1200);
+      reading.resolve(initial);
+      await saving;
+      expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _moneyPitThreshold: 2 }, settingsRevision);
+      expect(ui.current().patch).toEqual({ _moneyPitThreshold: 4, _customIronPillSaveSeconds: 1200 });
+      await ui.saveSettings();
+      expect(backend.saveSettingsPatch.mock.calls.map(call => call[1])).toEqual([
+        { _moneyPitThreshold: 2 }, { _moneyPitThreshold: 4, _customIronPillSaveSeconds: 1200 }
+      ]);
+      expect(ui.current().patch).toEqual({});
+      expect(ui.current().error).toBe('');
+    } finally { ui.dispose(); }
+  });
+});
+
+describe('frontend save regressions: command preflight context', () => {
+  it.each(['manualRebirth', 'allocateAugments'])('does not submit %s to a session that changed during confirmation', async command => {
+    const initial = snapshot(); initial.runtime.startedAt = 'old-session';
+    const { ui, backend, confirm } = setup(initial);
+    const answer = deferred<boolean>();
+    confirm.mockReturnValueOnce(answer.promise);
+    backend.readCommandResult.mockResolvedValue({ id: 'command-id', command, success: true });
+    try {
+      await ui.refresh();
+      const action = ui.runCommand(command, command === 'allocateAugments' ? { expectedSeconds: 300 } : {});
+      expect(confirm).toHaveBeenCalledTimes(1);
+      const next = snapshot(); next.runtime.startedAt = 'new-session';
+      backend.getState.mockResolvedValue(next);
+      await ui.refresh(true);
+      answer.resolve(true);
+      await action;
+      expect(backend.enqueueCommand).not.toHaveBeenCalled();
+      expect(ui.current().snapshot!.runtime.startedAt).toBe('new-session');
+      expect(ui.current().error).toContain('session changed');
+    } finally { ui.dispose(); }
+  });
+
+  it('does not submit to a folder context superseded during confirmation', async () => {
+    const initial = snapshot(); initial.runtime.startedAt = 'session';
+    const { ui, backend, confirm } = setup(initial);
+    const answer = deferred<boolean>();
+    confirm.mockReturnValueOnce(answer.promise);
+    backend.readCommandResult.mockResolvedValue({ id: 'command-id', command: 'manualRebirth', success: true });
+    try {
+      await ui.refresh();
+      const action = ui.runCommand('manualRebirth');
+      // Folder navigation is serialized; exercise the guard against a superseded state directly.
+      Object.assign(ui.current(), { runtimeDir: 'B:/runtime', snapshot: { ...initial, runtime_dir: 'B:/runtime' } });
+      answer.resolve(true);
+      await action;
+      expect(backend.enqueueCommand).not.toHaveBeenCalled();
+      expect(ui.current().runtimeDir).toBe('B:/runtime');
+      expect(ui.current().error).toContain('session changed');
+    } finally { ui.dispose(); }
+  });
+
+  it('does not adopt a new session after the final settings-plan preflight', async () => {
+    const initial = snapshot(); initial.runtime.startedAt = 'old-session';
+    const { ui, backend } = setup(initial);
+    backend.readCommandResult.mockResolvedValue({ id: 'command-id', command: 'applySettingsPatch', success: true });
+    try {
+      await ui.refresh();
+      const next = snapshot(); next.runtime.startedAt = 'new-session';
+      backend.getState.mockResolvedValue(next);
+      backend.readPlan.mockImplementationOnce(async () => {
+        // Publish after readCurrentPlan checks its response, but before its caller resumes.
+        queueMicrotask(() => { void ui.refresh(true); });
+        return plan();
+      });
+      await ui.runCommand('applySettingsPatch', { patch: { _customPlanFile: 'plan' } });
+      expect(backend.readPlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'plan');
+      expect(backend.enqueueCommand).not.toHaveBeenCalled();
+      expect(ui.current().snapshot!.runtime.startedAt).toBe('new-session');
+      expect(ui.current().error).toContain('session changed');
+    } finally { ui.dispose(); }
+  });
+
+  it('submits a confirmed action when its original session remains current', async () => {
+    const initial = snapshot(); initial.runtime.startedAt = 'session';
+    const { ui, backend } = setup(initial);
+    backend.readCommandResult.mockResolvedValue({ id: 'command-id', command: 'manualRebirth', success: true });
+    try {
+      await ui.refresh();
+      await ui.runCommand('manualRebirth');
+      expect(backend.enqueueCommand).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'manualRebirth', {});
+      expect(ui.current().error).toBe('');
+    } finally { ui.dispose(); }
+  });
+});
+
+describe('frontend save regressions: settings conflicts', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it.each([2, 1])('retains a raw settings draft reverted to %s when polling observes a conflict', async local => {
+    vi.useFakeTimers();
+    const base = { _moneyPitThreshold: 1 };
+    const { ui, backend } = setup(snapshot(base));
+    try {
+      await ui.refresh();
+      ui.applyRawSettings({ _moneyPitThreshold: 2 }, base);
+      if (local === 1) ui.setSetting('_moneyPitThreshold', local);
+      backend.getState.mockResolvedValue(snapshot({ _moneyPitThreshold: 3 }));
+      await ui.refresh(true);
+      await vi.advanceTimersByTimeAsync(350);
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+      expect(ui.current().patch).toEqual({ _moneyPitThreshold: local });
+      expect(ui.current().saveError).toContain('Source changed at _moneyPitThreshold');
+      await ui.retryAutosave();
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+      expect(ui.current().patch).toEqual({ _moneyPitThreshold: local });
+    } finally { ui.dispose(); }
+  });
+
+  it('checks captured settings rather than a newer draft after an awaited plan preflight', async () => {
+    const initial = snapshot({ _customPlanFile: 'old', _moneyPitThreshold: 1 });
+    const { ui, backend } = setup(initial);
+    const reading = deferred<JsonObject>();
+    try {
+      await ui.refresh();
+      ui.setSetting('_customPlanFile', 'plan');
+      ui.setSetting('_moneyPitThreshold', 2);
+      backend.readPlan.mockReturnValueOnce(reading.promise);
+      const saving = ui.saveSettings();
+      expect(backend.readPlan).toHaveBeenCalledTimes(1);
+      ui.setSetting('_moneyPitThreshold', 3);
+      backend.getState.mockResolvedValue(snapshot({ ...initial.settings, _moneyPitThreshold: 3 }));
+      await ui.refresh(true);
+      reading.resolve(plan());
+      await saving;
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+      expect(ui.current().patch).toEqual({ _customPlanFile: 'plan', _moneyPitThreshold: 3 });
+      expect(ui.current().error).toContain('Source changed at _moneyPitThreshold');
+    } finally { ui.dispose(); }
+  });
+
+  it('allows the submitted value already present remotely without losing unrelated refreshed settings', async () => {
+    const { ui, backend } = setup(snapshot({ _moneyPitThreshold: 1 }));
+    try {
+      await ui.refresh();
+      ui.setSetting('_moneyPitThreshold', 2);
+      backend.getState.mockResolvedValue(snapshot({ _moneyPitThreshold: 2, Future: 3 }));
+      await ui.refresh(true);
+      await ui.saveSettings();
+      expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _moneyPitThreshold: 2 }, settingsRevision);
+      expect(ui.current().patch).toEqual({});
+      expect(ui.current().snapshot!.settings).toEqual({ _moneyPitThreshold: 2, Future: 3 });
+      expect(ui.current().error).toBe('');
+    } finally { ui.dispose(); }
+  });
+});
+
+describe('one-shot Max ITOPOD push commands', () => {
+  const commands = ['startMaxItopodPush', 'cancelMaxItopodPush'];
+
+  it.each<{ command: string; args: JsonObject; active: boolean }>([
+    { command: commands[0], args: { deaths: 1 }, active: true },
+    { command: commands[0], args: { deaths: 3 }, active: true },
+    { command: commands[0], args: { deaths: 1000 }, active: true },
+    { command: commands[1], args: {}, active: false }
+  ])('sends $command $args without saving settings or drafts', async ({ command, args, active }) => {
+    const initial = snapshot({ _customAdventureMode: 1, _customAdventureZone: 12, _manualAdventureZone: 4, _autoRebirth: true, _useCustomRebirthPlan: true });
+    initial.runtime = { ...initial.runtime, startedAt: 'session', runtimeRevision: 1, supportedCommands: commands };
+    const { ui, backend, confirm } = setup(initial);
+    await ui.refresh();
+    ui.setSetting('_customAdventureZone', 15);
+    const telemetry = { active, remainingDeaths: active ? args.deaths ?? 0 : 0, floor: 321 };
+    backend.readCommandResult.mockResolvedValue({ id: 'command-id', command, success: true, data: { runtime: { ...initial.runtime, runtimeRevision: 2, maxItopodPush: telemetry } } });
+    await ui.runCommand(command, args);
+    expect(backend.enqueueCommand).toHaveBeenCalledExactlyOnceWith(initial.runtime_dir, command, args);
+    expect(ui.current().error).toBe('');
+    expect(ui.current().status).toBe(`${active ? 'Max ITOPOD push' : 'Cancel Max ITOPOD push'} completed.`);
+    expect(ui.current().snapshot!.runtime.maxItopodPush).toEqual(telemetry);
+    expect(ui.current().snapshot!.settings).toEqual(initial.settings);
+    expect(ui.current().patch).toEqual({ _customAdventureZone: 15 });
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    expect(backend.savePlan).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    ui.dispose();
+  });
+
+  it.each<JsonObject>([
+    {}, { deaths: '' }, { deaths: '3' }, { deaths: null }, { deaths: true },
+    { deaths: 0 }, { deaths: -1 }, { deaths: 1.5 }, { deaths: 1001 },
+    { deaths: NaN }, { deaths: Infinity }, { deaths: [] }, { deaths: {} },
+    { deaths: 3, unexpected: true }
+  ])('rejects malformed start args %j before native IPC', async args => {
+    const initial = snapshot();
+    initial.runtime.supportedCommands = commands;
+    const { ui, backend } = setup(initial);
+    await ui.refresh();
+    await ui.runCommand('startMaxItopodPush', args);
+    expect(ui.current().error).toMatch(/Deaths|accepts only deaths/);
+    expect(backend.enqueueCommand).not.toHaveBeenCalled();
+    ui.dispose();
+  });
+
+  it('rejects nonempty cancel args before native IPC', async () => {
+    const initial = snapshot();
+    initial.runtime.supportedCommands = commands;
+    const { ui, backend } = setup(initial);
+    await ui.refresh();
+    await ui.runCommand('cancelMaxItopodPush', { deaths: 3 });
+    expect(ui.current().error).toBe('cancelMaxItopodPush does not accept args.');
+    expect(backend.enqueueCommand).not.toHaveBeenCalled();
+    ui.dispose();
+  });
+
+  for (const command of commands) {
+    it.each(['disconnected', 'stale', 'unsupported'])(`blocks ${command} when %s`, async reason => {
+      const initial = snapshot();
+      initial.runtime.supportedCommands = reason === 'unsupported' ? [] : commands;
+      if (reason === 'disconnected') initial.connected = false;
+      if (reason === 'stale') initial.runtime.updatedAt = '2000-01-01T00:00:00Z';
+      const { ui, backend } = setup(initial);
+      await ui.refresh();
+      await ui.runCommand(command, command === 'startMaxItopodPush' ? { deaths: 3 } : {});
+      expect(ui.current().error).toContain('Disconnected, stale heartbeat, or unsupported command');
+      expect(backend.enqueueCommand).not.toHaveBeenCalled();
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+      ui.dispose();
+    });
+  }
+});
+
 describe('automatic saving', () => {
   afterEach(() => vi.useRealTimers());
+
+  it('includes a pending death limit when enabled Adventure selects push mode', async () => {
+    vi.useFakeTimers();
+    const initial = snapshot({ _customAdventureEnabled: true, _customAdventureMode: 1, _customAdventureMaxItopodDeaths: 3 });
+    const { ui, backend } = setup(initial);
+    await ui.refresh();
+    backend.saveSettingsPatch.mockImplementation(async (_dir, patch) => {
+      backend.getState.mockResolvedValue(snapshot({ ...initial.settings, ...patch }));
+      return settingsSaved({ ...initial.settings, ...patch });
+    });
+    ui.editSetting('_customAdventureMaxItopodDeaths', 9, 350);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    ui.editSetting('_customAdventureMode', 3);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith(initial.runtime_dir, {
+      _customAdventureMaxItopodDeaths: 9, _customAdventureMode: 3
+    }, settingsRevision);
+    await vi.advanceTimersByTimeAsync(350);
+    expect(backend.saveSettingsPatch).toHaveBeenCalledTimes(1);
+    expect(ui.current().patch).toEqual({});
+    expect(backend.enqueueCommand).not.toHaveBeenCalled();
+    ui.dispose();
+  });
 
   it('saves a setting toggle without an explicit save action', async () => {
     vi.useFakeTimers();
@@ -37,11 +380,11 @@ describe('automatic saving', () => {
     await ui.refresh();
     backend.saveSettingsPatch.mockImplementation(async (_dir, patch) => {
       backend.getState.mockResolvedValue(snapshot(patch));
-      return { success: true };
+      return settingsSaved(patch);
     });
     ui.editSetting('_customAutoBoostEnabled', false);
     await vi.advanceTimersByTimeAsync(0);
-    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _customAutoBoostEnabled: false });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _customAutoBoostEnabled: false }, settingsRevision);
     expect(ui.current().patch).toEqual({});
     expect(ui.current().snapshot!.settings._customAutoBoostEnabled).toBe(false);
     ui.dispose();
@@ -57,7 +400,7 @@ describe('automatic saving', () => {
     await vi.advanceTimersByTimeAsync(349);
     expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _customAutoBoostCubePowerRatio: 4 });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _customAutoBoostCubePowerRatio: 4 }, settingsRevision);
     expect(ui.current().patch).toEqual({});
     ui.dispose();
   });
@@ -73,7 +416,7 @@ describe('automatic saving', () => {
     expect(ui.current().saveError).toContain('_customAutoBoostCubePowerRatio');
     ui.editSetting('_customAutoBoostCubePowerRatio', 3, 350);
     await vi.advanceTimersByTimeAsync(350);
-    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _customAutoBoostCubePowerRatio: 3 });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _customAutoBoostCubePowerRatio: 3 }, settingsRevision);
     expect(ui.current().error).toBe('');
     ui.dispose();
   });
@@ -90,7 +433,7 @@ describe('automatic saving', () => {
     ui.editSetting('_customAutoBoostCubePowerRatio', 4, 350);
     await vi.advanceTimersByTimeAsync(350);
     expect(backend.saveSettingsPatch).toHaveBeenCalledTimes(1);
-    saving.resolve({ success: true });
+    saving.resolve(settingsSaved({ _customAutoBoostEnabled: false, _customAutoBoostCubePowerRatio: 2 }));
     await vi.advanceTimersByTimeAsync(350);
     expect(backend.saveSettingsPatch.mock.calls.map(call => call[1])).toEqual([
       { _customAutoBoostEnabled: false },
@@ -181,7 +524,7 @@ describe('automatic saving', () => {
     ui.editSetting('_customAutoBoostEnabled', false);
     ui.editPlan({ ...stored, TimeTriggerSeconds: 7200 });
     await vi.advanceTimersByTimeAsync(350);
-    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _customAutoBoostEnabled: false });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _customAutoBoostEnabled: false }, settingsRevision);
     expect(backend.savePlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'plan', { ...plan(), TimeTriggerSeconds: 7200 });
     expect(ui.current().patch).toEqual({});
     expect(ui.current().plan).toEqual(stored);
@@ -249,7 +592,7 @@ describe('automatic saving', () => {
     expect(ui.current().saveError).toBe('Settings rejected');
     backend.saveSettingsPatch.mockImplementation(async (_dir, patch) => {
       backend.getState.mockResolvedValue(snapshot(patch));
-      return { success: true };
+      return settingsSaved(patch);
     });
     expect(await ui.saveSettingValue('_customIronPillSaveSeconds', 1200)).toBe(true);
     expect(ui.current().patch).toEqual({});
@@ -437,6 +780,67 @@ describe('locked runtime refresh', () => {
   });
 });
 
+describe('top-level failure retention', () => {
+  it('surfaces a failed status read while a command result is still pending', async () => {
+    vi.useFakeTimers();
+    const { ui, backend } = setup();
+    const result = deferred<JsonObject>();
+    try {
+      await ui.refresh();
+      backend.getState.mockRejectedValue(new Error('Command status read failed.'));
+      backend.readCommandResult.mockReturnValueOnce(result.promise);
+      const command = ui.runCommand('focusGoal', { goal: 'EnergyNgu' });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(ui.current().pollError).toBe('Command status read failed.');
+      expect(ui.current().snapshot?.connected).toBe(false);
+      expect(backend.enqueueCommand).toHaveBeenCalledTimes(1);
+      backend.getState.mockResolvedValue(snapshot());
+      result.resolve({ id: 'command-id', command: 'focusGoal', success: true });
+      await command;
+      await ui.refresh(true, true);
+      expect(ui.current().pollError).toBe('');
+      expect(backend.enqueueCommand).toHaveBeenCalledTimes(1);
+    } finally { ui.dispose(); vi.useRealTimers(); }
+  });
+
+  it('retains a poll failure during unrelated actions and clears it only after a successful state read', async () => {
+    const { ui, backend } = setup();
+    try {
+      await ui.refresh();
+      backend.getState.mockRejectedValue(new Error('Runtime read denied.'));
+      await ui.refresh(true);
+      expect(ui.current().pollError).toBe('Runtime read denied.');
+      await ui.loadPlan('plan');
+      expect(ui.current().pollError).toBe('Runtime read denied.');
+      expect(ui.current().snapshot?.connected).toBe(false);
+      backend.getState.mockResolvedValue(snapshot());
+      await ui.refresh(true);
+      expect(ui.current().pollError).toBe('');
+      expect(ui.current().snapshot?.connected).toBe(true);
+      expect(backend.enqueueCommand).not.toHaveBeenCalled();
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    } finally { ui.dispose(); }
+  });
+
+  it('keeps a command failure through refresh and unrelated success without replaying it', async () => {
+    const { ui, backend } = setup();
+    try {
+      await ui.refresh();
+      backend.enqueueCommand.mockRejectedValueOnce(new Error('Command transport lost.'));
+      await ui.runCommand('focusGoal', { goal: 'EnergyNgu' });
+      expect(ui.current().commandErrors).toEqual([{ command: 'focusGoal', success: false, message: 'Command transport lost.' }]);
+      await ui.refresh();
+      backend.readCommandResult.mockResolvedValue({ id: 'command-id', command: 'previewGear', success: true });
+      await ui.runCommand('previewGear');
+      expect(ui.current().commandErrors).toHaveLength(1);
+      expect(backend.enqueueCommand.mock.calls.map(call => call[1])).toEqual(['focusGoal', 'previewGear']);
+      backend.readCommandResult.mockResolvedValue({ id: 'command-id', command: 'focusGoal', success: true });
+      await ui.runCommand('focusGoal', { goal: 'EnergyNgu' });
+      expect(ui.current().commandErrors).toEqual([]);
+    } finally { ui.dispose(); }
+  });
+});
+
 describe('pending settings', () => {
   it('refreshes Iron Pill history without overwriting threshold edits or submitting history', async () => {
     const history = [{ CastAtUtc: '2026-10-14T12:00:00Z', WaitSeconds: 900, Worth: 1e8, RebirthSeconds: 7200 }];
@@ -448,7 +852,7 @@ describe('pending settings', () => {
     expect(ui.current().snapshot!.settings._customIronPillHistory).toEqual(history);
     expect(ui.current().patch).toEqual({ _customIronPillSaveSeconds: 1200 });
     await ui.saveSettings();
-    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _customIronPillSaveSeconds: 1200 });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _customIronPillSaveSeconds: 1200 }, settingsRevision);
   });
   it('rebases untouched raw history onto the latest backend history', async () => {
     const base = { _customIronPillMinWorth: 0, _customIronPillHistory: [] };
@@ -501,10 +905,10 @@ describe('pending settings', () => {
     const pending = ui.saveSettings();
     ui.setSetting('enabled', true);
     ui.setSetting('ratio', 2);
-    saving.resolve({ success: true, mode: 'connected' });
+    saving.resolve(settingsSaved({ enabled: false, ratio: 1, Future: 42 }));
     backend.getState.mockResolvedValue(snapshot({ enabled: false, ratio: 1, Future: 42 }));
     await pending;
-    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { enabled: false });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { enabled: false }, settingsRevision);
     expect(ui.current().patch).toEqual({ enabled: true, ratio: 2 });
   });
   it('keeps an away-and-back edit made during the save pending', async () => {
@@ -516,7 +920,7 @@ describe('pending settings', () => {
     const pending = ui.saveSettings();
     ui.setSetting('enabled', true);
     ui.setSetting('enabled', false);
-    saving.resolve({ success: true });
+    saving.resolve(settingsSaved({ enabled: false }));
     await pending;
     expect(ui.current().patch).toEqual({ enabled: false });
   });
@@ -539,7 +943,7 @@ describe('pending settings', () => {
     const pending = ui.saveSettings();
     await ui.refresh(true);
     expect(ui.current().busy).toBe(true);
-    saving.resolve({ success: true });
+    saving.resolve(settingsSaved({ enabled: false }));
     await pending;
     expect(ui.current().busy).toBe(false);
   });
@@ -574,7 +978,8 @@ describe('local plan timing draft safety', () => {
     expect(confirm).toHaveBeenCalledExactlyOnceWith('Discard unsaved plan / advanced JSON edits and load another plan?');
     expect(backend.readPlan).toHaveBeenCalledTimes(accepted ? 2 : 1);
     expect(ui.current().planName).toBe(accepted ? 'other' : 'plan');
-    expect(ui.current().plan).toBe(accepted ? other : before.plan);
+    if (accepted) expect(ui.current().plan).toEqual(other);
+    else expect(ui.current().plan).toBe(before.plan);
     expect(ui.current().planBase).toEqual(accepted ? other : before.planBase);
     expect(ui.current().editorVersion).toBe(before.editorVersion + Number(accepted));
     expect(ui.current().planDraftDirty).toBe(!accepted);
@@ -689,7 +1094,7 @@ describe('local plan timing draft safety', () => {
     await ui.loadPlan('plan');
     ui.planDraftDirty(true);
     await ui.planAction('stop');
-    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _useCustomRebirthPlan: false, _autoRebirth: false });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _useCustomRebirthPlan: false, _autoRebirth: false }, settingsRevision);
     expect(backend.readPlan).toHaveBeenCalledTimes(1);
     expect(backend.savePlan).not.toHaveBeenCalled();
     expect(ui.current().planDraftDirty).toBe(true);
@@ -1084,6 +1489,107 @@ describe('connected plan creation and deletion', () => {
   });
 });
 
+describe('execution rebind outcome guidance', () => {
+  afterEach(() => vi.useRealTimers());
+  const approvalArgs = { token: 'a'.repeat(32), checkpointRevision: 'b'.repeat(64) };
+  function reviewSetup() {
+    const initial = snapshot();
+    initial.runtime.startedAt = 'execution-review-session';
+    initial.runtime.supportedCommands = ['previewExecutionRebind', 'previewExecutionRestart', 'applyExecutionRebind'];
+    initial.runtime.executionReview = { reviewRequired: true, canPreview: true };
+    return setup(initial);
+  }
+
+  it.each(['enqueue', 'result read', 'result mismatch', 'result timeout'])('marks submitted approval uncertain after %s failure without replaying or restoring its preview', async failure => {
+    vi.useFakeTimers();
+    const { ui, backend } = reviewSetup();
+    try {
+      await ui.refresh();
+      backend.enqueueCommand.mockResolvedValueOnce('review-id');
+      backend.readCommandResult.mockResolvedValueOnce({ id: 'review-id', command: 'previewExecutionRebind', success: true, data: { result: approvalArgs } });
+      await ui.runCommand('previewExecutionRebind');
+      expect(ui.current().lastResult?.command).toBe('previewExecutionRebind');
+      if (failure === 'enqueue') backend.enqueueCommand.mockRejectedValueOnce(new Error('Approval transport lost'));
+      else {
+        backend.enqueueCommand.mockResolvedValueOnce('approval-id');
+        if (failure === 'result read') backend.readCommandResult.mockRejectedValueOnce(new Error('Approval result unavailable'));
+        else if (failure === 'result mismatch') backend.readCommandResult.mockResolvedValueOnce({ id: 'other-id', command: 'applyExecutionRebind', success: true });
+        else backend.readCommandResult.mockResolvedValue(null);
+      }
+      const approving = ui.runCommand('applyExecutionRebind', approvalArgs);
+      if (failure === 'result timeout') await vi.advanceTimersByTimeAsync(13000);
+      await approving;
+      expect(ui.current().error).toContain('Outcome may be unknown');
+      expect(ui.current().error).toMatch(/inspect fresh .*status/i);
+      expect(ui.current().error).toMatch(/fresh review/i);
+      expect(ui.current().error).toContain('will not be replayed');
+      expect(ui.current().error.match(/Outcome may be unknown/g)).toHaveLength(1);
+      expect(ui.current().error).not.toContain('refresh before retrying');
+      expect(ui.current().lastResult).toBe(null);
+      expect(ui.current().busy).toBe(false);
+      await vi.advanceTimersByTimeAsync(1000);
+      await ui.refresh(true);
+      expect(backend.enqueueCommand.mock.calls.map(call => [call[1], call[2]])).toEqual([
+        ['previewExecutionRebind', {}], ['applyExecutionRebind', approvalArgs]
+      ]);
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+      if (failure === 'enqueue') expect(backend.readCommandResult).toHaveBeenCalledTimes(1);
+    } finally { ui.dispose(); }
+  });
+
+  it('retains an explicit approval rejection as known failure', async () => {
+    const { ui, backend } = reviewSetup();
+    try {
+      await ui.refresh();
+      backend.enqueueCommand.mockResolvedValueOnce('approval-id');
+      backend.readCommandResult.mockResolvedValueOnce({ id: 'approval-id', command: 'applyExecutionRebind', success: false, message: 'Review token expired' });
+      await ui.runCommand('applyExecutionRebind', approvalArgs);
+      expect(ui.current().error).toBe('Review token expired');
+      expect(ui.current().lastResult).toBe(null);
+      expect(backend.enqueueCommand).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'applyExecutionRebind', approvalArgs);
+    } finally { ui.dispose(); }
+  });
+
+  it.each(['previewExecutionRebind', 'previewExecutionRestart'])('does not label read-only %s failure as an uncertain mutation', async command => {
+    const { ui, backend } = reviewSetup();
+    try {
+      await ui.refresh();
+      backend.readCommandResult.mockRejectedValueOnce(new Error('Read-only preview unavailable'));
+      await ui.runCommand(command);
+      expect(ui.current().error).toBe('Read-only preview unavailable');
+      expect(backend.enqueueCommand).toHaveBeenCalledExactlyOnceWith('A:/runtime', command, {});
+      expect(ui.current().lastResult).toBe(null);
+    } finally { ui.dispose(); }
+  });
+
+  it.each(['previewExecutionRebind', 'previewExecutionRestart'])('does not label read-only review timeout for %s as an uncertain mutation', async command => {
+    vi.useFakeTimers();
+    const { ui, backend } = reviewSetup();
+    try {
+      await ui.refresh();
+      backend.readCommandResult.mockResolvedValue(null);
+      const previewing = ui.runCommand(command);
+      await vi.advanceTimersByTimeAsync(13000);
+      await previewing;
+      expect(ui.current().error).toBe('Review preview timed out. Request a fresh review.');
+      expect(backend.enqueueCommand).toHaveBeenCalledExactlyOnceWith('A:/runtime', command, {});
+      expect(ui.current().lastResult).toBe(null);
+    } finally { ui.dispose(); }
+  });
+
+  it('does not report uncertainty when approval was rejected before submission', async () => {
+    const initial = snapshot(); initial.runtime.supportedCommands = ['previewExecutionRebind'];
+    const { ui, backend } = setup(initial);
+    try {
+      await ui.refresh();
+      await ui.runCommand('applyExecutionRebind', approvalArgs);
+      expect(backend.enqueueCommand).not.toHaveBeenCalled();
+      expect(ui.current().error).toContain('unsupported command: applyExecutionRebind');
+      expect(ui.current().error).not.toContain('Outcome may be unknown');
+    } finally { ui.dispose(); }
+  });
+});
+
 describe('augment command handling', () => {
   const metrics: JsonObject = { augmentIndex: 2, usesUpgrade: true, energyToAugment: 100, energyToUpgrade: 200, seconds: 120, expectedSeconds: 120, valuePerSecond: 10, expectedValue: 1200, projectedGoldCost: 1000, projectedGoldBudget: 2000, goldPerSecond: 50, energyPower: 3, augmentSpeedMultiplier: 4, projectedWork: 108000, progressFraction: 1 };
   it('previews the live saved estimate without sending pending settings', async () => {
@@ -1247,7 +1753,142 @@ describe('runtime folder and live command safety', () => {
     confirm.mockResolvedValueOnce(false);
     await ui.planAction('activate');
     expect(confirm).not.toHaveBeenCalled();
-    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _customPlanFile: '24hr' });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _customPlanFile: '24hr' }, settingsRevision);
+  });
+});
+
+describe('saved rebirth permission autosave', () => {
+  it.each([true, false])('preserves saved permission %s and the divergent live switch on an unrelated autosave without confirmation', async permission => {
+    const initial = snapshot({ _customPlanFile: 'plan', _useCustomRebirthPlan: true, _autoRebirth: !permission });
+    initial.runtime = { ...initial.runtime, startedAt: 'session', runtimeRevision: 1 };
+    const { ui, backend, confirm } = setup(initial);
+    let saved: JsonObject = { ...plan(), AutoRebirthEnabled: permission };
+    backend.readPlan.mockImplementation(async () => saved);
+    backend.savePlan.mockImplementation(async (_dir, _name, draft) => {
+      saved = { ...draft, __externalUiRevision: 'b'.repeat(64) };
+      return { success: true, mode: 'connected', result: { data: { runtime: { ...initial.runtime, runtimeRevision: 2,
+        settings: { customPlanFile: 'plan', useCustomRebirthPlan: true, autoRebirth: !permission } } } } };
+    });
+    await ui.refresh(); await ui.loadPlan('plan');
+    ui.editPlan({ ...ui.current().plan!, Future: 42 });
+    await ui.flushAutosave();
+    expect(backend.savePlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'plan', expect.objectContaining({ AutoRebirthEnabled: permission, Future: 42 }));
+    expect(ui.current().plan!.AutoRebirthEnabled).toBe(permission);
+    expect(ui.current().planBase!.AutoRebirthEnabled).toBe(permission);
+    expect(ui.current().planDirty).toBe(false);
+    expect(ui.current().snapshot!.settings).toMatchObject({ _useCustomRebirthPlan: true, _autoRebirth: !permission });
+    expect(ui.current().snapshot!.runtime.runtimeRevision).toBe(2);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    expect(backend.enqueueCommand).not.toHaveBeenCalled();
+    ui.dispose();
+  });
+
+  it.each([true, false])('refreshes live status after a partial permission save %s without replacing the checkbox edit, and retry does not replay live permission', async permission => {
+    const initial = snapshot({ _customPlanFile: 'plan', _useCustomRebirthPlan: true, _autoRebirth: permission });
+    initial.runtime = { ...initial.runtime, startedAt: 'session', runtimeRevision: 1 };
+    const { ui, backend } = setup(initial);
+    let saved: JsonObject = { ...plan(), AutoRebirthEnabled: !permission };
+    let live = initial;
+    backend.getState.mockImplementation(async () => live);
+    backend.readPlan.mockImplementation(async () => saved);
+    backend.savePlan.mockImplementationOnce(async (_dir, _name, draft) => {
+      saved = { ...draft, __externalUiRevision: 'b'.repeat(64) };
+      live = { ...initial, settings: { ...initial.settings, _autoRebirth: !permission }, runtime: { ...initial.runtime, runtimeRevision: 2,
+        settings: { customPlanFile: 'plan', useCustomRebirthPlan: true, autoRebirth: !permission } } };
+      throw new Error('Plan saved but live settings write failed.');
+    }).mockImplementationOnce(async (_dir, _name, draft) => {
+      saved = { ...draft, __externalUiRevision: 'c'.repeat(64) };
+      return { success: true, mode: 'connected', result: { data: { runtime: live.runtime } } };
+    });
+    await ui.refresh(); await ui.loadPlan('plan');
+    ui.editPlan({ ...ui.current().plan!, AutoRebirthEnabled: permission });
+    await ui.flushAutosave();
+    expect(ui.current().saveError).toBe('Plan saved but live settings write failed.');
+    expect(saved.AutoRebirthEnabled).toBe(permission);
+    expect(ui.current().plan!.AutoRebirthEnabled).toBe(permission);
+    expect(ui.current().planBase!.AutoRebirthEnabled).toBe(!permission);
+    expect(ui.current().planDirty).toBe(true);
+    expect(ui.current().snapshot!.settings._autoRebirth).toBe(!permission);
+    expect(ui.current().snapshot!.runtime.runtimeRevision).toBe(2);
+    await ui.retryAutosave();
+    expect(backend.savePlan).toHaveBeenCalledTimes(2);
+    expect(ui.current().plan!.AutoRebirthEnabled).toBe(permission);
+    expect(ui.current().planBase!.AutoRebirthEnabled).toBe(permission);
+    expect(ui.current().planDirty).toBe(false);
+    expect(ui.current().saveError).toBe('');
+    expect(ui.current().snapshot!.settings._autoRebirth).toBe(!permission);
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    expect(backend.enqueueCommand).not.toHaveBeenCalled();
+    ui.dispose();
+  });
+
+  it.each([true, false])('consumes the game-thread permission acknowledgement %s without a follow-up settings write', async permission => {
+    const initial = snapshot({ _customPlanFile: 'plan', _useCustomRebirthPlan: true, _autoRebirth: !permission });
+    initial.runtime = { ...initial.runtime, startedAt: 'session', runtimeRevision: 1 };
+    const { ui, backend, confirm } = setup(initial);
+    let saved: JsonObject = { ...plan(), AutoRebirthEnabled: !permission };
+    backend.readPlan.mockImplementation(async () => saved);
+    backend.savePlan.mockImplementation(async (_dir, _name, draft) => {
+      saved = { ...draft, __externalUiRevision: 'b'.repeat(64) };
+      return { success: true, mode: 'connected', result: { data: { runtime: { ...initial.runtime, runtimeRevision: 2,
+        settings: { customPlanFile: 'plan', useCustomRebirthPlan: true, autoRebirth: permission } } } } };
+    });
+    await ui.refresh(); await ui.loadPlan('plan');
+    ui.editPlan({ ...ui.current().plan!, AutoRebirthEnabled: permission });
+    await ui.flushAutosave();
+    expect(ui.current().planDirty).toBe(false);
+    expect(ui.current().saveError).toBe('');
+    expect(ui.current().snapshot!.settings).toMatchObject({ _useCustomRebirthPlan: true, _autoRebirth: permission });
+    expect(ui.current().snapshot!.runtime.runtimeRevision).toBe(2);
+    expect(confirm).toHaveBeenCalledTimes(permission ? 1 : 0);
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    expect(backend.enqueueCommand).not.toHaveBeenCalled();
+    ui.dispose();
+  });
+
+  it('retains a later checkbox edit while the earlier save is in flight', async () => {
+    const { ui, backend } = setup();
+    let saved: JsonObject = { ...plan(), AutoRebirthEnabled: false };
+    backend.readPlan.mockImplementation(async () => saved);
+    const waiting = deferred<JsonObject>();
+    backend.savePlan.mockImplementationOnce(async (_dir, _name, draft) => {
+      await waiting.promise;
+      saved = { ...draft, __externalUiRevision: 'b'.repeat(64) };
+      return { success: true };
+    }).mockImplementationOnce(async (_dir, _name, draft) => {
+      saved = { ...draft, __externalUiRevision: 'c'.repeat(64) };
+      return { success: true };
+    });
+    await ui.refresh(); await ui.loadPlan('plan');
+    ui.editPlan({ ...ui.current().plan!, AutoRebirthEnabled: true });
+    const saving = ui.flushAutosave();
+    await vi.waitFor(() => expect(backend.savePlan).toHaveBeenCalledTimes(1));
+    ui.editPlan({ ...ui.current().plan!, AutoRebirthEnabled: false });
+    waiting.resolve({});
+    await saving;
+    expect(ui.current().plan!.AutoRebirthEnabled).toBe(false);
+    expect(ui.current().planDirty).toBe(true);
+    await ui.flushAutosave();
+    expect(saved.AutoRebirthEnabled).toBe(false);
+    expect(ui.current().planDirty).toBe(false);
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    ui.dispose();
+  });
+
+  it('cancelled permission confirmation leaves the edit pending without starting anything', async () => {
+    const { ui, backend, confirm } = setup();
+    backend.readPlan.mockResolvedValue({ ...plan(), AutoRebirthEnabled: false });
+    await ui.refresh(); await ui.loadPlan('plan');
+    confirm.mockResolvedValue(false);
+    ui.editPlan({ ...ui.current().plan!, AutoRebirthEnabled: true });
+    await ui.flushAutosave();
+    expect(ui.current().planDirty).toBe(true);
+    expect(ui.current().saveError).toBe('Plan changes were not saved.');
+    expect(backend.savePlan).not.toHaveBeenCalled();
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    expect(backend.enqueueCommand).not.toHaveBeenCalled();
+    ui.dispose();
   });
 });
 
@@ -1260,7 +1901,7 @@ describe('dashboard plan controls', () => {
     await ui.planAction('run', false);
     expect(confirm).not.toHaveBeenCalled();
     expect(backend.savePlan).not.toHaveBeenCalled();
-    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _customPlanFile: 'plan', _useCustomRebirthPlan: true, _autoRebirth: false });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _customPlanFile: 'plan', _useCustomRebirthPlan: true, _autoRebirth: false }, settingsRevision);
     expect(ui.current().plan).toEqual(fresh);
     expect(ui.current().planBase).toEqual(fresh);
   });
@@ -1272,7 +1913,7 @@ describe('dashboard plan controls', () => {
     await ui.planAction('run', true);
     expect(confirm).not.toHaveBeenCalled();
     expect(backend.savePlan).toHaveBeenCalledWith('A:/runtime', 'plan', { ...fresh, AutoRebirthEnabled: true });
-    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _customPlanFile: 'plan', _useCustomRebirthPlan: true, _autoRebirth: true });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _customPlanFile: 'plan', _useCustomRebirthPlan: true, _autoRebirth: true }, settingsRevision);
     expect(ui.current().plan?.__externalUiRevision).toBe('c'.repeat(64));
   });
   it('does not rewrite a plan which already allows rebirth', async () => {
@@ -1282,7 +1923,7 @@ describe('dashboard plan controls', () => {
     backend.readPlan.mockResolvedValue(fresh);
     await ui.planAction('run', true);
     expect(backend.savePlan).not.toHaveBeenCalled();
-    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', expect.objectContaining({ _autoRebirth: true }));
+    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', expect.objectContaining({ _autoRebirth: true }), settingsRevision);
     expect(ui.current().plan).toEqual(fresh);
     expect(ui.current().planBase).toEqual(fresh);
   });
@@ -1342,7 +1983,7 @@ describe('direct settings saves', () => {
     const completedAt = new Date().toISOString();
     const saved = snapshot({ ratio: 2.5 }); saved.runtime.startedAt = 'session'; saved.runtime.updatedAt = completedAt;
     backend.getState.mockResolvedValueOnce(saved);
-    write.resolve({ success: true, mode: 'connected', result: { completedAt } });
+    write.resolve(settingsSaved(saved.settings, { result: { completedAt } }));
     expect(await saving).toBe(true);
     expect(ui.current().patch).toEqual({ ratio: 2 });
     expect(ui.current().snapshot!.settings.ratio).toBe(2.5);
@@ -1356,22 +1997,22 @@ describe('direct settings saves', () => {
     const saved = snapshot({ ...fresh.settings, _customIronPillSaveSeconds: 1200 });
     backend.getState.mockResolvedValueOnce(fresh).mockResolvedValueOnce(saved);
     expect(await ui.saveSettingValue('_customIronPillSaveSeconds', 1200)).toBe(true);
-    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _customIronPillSaveSeconds: 1200 });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _customIronPillSaveSeconds: 1200 }, settingsRevision);
     expect(ui.current().patch).toEqual({ _customIronPillMinWorth: 100 });
     expect(ui.current().snapshot!.settings).toEqual(saved.settings);
     expect(confirm).not.toHaveBeenCalled();
   });
-  it('waits for validated read-back before clearing its target or returning true', async () => {
+  it('waits for a committed snapshot before clearing its target or returning true', async () => {
     const initial = snapshot({ _customIronPillSaveSeconds: 900 });
     const { ui, backend } = setup(initial);
     await ui.refresh();
-    const reading = deferred<NguiState>();
-    backend.getState.mockResolvedValueOnce(initial).mockReturnValueOnce(reading.promise);
+    const writing = deferred<JsonObject>();
+    backend.saveSettingsPatch.mockReturnValueOnce(writing.promise);
     const saving = ui.saveSettingValue('_customIronPillSaveSeconds', 1200);
-    await vi.waitFor(() => expect(backend.getState).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(backend.saveSettingsPatch).toHaveBeenCalledTimes(1));
     expect(ui.current().busy).toBe(true);
     expect(ui.current().patch).toEqual({ _customIronPillSaveSeconds: 1200 });
-    reading.resolve(snapshot({ _customIronPillSaveSeconds: 1200 }));
+    writing.resolve(settingsSaved({ _customIronPillSaveSeconds: 1200 }));
     expect(await saving).toBe(true);
     expect(ui.current().patch).toEqual({});
   });
@@ -1387,7 +2028,7 @@ describe('direct settings saves', () => {
     ui.setSetting('enabled', false);
     ui.setSetting('ratio', 2);
     backend.getState.mockResolvedValue(snapshot({ enabled: false, ratio: 1 }));
-    write.resolve({ success: true });
+    write.resolve(settingsSaved({ enabled: false, ratio: 1 }));
     expect(await saving).toBe(true);
     expect(ui.current().patch).toEqual({ enabled: false, ratio: 2 });
   });
@@ -1409,7 +2050,7 @@ describe('direct settings saves', () => {
     const { ui, backend } = setup(initial);
     await ui.refresh();
     ui.setSetting('other', 2);
-    backend.getState.mockResolvedValueOnce(initial).mockResolvedValueOnce(snapshot({ ratio: 2, other: 3 }));
+    backend.saveSettingsPatch.mockResolvedValueOnce(settingsSaved({ ratio: 2, other: 3 }));
     expect(await ui.saveSettingValue('ratio', 2)).toBe(false);
     expect(ui.current().patch).toEqual({ other: 2, ratio: 2 });
     expect(ui.current().snapshot!.settings).toEqual(initial.settings);
@@ -1421,12 +2062,12 @@ describe('direct settings saves', () => {
     await ui.refresh();
     if (failure === 'reject') backend.saveSettingsPatch.mockRejectedValueOnce(new Error('Rejected'));
     if (failure === 'unsuccessful') backend.saveSettingsPatch.mockResolvedValueOnce({ success: false });
-    if (failure === 'read-failure') backend.getState.mockResolvedValueOnce(initial).mockRejectedValueOnce(new Error('Read failed'));
-    if (failure === 'invalid-read') backend.getState.mockResolvedValueOnce(initial).mockResolvedValueOnce(snapshot({ _customIronPillSaveSeconds: -1 }));
-    if (failure === 'missing-read') backend.getState.mockResolvedValueOnce(initial).mockResolvedValueOnce(snapshot());
+    if (failure === 'read-failure') backend.saveSettingsPatch.mockRejectedValueOnce(new Error('Read failed'));
+    if (failure === 'invalid-read') backend.saveSettingsPatch.mockResolvedValueOnce(settingsSaved({ _customIronPillSaveSeconds: -1 }));
+    if (failure === 'missing-read') backend.saveSettingsPatch.mockResolvedValueOnce(settingsSaved({}));
     if (failure === 'session-change') {
       const next = snapshot({ _customIronPillSaveSeconds: 1200 }); next.runtime.startedAt = 'new-session';
-      backend.getState.mockResolvedValueOnce(initial).mockResolvedValueOnce(next);
+      backend.getState.mockResolvedValueOnce(next);
     }
     expect(await ui.saveSettingValue('_customIronPillSaveSeconds', 1200)).toBe(false);
     expect(ui.current().patch).toEqual({ _customIronPillSaveSeconds: 1200 });
@@ -1565,7 +2206,21 @@ describe('direct plan field saves', () => {
     expect(ui.current().error.length).toBeGreaterThan(0);
     expect(ui.current().busy).toBe(false);
   });
-  it.each<[string, JsonValue]>([['Name', 'plan'], ['Version', 14], ['RebirthHistory', []], ['__externalUiRevision', 'a'.repeat(64)], ['StageDurationSeconds', 0], ['TimeTriggerEnabled', 'true'], ['TriggerMode', 2], ['NumberClimbMultiplierTarget', 0], ['Stages', []]])('rejects metadata or invalid %s edits before writing', async (key, value) => {
+  it('saves and reads back a zero fallback time budget', async () => {
+    const { ui, backend } = setup();
+    await ui.refresh(); await ui.loadPlan('plan');
+    const fresh = { ...plan(), Future: 2, __externalUiRevision: 'b'.repeat(64) };
+    const saved = { ...fresh, StageDurationSeconds: 0, __externalUiRevision: 'c'.repeat(64) };
+    backend.readPlan.mockResolvedValueOnce(fresh).mockResolvedValueOnce(saved);
+    expect(await ui.savePlanField('StageDurationSeconds', 0)).toBe(true);
+    expect(backend.savePlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'plan', { ...fresh, StageDurationSeconds: 0 });
+    expect(ui.current().plan).toEqual(saved);
+    expect(ui.current().planBase).toEqual(saved);
+    expect(ui.current().planDirty).toBe(false);
+    expect(ui.current().error).toBe('');
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+  });
+  it.each<[string, JsonValue]>([['Name', 'plan'], ['Version', 17], ['RebirthHistory', []], ['__externalUiRevision', 'a'.repeat(64)], ...[-1, .5, Infinity, 2147483648, '0', '', null].map(value => ['StageDurationSeconds', value] as [string, JsonValue]), ['TimeTriggerEnabled', 'true'], ['TriggerMode', 2], ['NumberClimbMultiplierTarget', 0], ['Stages', []]])('rejects metadata or invalid %s edits before writing', async (key, value) => {
     const { ui, backend } = setup();
     await ui.loadPlan('plan');
     expect(await ui.savePlanField(key, value)).toBe(false);
@@ -1632,9 +2287,10 @@ describe('acknowledged plan action state', () => {
     await ui.refresh(); await ui.loadPlan('selected');
     backend.readPlan.mockResolvedValue({ ...plan(), AutoRebirthEnabled: true });
     const reading = deferred<NguiState>();
+    backend.getState.mockResolvedValueOnce(initial);
     backend.getState.mockReturnValueOnce(reading.promise);
     const action = ui.planAction('run', auto);
-    await vi.waitFor(() => expect(backend.getState).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(backend.getState).toHaveBeenCalledTimes(3));
     const expected = { _customPlanFile: 'selected', _useCustomRebirthPlan: true, _autoRebirth: auto };
     expect(ui.current().snapshot!.settings).toEqual(expected);
     expect(ui.current().snapshot!.runtime.settings).toEqual({ customPlanFile: 'selected', useCustomRebirthPlan: true, autoRebirth: auto });
@@ -1659,7 +2315,7 @@ describe('acknowledged plan action state', () => {
     await ui.refresh();
     ui.setSetting('other', true);
     await ui.planAction('stop');
-    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _useCustomRebirthPlan: false, _autoRebirth: false });
+    expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { _useCustomRebirthPlan: false, _autoRebirth: false }, settingsRevision);
     expect(ui.current().snapshot!.settings).toEqual({ _customPlanFile: 'active', _useCustomRebirthPlan: false, _autoRebirth: false });
     expect(ui.current().snapshot!.runtime.settings).toEqual({ customPlanFile: 'active', useCustomRebirthPlan: false, autoRebirth: false });
     expect(ui.current().patch).toEqual({ other: true });
@@ -1712,7 +2368,7 @@ describe.each(['settings', 'plan'] as const)('%s inline edit sessions', kind => 
     if (failure === 'rejected') write.mockRejectedValueOnce(new Error('Rejected'));
     if (failure === 'unsuccessful') write.mockResolvedValueOnce({ success: false });
     if (failure === 'read-failure') {
-      if (kind === 'settings') backend.getState.mockResolvedValueOnce(snapshot({ [key]: original })).mockRejectedValueOnce(new Error('Read failed'));
+      if (kind === 'settings') backend.saveSettingsPatch.mockRejectedValueOnce(new Error('Read failed'));
       else backend.readPlan.mockResolvedValueOnce(plan()).mockRejectedValueOnce(new Error('Read failed'));
     }
     const attempted = failure === 'invalid' ? -1 : 3600;
@@ -1727,7 +2383,7 @@ describe.each(['settings', 'plan'] as const)('%s inline edit sessions', kind => 
     write.mockClear();
     await bulkSave();
     expect(write).toHaveBeenCalledTimes(1);
-    if (kind === 'settings') expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { other: true });
+    if (kind === 'settings') expect(backend.saveSettingsPatch).toHaveBeenCalledWith('A:/runtime', { other: true }, settingsRevision);
     else expect(backend.savePlan).toHaveBeenCalledWith('A:/runtime', 'selected', { ...plan(), TimeTriggerSeconds: 600 });
   });
   it('restores the previous pending target and its original conflict baseline', async () => {
@@ -1862,7 +2518,7 @@ describe.each(['settings', 'plan'] as const)('%s inline edit sessions', kind => 
     expect(draft()).toBe(3600);
     if (kind === 'settings') backend.getState.mockResolvedValueOnce(snapshot({ [key]: 3600 }));
     else backend.readPlan.mockResolvedValueOnce({ ...plan(), [key]: 3600 });
-    saving.resolve({ success });
+    saving.resolve(kind === 'settings' && success ? settingsSaved({ [key]: 3600 }) : { success });
     expect(await result).toBe(success);
     expect(draft()).toBe(kind === 'settings' ? undefined : success ? 3600 : original);
     expect(write).toHaveBeenCalledTimes(1);
@@ -1888,7 +2544,7 @@ describe('plan edit identity', () => {
   });
 });
 
-describe('settings acknowledgement barrier', () => {
+describe('settings commit receipts', () => {
   it('allows explicit cancellation of an unacknowledged write without a later bulk save resubmitting it', async () => {
     vi.useFakeTimers();
     try {
@@ -1907,7 +2563,7 @@ describe('settings acknowledgement barrier', () => {
       expect(backend.saveSettingsPatch.mock.calls.map(call => call[1])).toEqual([{ _customIronPillSaveSeconds: 1200 }, { other: true }]);
     } finally { vi.useRealTimers(); }
   });
-  it.each(['missing', 'invalid', 'numeric', 'no-session', 'stale', 'offline'])('does not accept a different read-back value with %s completion proof', async proof => {
+  it.each(['missing', 'invalid', 'numeric', 'no-session', 'stale', 'offline'])('does not substitute %s heartbeat proof for a commit receipt', async proof => {
     vi.useFakeTimers();
     try {
       const completedAt = new Date().toISOString();
@@ -1927,14 +2583,14 @@ describe('settings acknowledgement barrier', () => {
       await vi.runAllTimersAsync();
       expect(await saving).toBe(false);
       expect(backend.saveSettingsPatch).toHaveBeenCalledTimes(1);
-      expect(backend.getState).toHaveBeenCalledTimes(6);
+      expect(backend.getState).toHaveBeenCalledTimes(2);
       expect(ui.current().patch).toEqual({ _customIronPillSaveSeconds: 1200 });
       expect(ui.current().snapshot!.settings._customIronPillSaveSeconds).toBe(900);
-      expect(ui.current().error).toContain('did not acknowledge');
+      expect(ui.current().error).toContain('committed snapshot');
       expect(ui.current().busy).toBe(false);
     } finally { vi.useRealTimers(); }
   });
-  it('retains the target through stale reads and accepts normalization only after the same-session completion barrier', async () => {
+  it('accepts backend normalization from the committed snapshot without heartbeat polling', async () => {
     vi.useFakeTimers();
     try {
       const completedAt = new Date().toISOString();
@@ -1944,21 +2600,17 @@ describe('settings acknowledgement barrier', () => {
       await ui.refresh();
       const saved = snapshot({ _customIronPillSaveSeconds: 1100 });
       saved.runtime.startedAt = 'session'; saved.runtime.updatedAt = new Date(Date.now() + 1).toISOString();
-      backend.getState.mockResolvedValueOnce(initial).mockResolvedValueOnce(initial).mockResolvedValueOnce(initial).mockResolvedValueOnce(saved);
-      backend.saveSettingsPatch.mockResolvedValueOnce({ success: true, mode: 'connected', result: { completedAt } });
+      backend.getState.mockResolvedValue(initial);
+      backend.saveSettingsPatch.mockResolvedValueOnce(settingsSaved(saved.settings, { result: { completedAt } }));
       const saving = ui.saveSettingValue('_customIronPillSaveSeconds', 1200);
-      await vi.advanceTimersByTimeAsync(400);
-      expect(ui.current().patch).toEqual({ _customIronPillSaveSeconds: 1200 });
-      expect(ui.current().busy).toBe(true);
-      expect(ui.current().snapshot!.settings._customIronPillSaveSeconds).toBe(900);
-      await vi.runAllTimersAsync();
       expect(await saving).toBe(true);
       expect(ui.current().patch).toEqual({});
       expect(ui.current().snapshot!.settings._customIronPillSaveSeconds).toBe(1100);
       expect(backend.saveSettingsPatch).toHaveBeenCalledTimes(1);
+      expect(backend.getState).toHaveBeenCalledTimes(2);
     } finally { vi.useRealTimers(); }
   });
-  it.each(['missing', 'offline', 'no-session'])('requires exact equality without normalization proof (%s)', async proof => {
+  it.each(['missing', 'offline', 'no-session'])('a committed snapshot does not need heartbeat normalization proof (%s)', async proof => {
     const initial = snapshot({ ratio: 1 });
     if (proof !== 'no-session') initial.runtime.startedAt = 'session';
     const { ui, backend } = setup(initial);
@@ -1966,12 +2618,12 @@ describe('settings acknowledgement barrier', () => {
     const saved = snapshot({ ratio: 2 }); saved.runtime.startedAt = initial.runtime.startedAt ?? '';
     if (!initial.runtime.startedAt) delete saved.runtime.startedAt;
     backend.getState.mockResolvedValueOnce(initial).mockResolvedValueOnce(saved);
-    backend.saveSettingsPatch.mockResolvedValueOnce({ success: true, mode: proof === 'offline' ? 'offline' : 'connected' });
+    backend.saveSettingsPatch.mockResolvedValueOnce(settingsSaved(saved.settings, { mode: proof === 'offline' ? 'offline' : 'connected' }));
     expect(await ui.saveSettingValue('ratio', 2)).toBe(true);
     expect(ui.current().patch).toEqual({});
     expect(ui.current().snapshot!.settings.ratio).toBe(2);
   });
-  it('does not accept a matching value before an available connected barrier is crossed', async () => {
+  it('does not accept a matching value without a committed snapshot', async () => {
     vi.useFakeTimers();
     try {
       const completedAt = new Date().toISOString();
@@ -1987,17 +2639,104 @@ describe('settings acknowledgement barrier', () => {
       expect(ui.current().patch).toEqual({ ratio: 2 });
     } finally { vi.useRealTimers(); }
   });
-  it('rejects normalization from a different injector session', async () => {
+  it('retains edits if the session changes while the commit is pending', async () => {
     const initial = snapshot({ ratio: 1 }); initial.runtime.startedAt = 'session';
     const { ui, backend } = setup(initial);
     await ui.refresh();
     const completedAt = new Date().toISOString();
     const next = snapshot({ ratio: 2.5 }); next.runtime.startedAt = 'new'; next.runtime.updatedAt = completedAt;
-    backend.getState.mockResolvedValueOnce(initial).mockResolvedValueOnce(next);
-    backend.saveSettingsPatch.mockResolvedValueOnce({ success: true, mode: 'connected', result: { completedAt } });
-    expect(await ui.saveSettingValue('ratio', 2)).toBe(false);
+    const writing = deferred<JsonObject>();
+    backend.saveSettingsPatch.mockReturnValueOnce(writing.promise);
+    const saving = ui.saveSettingValue('ratio', 2);
+    await vi.waitFor(() => expect(backend.saveSettingsPatch).toHaveBeenCalledTimes(1));
+    backend.getState.mockResolvedValue(next);
+    await ui.refresh(true);
+    writing.resolve(settingsSaved({ ratio: 2.5 }));
+    expect(await saving).toBe(false);
     expect(ui.current().patch).toEqual({ ratio: 2 });
     expect(ui.current().error).toContain('session change');
+  });
+
+  it.each(['bulk', 'inline'])('forwards the fresh revision unchanged through a %s save', async kind => {
+    const { ui, backend } = setup(snapshot({ ratio: 1 }));
+    await ui.refresh();
+    const fresh = snapshot({ ratio: 1 }); fresh.settings_revision = 'c'.repeat(64);
+    backend.getState.mockResolvedValue(fresh);
+    if (kind === 'bulk') { ui.setSetting('ratio', 2); await ui.saveSettings(); }
+    else expect(await ui.saveSettingValue('ratio', 2)).toBe(true);
+    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { ratio: 2 }, 'c'.repeat(64));
+    expect(ui.current().snapshot!.settings_revision).toBe('b'.repeat(64));
+    ui.dispose();
+  });
+
+  it.each(['bulk', 'inline'])('rejects a stale same-session fresh read during a %s save', async kind => {
+    const initial = snapshot({ ratio: 1 }); initial.runtime.startedAt = 'session';
+    const { ui, backend } = setup(initial);
+    await ui.refresh();
+    const fresh = snapshot(initial.settings); fresh.runtime = { ...initial.runtime, updatedAt: new Date(Date.now() - 60000).toISOString() };
+    backend.getState.mockResolvedValue(fresh);
+    if (kind === 'bulk') { ui.setSetting('ratio', 2); await ui.saveSettings(); }
+    else expect(await ui.saveSettingValue('ratio', 2)).toBe(false);
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    expect(ui.current().patch).toEqual({ ratio: 2 });
+    ui.dispose();
+  });
+
+  it.each(['transport lost', 'receipt lost'])('does not replay settings after %s even when a newer draft arrived in flight', async failure => {
+    vi.useFakeTimers();
+    const { ui, backend } = setup(snapshot({ ratio: 1 }));
+    try {
+      await ui.refresh();
+      const writing = deferred<JsonObject>();
+      backend.saveSettingsPatch.mockReturnValueOnce(writing.promise);
+      ui.editSetting('ratio', 2);
+      await vi.advanceTimersByTimeAsync(0);
+      ui.editSetting('ratio', 3);
+      if (failure === 'transport lost') writing.reject(new Error('Outcome unknown'));
+      else writing.resolve({ success: true });
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(backend.saveSettingsPatch).toHaveBeenCalledTimes(1);
+      expect(ui.current().patch).toEqual({ ratio: 3 });
+      expect(ui.current().saveError).not.toBe('');
+    } finally { ui.dispose(); vi.useRealTimers(); }
+  });
+
+  it.each(['bulk', 'inline'])('does not downgrade a connected %s save to offline after a slow stale read', async kind => {
+    vi.useFakeTimers();
+    const initial = snapshot({ ratio: 1 }); initial.runtime.startedAt = 'session';
+    const { ui, backend } = setup(initial);
+    try {
+      await ui.refresh();
+      const reading = deferred<NguiState>();
+      backend.getState.mockReturnValueOnce(reading.promise);
+      ui.setSetting('ratio', 2);
+      const saving = kind === 'bulk' ? ui.saveSettings() : ui.saveSettingValue('ratio', 2);
+      await vi.advanceTimersByTimeAsync(6000);
+      reading.resolve(initial);
+      await saving;
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+      expect(ui.current().patch).toEqual({ ratio: 2 });
+      expect(ui.current().error).toContain('stale or unready');
+    } finally { ui.dispose(); vi.useRealTimers(); }
+  });
+
+  it('retains newer same-session runtime telemetry when an inline commit finishes', async () => {
+    const initial = snapshot({ ratio: 1 }); initial.runtime.startedAt = 'session';
+    const { ui, backend } = setup(initial);
+    try {
+      await ui.refresh();
+      const writing = deferred<JsonObject>();
+      backend.saveSettingsPatch.mockReturnValueOnce(writing.promise);
+      const saving = ui.saveSettingValue('ratio', 2);
+      await vi.waitFor(() => expect(backend.saveSettingsPatch).toHaveBeenCalledTimes(1));
+      const newer = snapshot(initial.settings); newer.runtime = { ...initial.runtime, updatedAt: new Date(Date.now() + 1).toISOString(), customStatus: 'Newer telemetry' };
+      backend.getState.mockResolvedValue(newer);
+      await ui.refresh(true);
+      writing.resolve(settingsSaved({ ratio: 2 }));
+      expect(await saving).toBe(true);
+      expect(ui.current().snapshot!.runtime.customStatus).toBe('Newer telemetry');
+      expect(ui.current().snapshot!.settings).toEqual({ ratio: 2 });
+    } finally { ui.dispose(); }
   });
 });
 
@@ -2010,7 +2749,7 @@ describe('Quick supersedes acknowledged plan flags', () => {
     await ui.refresh(); await ui.loadPlan('selected');
     backend.readPlan.mockResolvedValue({ ...plan(), AutoRebirthEnabled: true });
     const runCompletedAt = new Date(Date.now() + 10).toISOString();
-    backend.saveSettingsPatch.mockResolvedValueOnce({ success: true, mode: 'connected', result: { completedAt: runCompletedAt } });
+    backend.saveSettingsPatch.mockResolvedValueOnce(settingsSaved({ _customPlanFile: 'selected', _useCustomRebirthPlan: true, _autoRebirth: true }, { result: { completedAt: runCompletedAt } }));
     await ui.planAction('run', true);
     expect(ui.current().snapshot!.settings._useCustomRebirthPlan).toBe(true);
     const completedAt = new Date(Date.now() + 20).toISOString();
@@ -2022,7 +2761,7 @@ describe('Quick supersedes acknowledged plan flags', () => {
     await vi.waitFor(() => expect(backend.readCommandResult).toHaveBeenCalledTimes(1));
     ui.setSetting('other', true);
     completed.resolve({ id: 'command-id', command: 'focusGoal', success: true, completedAt });
-    await vi.waitFor(() => expect(backend.getState).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(backend.getState).toHaveBeenCalledTimes(4));
     expect(ui.current().snapshot!.settings).toEqual({ _customPlanFile: 'selected', _useCustomRebirthPlan: false, _autoRebirth: false });
     expect(ui.current().snapshot!.runtime.settings).toEqual({ customPlanFile: 'selected', useCustomRebirthPlan: false, autoRebirth: false });
     const stopped = { ...initial, settings: { _customPlanFile: 'selected', _useCustomRebirthPlan: false, _autoRebirth: false }, runtime: { ...initial.runtime, activeFocusGoal: 'TimeMachine' } };
@@ -2140,17 +2879,19 @@ describe('action latency acknowledgements', () => {
     await ui.refresh(); await ui.loadPlan('selected');
     ui.setSetting('ratio', 2);
     const reading = deferred<NguiState>();
+    backend.getState.mockResolvedValueOnce(initial);
     backend.getState.mockReturnValueOnce(reading.promise);
     const runtime = { ...initial.runtime, customStatus: 'Action acknowledged', settings: { customPlanFile: 'selected', useCustomRebirthPlan: false, autoRebirth: false } };
-    backend.saveSettingsPatch.mockResolvedValueOnce({ success: true, mode: 'connected', result: { completedAt: initial.runtime.updatedAt, data: { runtime } } });
+    backend.saveSettingsPatch.mockResolvedValueOnce(settingsSaved({ ratio: 2, _customPlanFile: 'selected', _useCustomRebirthPlan: false, _autoRebirth: false }, { result: { completedAt: initial.runtime.updatedAt, data: { runtime } } }));
     if (action === 'settings') await ui.saveSettings();
     else await ui.planAction(action);
     expect(ui.current().busy).toBe(false);
-    expect(ui.current().refreshing).toBe(true);
+    expect(ui.current().refreshing).toBe(action !== 'settings');
     expect(ui.current().snapshot!.runtime.customStatus).toBe('Action acknowledged');
     expect(ui.current().planName).toBe('selected');
     expect(confirm).not.toHaveBeenCalled();
-    expect(backend.readPlan).toHaveBeenCalledTimes(1);
+    // Activation preflights the committed bindings, but acknowledgement never waits for a reload.
+    expect(backend.readPlan).toHaveBeenCalledTimes(action === 'activate' ? 2 : 1);
     reading.resolve(initial);
     await vi.waitFor(() => expect(ui.current().refreshing).toBe(false));
   });
@@ -2179,20 +2920,20 @@ describe('action latency acknowledgements', () => {
   });
 });
 
-describe('NGU weights use whole-plan autosave and editor identity', () => {
+describe('global NGU settings autosave', () => {
   afterEach(() => vi.useRealTimers());
-  async function editor(version: JsonValue = 16) {
-    const initial = snapshot({ _customPlanFile: 'active', _useCustomRebirthPlan: true });
-    initial.runtime.planVersion = version;
+  async function editor(version: JsonValue = 1) {
+    const initial = snapshot({ _customPlanFile: 'active', _useCustomRebirthPlan: true, _energyNguWeights: [0, 0, 0, 0, 1, 0, 1, 0, 0], _magicNguWeights: [1, 0, 0, 0, 0, 0, 0] });
+    initial.runtime.globalNguWeightsVersion = version;
     const context = setup(initial);
-    let disk: JsonObject = { ...plan(), Version: 16, EnergyNguWeights: [0, 0, 0, 0, 1, 0, 1, 0, 0], MagicNguWeights: [1, 0, 0, 0, 0, 0, 0] };
+    let disk = plan();
     context.backend.readPlan.mockImplementation(async () => api.cloneObject(disk));
     context.backend.savePlan.mockImplementation(async (_dir, _name, payload) => { disk = { ...payload, __externalUiRevision: 'b'.repeat(64) }; return { success: true }; });
     await context.ui.refresh(); await context.ui.loadPlan('selected');
     return { ...context, initial };
   }
 
-  it('debounces array edits, saves the whole selected plan, and never selects the active plan', async () => {
+  it('debounces global edits without changing or saving the selected plan', async () => {
     vi.useFakeTimers();
     const { ui, backend, initial } = await editor();
     const before = api.stringifyJson(ui.current().plan);
@@ -2200,128 +2941,88 @@ describe('NGU weights use whole-plan autosave and editor identity', () => {
     expect(api.stringifyJson(ui.current().plan)).toBe(before);
     expect(backend.savePlan).not.toHaveBeenCalled();
     const weights = [0, 0, 0, 0, 2, 0, 1, 0, 0];
-    ui.editPlan({ ...ui.current().plan!, EnergyNguWeights: weights, TimeTriggerSeconds: 600 });
+    ui.editSetting('_energyNguWeights', weights, 350);
     await vi.advanceTimersByTimeAsync(349);
-    expect(backend.savePlan).not.toHaveBeenCalled();
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(backend.savePlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'selected', expect.objectContaining({ Version: 16, EnergyNguWeights: weights, MagicNguWeights: [1, 0, 0, 0, 0, 0, 0], TimeTriggerSeconds: 600, StageDurationSeconds: 1800 }));
+    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _energyNguWeights: weights }, settingsRevision);
     expect(ui.current().planDirty).toBe(false);
     expect(ui.current().planName).toBe('selected');
-    expect(ui.current().snapshot!.settings).toEqual(initial.settings);
+    expect(ui.current().snapshot!.settings).toMatchObject({ _customPlanFile: 'active', _useCustomRebirthPlan: true });
+    expect(api.stringifyJson(ui.current().plan)).toBe(before);
     expect(backend.readPlan.mock.calls.every(call => call[1] === 'selected')).toBe(true);
+    expect(backend.savePlan).not.toHaveBeenCalled();
+    ui.dispose();
+  });
+
+  it('strips raw JSON overrides instead of saving or applying per-plan weights', async () => {
+    const { ui, backend } = await editor();
+    const before = api.cloneObject(ui.current().snapshot!.settings);
+    ui.editPlan({ ...ui.current().plan!, NguGoal: 1, EnergyNguWeights: [3], MagicNguWeights: null, TimeTriggerSeconds: 600 });
+    await ui.flushAutosave();
+    expect(backend.savePlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'selected', expect.objectContaining({ TimeTriggerSeconds: 600, Version: 17 }));
+    expect(backend.savePlan.mock.calls[0][2]).not.toHaveProperty('EnergyNguWeights');
+    expect(backend.savePlan.mock.calls[0][2]).not.toHaveProperty('MagicNguWeights');
+    expect(backend.savePlan.mock.calls[0][2]).not.toHaveProperty('NguGoal');
+    expect(ui.current().plan).not.toHaveProperty('EnergyNguWeights');
+    expect(ui.current().snapshot!.settings).toEqual(before);
     expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
     ui.dispose();
   });
 
-  it('retains conflicting array edits without writing or replaying on polls', async () => {
-    vi.useFakeTimers();
+  it('does not migrate old plan overrides into settings when switching plans', async () => {
     const { ui, backend } = await editor();
-    const local = [0, 0, 0, 0, 3, 0, 1, 0, 0];
-    ui.editPlan({ ...ui.current().plan!, EnergyNguWeights: local });
-    backend.readPlan.mockResolvedValueOnce({ ...ui.current().planBase!, EnergyNguWeights: [1, 0, 0, 0, 0, 0, 0, 0, 0] });
-    await vi.advanceTimersByTimeAsync(350);
-    expect(ui.current().saveError).toContain('Source changed at EnergyNguWeights');
-    expect(ui.current().plan!.EnergyNguWeights).toEqual(local);
-    await ui.refresh(true); await vi.advanceTimersByTimeAsync(1000);
-    expect(backend.savePlan).not.toHaveBeenCalled();
+    const before = api.cloneObject(ui.current().snapshot!.settings);
+    backend.readPlan.mockResolvedValueOnce({ ...plan(), EnergyNguWeights: Array(9).fill(7), MagicNguWeights: Array(7).fill(9) });
+    await ui.loadPlan('other');
+    expect(ui.current().planName).toBe('other');
+    expect(ui.current().plan).not.toHaveProperty('EnergyNguWeights');
+    expect(ui.current().plan).not.toHaveProperty('MagicNguWeights');
+    expect(ui.current().snapshot!.settings).toEqual(before);
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
     ui.dispose();
   });
-
-  it.each(['EnergyNguWeights', 'MagicNguWeights'])('rejects post-commit concurrent changes to the pending %s array', async key => {
-    vi.useFakeTimers();
+  it('strips stage overrides from direct field saves and rejects direct plan weight writes', async () => {
     const { ui, backend } = await editor();
-    const committedWeights = (ui.current().plan![key] as number[]).map(() => 2);
-    const localWeights = committedWeights.map(() => 3);
-    const externalWeights = committedWeights.map(() => 4);
-    const fresh = { ...ui.current().planBase!, Future: 2, __externalUiRevision: 'b'.repeat(64) };
-    const commit = deferred<JsonObject>();
-    const readback = deferred<JsonObject>();
-    backend.savePlan.mockReturnValueOnce(commit.promise);
-    backend.readPlan.mockResolvedValueOnce(fresh).mockReturnValueOnce(readback.promise);
-    ui.editPlan({ ...ui.current().plan!, [key]: committedWeights });
-    const saving = ui.flushAutosave();
-    await vi.advanceTimersByTimeAsync(0);
+    expect(await ui.savePlanField('Stages', [{ Name: 'Global only', Percent: 100, EnergyNguWeights: [3], MagicNguWeights: [4] }])).toBe(true);
+    expect(backend.savePlan.mock.calls[0][2].Stages).toEqual([{ Name: 'Global only', Percent: 100 }]);
+    expect(await ui.savePlanField('EnergyNguWeights', Array(9).fill(2))).toBe(false);
+    expect(ui.current().error).toContain('global settings');
     expect(backend.savePlan).toHaveBeenCalledTimes(1);
-    const payload = backend.savePlan.mock.calls[0][2];
-    const expectedBase = { ...payload, __externalUiRevision: 'a'.repeat(64) };
-    ui.editPlan({ ...ui.current().plan!, [key]: localWeights });
-    commit.resolve({ success: true });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(ui.current().planBase).toEqual(expectedBase);
-    const external = { ...payload, [key]: externalWeights, __externalUiRevision: 'c'.repeat(64) };
-    backend.readPlan.mockResolvedValue(external);
-    readback.resolve(external);
-    await saving;
-    expect(ui.current().saveError).toContain(`Source changed at ${key}`);
-    expect(ui.current().planBase).toEqual(expectedBase);
-    expect(ui.current().plan).toEqual({ ...expectedBase, [key]: localWeights });
-    expect(ui.current().planDirty).toBe(true);
-    await vi.advanceTimersByTimeAsync(1000);
-    await ui.retryAutosave();
-    expect(backend.savePlan).toHaveBeenCalledTimes(1);
-    expect(ui.current().plan![key]).toEqual(localWeights);
-    expect(ui.current().planBase![key]).toEqual(committedWeights);
-    ui.dispose();
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled(); ui.dispose();
   });
 
-  it('rebases pending weights over normalized stages and nonoverlapping external edits', async () => {
-    vi.useFakeTimers();
-    const { ui, backend } = await editor();
-    const committedWeights = [0, 0, 0, 0, 2, 0, 1, 0, 0];
-    const localWeights = [0, 0, 0, 0, 3, 0, 1, 0, 0];
-    const fresh = { ...ui.current().planBase!, Future: 2, __externalUiRevision: 'b'.repeat(64) };
-    const readback = deferred<JsonObject>();
-    backend.readPlan.mockResolvedValueOnce(fresh).mockReturnValueOnce(readback.promise);
-    ui.editPlan({ ...ui.current().plan!, EnergyNguWeights: committedWeights });
-    const saving = ui.flushAutosave();
-    await vi.advanceTimersByTimeAsync(0);
-    const payload = backend.savePlan.mock.calls[0][2];
-    expect(payload.Future).toBe(2);
-    ui.editPlan({ ...ui.current().plan!, EnergyNguWeights: localWeights });
-    const normalized = { ...payload, MagicNguWeights: [2, 0, 0, 0, 0, 0, 0],
-      Stages: (payload.Stages as JsonObject[]).map(stage => ({ ...stage, DurationSeconds: 0, DurationUnit: '%' })),
-      RebirthHistory: [{ TimestampLocal: 'new' }], __externalUiRevision: 'c'.repeat(64) };
-    readback.resolve(normalized);
-    await saving;
-    expect(ui.current().error).toBe('');
-    expect(ui.current().saveError).toBe('');
-    expect(ui.current().planBase).toEqual(normalized);
-    expect(ui.current().plan).toEqual({ ...normalized, EnergyNguWeights: localWeights });
-    expect(ui.current().planDirty).toBe(true);
-    expect(backend.savePlan).toHaveBeenCalledTimes(1);
-    ui.dispose();
-  });
-
-  it.each([15, null])('blocks weights when runtime planVersion is %s, retaining the draft', async version => {
+  it.each([null, '1', 0])('blocks weights when globalNguWeightsVersion is %s, retaining the draft', async version => {
     const { ui, backend } = await editor(version);
-    ui.editPlan({ ...ui.current().plan!, MagicNguWeights: [2, 0, 0, 0, 0, 0, 0] });
+    ui.editSetting('_magicNguWeights', [2, 0, 0, 0, 0, 0, 0]);
     await ui.flushAutosave();
     expect(backend.savePlan).not.toHaveBeenCalled();
-    expect(ui.current().saveError).toContain('planVersion 16');
-    expect(ui.current().planDirty).toBe(true);
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    expect(ui.current().saveError).toContain('globalNguWeightsVersion: 1');
+    expect(ui.current().patch).toEqual({ _magicNguWeights: [2, 0, 0, 0, 0, 0, 0] });
     ui.dispose();
   });
 
   it.each(['', -1, .5, 2147483648])('keeps invalid weight %s local until corrected', async invalid => {
     const { ui, backend } = await editor();
-    ui.editPlan({ ...ui.current().plan!, MagicNguWeights: [invalid, 0, 0, 0, 0, 0, 0] });
+    ui.editSetting('_magicNguWeights', [invalid, 0, 0, 0, 0, 0, 0]);
     await ui.flushAutosave();
-    expect(backend.savePlan).not.toHaveBeenCalled();
-    expect(ui.current().saveError).toContain('MagicNguWeights[0]');
-    ui.editPlan({ ...ui.current().plan!, MagicNguWeights: [0, 0, 0, 0, 0, 0, 0] });
+    expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    expect(ui.current().saveError).toContain('_magicNguWeights[0]');
+    ui.editSetting('_magicNguWeights', [0, 0, 0, 0, 0, 0, 0]);
     await ui.flushAutosave();
-    expect(backend.savePlan).toHaveBeenCalledTimes(1);
+    expect(backend.saveSettingsPatch).toHaveBeenCalledExactlyOnceWith('A:/runtime', { _magicNguWeights: [0, 0, 0, 0, 0, 0, 0] }, settingsRevision);
     ui.dispose();
   });
 
-  it('preserves legacy version, fields, and fixed durations while editing unrelated settings', async () => {
+  it('preserves current version, stored fields, and fixed durations while editing unrelated settings', async () => {
     const { ui, backend } = setup();
-    const legacy = { ...plan(), Version: 15, NguGoal: 1, Stages: [{ Name: 'Fixed', Percent: 100, DurationSeconds: 120, DurationUnit: 's' }] };
-    backend.readPlan.mockResolvedValue(legacy);
-    await ui.refresh(); await ui.loadPlan('legacy');
+    const source = { ...plan(), Stages: [{ Name: 'Fixed', Percent: 100, DurationSeconds: 120, DurationUnit: 's', CompletionMode: 0 }] };
+    backend.readPlan.mockResolvedValue(source);
+    await ui.refresh(); await ui.loadPlan('selected');
     ui.editPlan({ ...ui.current().plan!, TimeTriggerSeconds: 600 });
     await ui.flushAutosave();
-    expect(backend.savePlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'legacy', { ...legacy, TimeTriggerSeconds: 600 });
+    expect(backend.savePlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'selected', { ...source, TimeTriggerSeconds: 600 });
     ui.dispose();
   });
 });

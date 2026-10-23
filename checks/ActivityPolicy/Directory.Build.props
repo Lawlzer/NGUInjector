@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <PolicyResourceVariant Condition="'$(OmitPolicyResource)' == 'true'">MissingResource</PolicyResourceVariant>
+    <PolicyResourceVariant Condition="'$(PolicyResourceVariant)' == ''">Embedded</PolicyResourceVariant>
+    <BaseIntermediateOutputPath>obj/$(MSBuildProjectName)/$(PolicyResourceVariant)/</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin/$(MSBuildProjectName)/$(PolicyResourceVariant)/</BaseOutputPath>
+  </PropertyGroup>
+</Project>

@@ -1,5 +1,8 @@
 import { LosslessNumber } from 'lossless-json';
 import { cloneObject, isObject, planRevisionField, requirePlanRevision, stringifyJson, type JsonObject, type JsonValue, type NguiState } from './api';
+import { validatePresetLibrary } from './presets';
+import { isValidPriority } from './stage-presets';
+import { titanZones } from './options';
 
 export const INT_MAX = 2147483647;
 export const focusNames = ['AugmentsBloodMagic', 'TimeMachine', 'Wandoos', 'EnergyNgu', 'MagicNgu', 'Ngu', 'AdvancedTraining', 'Adventure', 'Fight', 'ManualTitans'];
@@ -54,8 +57,7 @@ export function longTarget(value: unknown, label: string, positive = false): str
 
 export function validatePriorities(value: JsonValue | undefined, energy: boolean, label: string): void {
   if (value === undefined || value === null) return;
-  const pattern = energy ? /^(WAN|TM|NGU(?:-[0-8])?|AUG(?:-(?:[0-9]|1[0-3]))?|AT(?:-[0-4])?)$/ : /^(WAN|TM|NGU(?:-[0-6])?|RIT(?:-[0-7])?)$/;
-  if (!Array.isArray(value) || value.some(token => typeof token !== 'string' || !pattern.test(token))) {
+  if (!Array.isArray(value) || value.some(token => !isValidPriority(token, energy) || token !== token.trim().toUpperCase())) {
     throw new Error(`${label}: use exact uppercase priority tokens, with no empty entries.`);
   }
 }
@@ -66,24 +68,23 @@ export function stages(plan: JsonObject): JsonObject[] {
 }
 
 export function validatePlan(plan: JsonObject): void {
+  validatePresetLibrary(plan.LoadoutPresets);
+  if (plan.ActivePresetId !== undefined && (typeof plan.ActivePresetId !== 'string' || plan.ActivePresetId !== '' && !/^[A-Za-z0-9_-]{1,64}$/.test(plan.ActivePresetId))) throw new Error('ActivePresetId must be a global preset ID or empty for an existing legacy plan.');
   if (plan.Name !== undefined && (typeof plan.Name !== 'string' || !plan.Name.trim())) throw new Error('Name must be a nonempty string; the backend owns the file name.');
   numeric(plan.Version, 'Version (connect and reload to migrate legacy plans)', 14);
-  if (Number(plan.Version) < 16 && ['EnergyNguWeights', 'MagicNguWeights'].some(key => Object.prototype.hasOwnProperty.call(plan, key))) {
-    throw new Error('NGU weight fields require a version 16 plan. Connect to the updated injector and reload the plan.');
-  }
-  if (Number(plan.Version) >= 16) {
-    for (const [key, length] of [['EnergyNguWeights', 9], ['MagicNguWeights', 7]] as const) {
-      const weights = plan[key];
-      if (!Array.isArray(weights) || weights.length !== length) throw new Error(`${key} must contain exactly ${length} weights. Connect and reload the plan.`);
-      weights.forEach((weight, index) => numeric(weight, `${key}[${index}]`));
-    }
-  }
   requirePlanRevision(plan);
-  for (const key of ['AutoRebirthEnabled', 'TimeTriggerEnabled', 'NumberTriggerEnabled', 'NumberClimbEnabled', 'StageSchedulerEnabled', 'AutoActivateFruits', 'PrepRequireMaxedFruit']) {
+  for (const key of ['AutoRebirthEnabled', 'AutoIronPillEnabled', 'TimeTriggerEnabled', 'NumberTriggerEnabled', 'NumberClimbEnabled', 'StageSchedulerEnabled', 'AutoActivateFruits', 'PrepRequireMaxedFruit']) {
     if (plan[key] !== undefined && typeof plan[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
   }
+  if (plan.AutoBloodSpellsEnabled != null && typeof plan.AutoBloodSpellsEnabled !== 'boolean') throw new Error('AutoBloodSpellsEnabled must be boolean or null.');
+  for (const [key, max, integer] of [
+    ['BloodSpaghettiGoalPercent', 100000, true], ['BloodCounterfeitGoalPercent', 100000, true],
+    ['IronPillSaveSeconds', 604800, true], ['IronPillMinWorth', 1e8, false]
+  ] as const) {
+    if (plan[key] != null) numeric(plan[key], key, 0, max, integer);
+  }
   for (const key of ['TimeTriggerSeconds', 'NumberClimbMinSeconds']) if (plan[key] !== undefined) numeric(plan[key], key);
-  if (plan.StageDurationSeconds !== undefined) numeric(plan.StageDurationSeconds, 'StageDurationSeconds', 1);
+  if (plan.StageDurationSeconds !== undefined) numeric(plan.StageDurationSeconds, 'StageDurationSeconds');
   for (const [key, min, max] of [['TriggerMode', 0, 1], ['GearGoal', 0, 13], ['FightScoreMode', 0, 2]] as const) {
     if (plan[key] !== undefined) numeric(plan[key], key, min, max);
   }
@@ -95,20 +96,22 @@ export function validatePlan(plan: JsonObject): void {
   if (plan.StageLoopStartIndex !== undefined) numeric(plan.StageLoopStartIndex, 'StageLoopStartIndex', -1, rows.length - 1);
   let fixedTotal = 0;
   let weightTotal = 0;
-  let weightedStages = 0;
   rows.forEach((stage, index) => {
     const label = `Stage ${index + 1}`;
+    if (stage.PresetId !== undefined && (typeof stage.PresetId !== 'string' || stage.PresetId !== '' && stage.PresetId !== '@active' && !/^[A-Za-z0-9_-]{1,64}$/.test(stage.PresetId))) throw new Error(`${label}: PresetId must be a global preset ID, @active, or empty for legacy inline settings.`);
+    if (stage.PresetId === '@active' && !plan.ActivePresetId) throw new Error(`${label}: PresetId '@active' requires a nonempty plan.ActivePresetId. Choose an active global preset first.`);
+    if (stage.ExecutionMode !== undefined) numeric(stage.ExecutionMode, `${label} ExecutionMode`, 0, 1);
+    if (stage.AdventureDynamicWeight !== undefined) numeric(stage.AdventureDynamicWeight, `${label} AdventureDynamicWeight`, 0, 1e6, false);
+    if (stage.ExecutionMode === 1 && (stage.CompletionMode ?? 0) !== 0) throw new Error(`${label}: automatic Augments + Wandoos requires a time budget, not AT target completion.`);
     if (stage.Name !== undefined && (typeof stage.Name !== 'string' || !stage.Name.trim())) throw new Error(`${label}: Name cannot be blank.`);
     const weight = numeric(stage.Percent ?? 100, `${label} Percent`, Number.MIN_VALUE, Number.MAX_VALUE, false);
     const fixed = numeric(stage.DurationSeconds ?? 0, `${label} DurationSeconds`, 0);
-    if (fixed && Number(plan.Version) < 15) throw new Error('Reload this plan with the updated injector before using fixed durations.');
     if (stage.DurationUnit !== undefined && (typeof stage.DurationUnit !== 'string' || !['%', 's', 'min', 'h'].includes(stage.DurationUnit))) throw new Error(`${label}: choose seconds, minutes, hours, or %.`);
     if (stage.CompletionMode !== 1) {
-      weightTotal += weight;
+      if (!fixed) weightTotal += weight;
       if (!Number.isFinite(weightTotal)) throw new Error('Stage weights must have a finite total.');
       fixedTotal += fixed;
       if (fixedTotal > INT_MAX) throw new Error('Total fixed stage time is too large.');
-      if (!fixed) weightedStages++;
     }
     for (const key of ['EnergyFocus', 'MagicFocus']) if (stage[key] !== undefined) numeric(stage[key], `${label} ${key}`, 0, 7);
     if (stage.GearGoal !== undefined) numeric(stage.GearGoal, `${label} GearGoal`, -1, 13);
@@ -121,7 +124,15 @@ export function validatePlan(plan: JsonObject): void {
     validatePriorities(stage.EnergyPriorities, true, `${label} EnergyPriorities`);
     validatePriorities(stage.MagicPriorities, false, `${label} MagicPriorities`);
   });
-  if (weightedStages && fixedTotal >= Number(plan.StageDurationSeconds ?? 1800)) throw new Error('Schedule length must leave time for % stages.');
+  const horizon = plan.TimeTriggerEnabled === true && Number(plan.TimeTriggerSeconds) > 0 ? Number(plan.TimeTriggerSeconds) : Number(plan.StageDurationSeconds ?? 1800);
+  const flexibleBudget = Math.max(0, horizon - fixedTotal);
+  rows.forEach((stage, index) => {
+    if (stage.ExecutionMode !== 1) return;
+    // Match CustomPlanStore's nominal share, not the rounded schedule display.
+    const fixed = Number(stage.DurationSeconds ?? 0);
+    const budget = fixed > 0 ? fixed : flexibleBudget * (Number(stage.Percent ?? 100) / weightTotal);
+    if (budget > 86400) throw new Error(`Stage ${index + 1}: automatic Augments + Wandoos effective stage budget must not exceed 86400 seconds (24 hours), including flexible allocation. Reduce its duration, weight, or plan horizon.`);
+  });
   if (plan.GoalPresets !== undefined) {
     if (!Array.isArray(plan.GoalPresets) || !plan.GoalPresets.length) throw new Error('GoalPresets must contain at least one preset.');
     plan.GoalPresets.forEach((preset, index) => {
@@ -138,11 +149,49 @@ export function validateAugmentArgs(args: JsonObject): void {
   if (Object.prototype.hasOwnProperty.call(args, 'expectedSeconds')) numeric(args.expectedSeconds, 'expectedSeconds', 1);
 }
 
+export function validateMaxItopodPushArgs(command: string, args: JsonObject): void {
+  if (command === 'cancelMaxItopodPush') {
+    if (Object.keys(args).length) throw new Error('cancelMaxItopodPush does not accept args.');
+    return;
+  }
+  if (Object.keys(args).some(key => key !== 'deaths')) throw new Error('startMaxItopodPush accepts only deaths.');
+  numeric(args.deaths, 'Deaths', 1, 1000);
+}
+
+export function validateCombatPrepArgs(command: string, args: JsonObject): void {
+  const keys = command === 'previewCombatPrep' ? ['durationSeconds', 'backgroundEnergyPercent', 'backgroundMagicPercent']
+    : command === 'startCombatPrep' ? ['previewId', 'candidateId'] : command === 'cancelCombatPrep' ? ['runId'] : [];
+  if (!keys.length || Object.keys(args).length !== keys.length || Object.keys(args).some(key => !keys.includes(key))) throw new Error(`${command} accepts exactly ${keys.join(', ')}.`);
+  if (command === 'previewCombatPrep') {
+    numeric(args.durationSeconds, 'Duration seconds', 1, 86400);
+    for (const key of keys.slice(1)) {
+      if (typeof args[key] !== 'number') throw new Error(`${key} must be a number.`);
+      numeric(args[key], key, 0, 100, false);
+    }
+  } else for (const key of keys) {
+    if (typeof args[key] !== 'string' || !args[key].trim() || args[key].length > 128) throw new Error(`${key} must be a nonempty string of at most 128 characters.`);
+  }
+}
+
+export const autoExpRatioDefaults = {
+  _customExpEnergyRatio: 5, _customExpMagicRatio: 1,
+  _customExpEnergyPowerRatio: 5, _customExpEnergyCapRatio: 160000, _customExpEnergyBarsRatio: 4,
+  _customExpMagicPowerRatio: 5, _customExpMagicCapRatio: 160000, _customExpMagicBarsRatio: 4
+};
+
+export const manualAdventureWeightCounts: Record<string, number> = {
+  _manualAdventureGearWeights: 5, _manualAdventureBeardWeights: 7, _manualAdventureDiggerWeights: 12
+};
+
 export const settingsBounds: Record<string, [number, number, boolean?]> = {
+  ...Object.fromEntries(Object.keys(autoExpRatioDefaults).map(key => [key, [1, 1000000000]])),
   _customAutoBoostCubePowerRatio: [1, 4], _customAugmentsBloodEstimateSeconds: [1, 100000],
   _customBloodSpaghettiGoalPercent: [0, 100000], _customBloodCounterfeitGoalPercent: [0, 100000],
   _customIronPillSaveSeconds: [0, 604800], _customIronPillMinWorth: [0, 1e8, false],
-  _moneyPitThreshold: [0, Number.MAX_VALUE, false], _bloodNumberThreshold: [0, Number.MAX_VALUE, false], _customAdventureMode: [0, 2],
+  _moneyPitThreshold: [0, Number.MAX_VALUE, false], _bloodNumberThreshold: [0, Number.MAX_VALUE, false], _customAdventureMode: [0, 3],
+  _customAdventureMaxItopodDeaths: [1, 1000],
+  _manualAdventureLoadout: [-1, 2], _manualTitanLoadout: [-1, 2], _manualTitanMaxDeaths: [1, 1000],
+  _manualTitanZone: [6, 42],
   _customAdventureZone: [-1, 1000], _manualAdventureZone: [-1, 1000]
 };
 
@@ -152,16 +201,43 @@ const booleanArrays = new Set(['_titanMoneyDone', '_titanGoldTargets', '_titanSw
 
 export function validateSettings(patch: JsonObject, current: JsonObject): void {
   for (const [key, value] of Object.entries(patch)) {
+    if (Object.prototype.hasOwnProperty.call(manualAdventureWeightCounts, key)) {
+      const count = manualAdventureWeightCounts[key];
+      if (!Array.isArray(value) || value.length !== count) throw new Error(`${key} must contain exactly ${count} weights.`);
+      value.forEach((weight, index) => numeric(weight, `${key}[${index}]`, 0, 1e6, false));
+      continue;
+    }
+    if (key === '_energyNguWeights' || key === '_magicNguWeights') {
+      const count = key === '_energyNguWeights' ? 9 : 7;
+      if (!Array.isArray(value) || value.length !== count) throw new Error(`${key} must contain exactly ${count} weights.`);
+      for (const [index, weight] of value.entries()) numeric(weight, `${key}[${index}]`);
+      continue;
+    }
+    if (key === '_customAdventureRules') {
+      if (!Array.isArray(value) || value.length > 32) throw new Error(`${key} must be an array of at most 32 rules.`);
+      const fields = ['Enabled', 'MinPower', 'MinToughness', 'MinRegen', 'Mode', 'Zone'];
+      value.forEach((rule, index) => {
+        const label = `${key}[${index}]`;
+        if (!isObject(rule) || Object.keys(rule).length !== fields.length || fields.some(field => !Object.prototype.hasOwnProperty.call(rule, field))) throw new Error(`${label} must contain exactly ${fields.join(', ')}.`);
+        if (typeof rule.Enabled !== 'boolean') throw new Error(`${label} Enabled must be boolean.`);
+        for (const field of ['MinPower', 'MinToughness', 'MinRegen']) numeric(rule[field], `${label} ${field}`, 0, Number.MAX_VALUE, false);
+        const mode = numeric(rule.Mode, `${label} Mode`, 0, 4);
+        if (mode === 3) throw new Error(`${label} Mode must be 0, 1, 2, or 4.`);
+        if (rule.Zone !== 1000) numeric(rule.Zone, `${label} Zone`, -1, 43);
+      });
+      continue;
+    }
     if (key === '_customIronPillHistory') throw new Error(`${key} is backend-owned and read-only; preserve it unchanged.`);
     const bounds = settingsBounds[key];
     if (bounds) numeric(value, key, ...bounds);
-    else if (typeof current[key] === 'boolean' && typeof value !== 'boolean') throw new Error(`${key} must be boolean.`);
+    else if ((['_customAutoExpEnabled', '_manualTitanEnabled', '_manualTitanRequireAT'].includes(key) || typeof current[key] === 'boolean') && typeof value !== 'boolean') throw new Error(`${key} must be boolean.`);
     else if (integerSettings.has(key)) numeric(value, key, -INT_MAX - 1, INT_MAX);
     else if (typeof current[key] === 'number') numeric(value, key, -Number.MAX_VALUE, Number.MAX_VALUE, false);
     else if (typeof current[key] === 'string' && typeof value !== 'string') throw new Error(`${key} must be a string.`);
     if (key === '_customAdventureZone' || key === '_manualAdventureZone') {
       if (value !== 1000) numeric(value, key, -1, 43);
     }
+    if (key === '_manualTitanZone' && !titanZones.some(zone => zone.value === value)) throw new Error(`${key} must be a titan zone.`);
     if (key === '_customPlanFile' || key === '_allocationFile') validateName(String(value));
     if (integerArrays.has(key) || booleanArrays.has(key)) {
       if (!Array.isArray(value)) throw new Error(`${key} must be an array.`);

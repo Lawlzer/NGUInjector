@@ -6,6 +6,7 @@ using System.Linq;
 using System.Windows.Forms;
 using NGUInjector.CustomPlans;
 using NGUInjector.Managers;
+using SimpleJSON;
 
 namespace NGUInjector
 {
@@ -26,33 +27,40 @@ namespace NGUInjector
         private NumericUpDown _customSeconds;
         private CheckBox _customNumberEnabled;
         private TextBox _customNumberTarget;
-        private CheckBox _customNumberClimbEnabled;
-        private TextBox _customNumberClimbTarget;
-        private NumericUpDown _customNumberClimbMinutes;
-        private NumericUpDown _customNumberClimbSeconds;
         private ComboBox _customTriggerMode;
         private CheckBox _customAutoActivateFruits;
         private CheckBox _customAutoMoneyPit;
         private CheckBox _customAutoBoost;
         private ComboBox _customAutoBoostCubeRatio;
         private CheckBox _customAutoBloodSpells;
+        private CheckBox _customAutoIronPill;
+        private string _customBloodPlanFile;
         private NumericUpDown _customBloodSpaghettiGoalPercent;
         private NumericUpDown _customBloodCounterfeitGoalPercent;
         private Label _customBloodSpaghettiEstimate;
         private Label _customBloodCounterfeitEstimate;
         private NumericUpDown _customIronPillSaveSeconds;
         private TextBox _customIronPillMinWorth;
+        private string _customIronPillMinWorthLoadedText;
         private TextBox _customIronPillHistory;
         private CheckBox _customStageSchedulerEnabled;
         private NumericUpDown _customStageHours;
         private NumericUpDown _customStageMinutes;
         private NumericUpDown _customStageSeconds;
         private TextBox _customStageSummary;
+        private CustomPlan _customStageSummaryPlan;
+        private string _customStageRowsRevision;
+        private JSONObject _customStageActionProgress;
+        private bool _customStageOverridePending;
+        private Button _customStageSkipButton;
+        private Button _customStageRestartButton;
+        private ToolTip _customStageToolTip;
         private FlowLayoutPanel _customStageSteps;
         private readonly List<CustomStageEditorRow> _customStageRows = new List<CustomStageEditorRow>();
         private bool _customStageRowsInitializing;
         private CheckBox _customAdventureEnabled;
         private ComboBox _customAdventureMode;
+        private NumericUpDown _customAdventureMaxItopodDeaths;
         private ComboBox _customAdventureZone;
         private CheckBox _customAdventureGoldPush;
         private CheckBox _manualAdventureEnabled;
@@ -68,7 +76,6 @@ namespace NGUInjector
         private TextBox _customGoalPresetName = null;
         private ComboBox _customGearGoal;
         private ComboBox _customFightScoreMode;
-        private CheckBox _customPrepRequireMaxedFruit;
         private Label _customPlanStatus;
         private Label _customRuntimeStatus;
         private Label _customStatus;
@@ -84,7 +91,9 @@ namespace NGUInjector
             internal TextBox Name;
             internal ComboBox Preset;
             internal ComboBox CompletionMode;
-            internal NumericUpDown Percent;
+            internal TextBox Percent;
+            internal NumericUpDown FixedSeconds;
+            internal Label FixedSecondsLabel;
             internal TextBox TargetPower;
             internal TextBox TargetToughness;
             internal TextBox EnergyPriorities;
@@ -98,6 +107,7 @@ namespace NGUInjector
             internal Label TargetPowerLabel;
             internal Label TargetToughnessLabel;
             internal Button DeleteButton;
+            internal Button SetCurrentButton;
             internal CustomPlanStage SourceStage;
         }
 
@@ -320,17 +330,17 @@ namespace NGUInjector
 
         private Control BuildCustomBloodSpellsGroup()
         {
-            var group = NewGroup("Blood Spells");
+            var group = NewGroup("Blood Magic (Selected Custom Plan)");
             var layout = NewTwoColumnLayout();
 
             _customAutoBloodSpells = NewCheckBox("Auto-manage Blood Magic spell toggles");
-            _customAutoBloodSpells.CheckedChanged += CustomTogglesControl_Changed;
+            _customAutoBloodSpells.CheckedChanged += CustomBloodControl_Changed;
             layout.Controls.Add(NewLabel("Enabled"), 0, 0);
             layout.Controls.Add(_customAutoBloodSpells, 1, 0);
 
             var spaghettiPanel = NewInlineFlowPanel();
             _customBloodSpaghettiGoalPercent = NewSettingsNumber(0, 100000);
-            _customBloodSpaghettiGoalPercent.ValueChanged += CustomTogglesControl_Changed;
+            _customBloodSpaghettiGoalPercent.ValueChanged += CustomBloodControl_Changed;
             spaghettiPanel.Controls.Add(_customBloodSpaghettiGoalPercent);
             spaghettiPanel.Controls.Add(NewInlineLabel("% loot bonus before turning Spaghetti off"));
             layout.Controls.Add(NewLabel("Spaghetti goal"), 0, 1);
@@ -338,7 +348,7 @@ namespace NGUInjector
 
             var counterfeitPanel = NewInlineFlowPanel();
             _customBloodCounterfeitGoalPercent = NewSettingsNumber(0, 100000);
-            _customBloodCounterfeitGoalPercent.ValueChanged += CustomTogglesControl_Changed;
+            _customBloodCounterfeitGoalPercent.ValueChanged += CustomBloodControl_Changed;
             counterfeitPanel.Controls.Add(_customBloodCounterfeitGoalPercent);
             counterfeitPanel.Controls.Add(NewInlineLabel("% gold bonus before turning Counterfeit Gold off"));
             layout.Controls.Add(NewLabel("Counterfeit goal"), 0, 2);
@@ -353,14 +363,19 @@ namespace NGUInjector
             layout.Controls.Add(NewLabel("Counterfeit estimate"), 0, 4);
             layout.Controls.Add(_customBloodCounterfeitEstimate, 1, 4);
 
+            _customAutoIronPill = NewCheckBox("Allow automatic Iron Pill for the selected plan");
+            _customAutoIronPill.CheckedChanged += CustomBloodControl_Changed;
+            layout.Controls.Add(NewLabel("Iron Pill permission"), 0, 5);
+            layout.Controls.Add(_customAutoIronPill, 1, 5);
+
             var ironWaitPanel = NewInlineFlowPanel();
             _customIronPillSaveSeconds = NewSettingsNumber(0, 604800);
             _customIronPillSaveSeconds.Value = 900;
-            _customIronPillSaveSeconds.ValueChanged += CustomTogglesControl_Changed;
+            _customIronPillSaveSeconds.ValueChanged += CustomBloodControl_Changed;
             ironWaitPanel.Controls.Add(_customIronPillSaveSeconds);
             ironWaitPanel.Controls.Add(NewInlineLabel("seconds saving blood (0 disables wait threshold)"));
-            layout.Controls.Add(NewLabel("Iron Pill save time"), 0, 5);
-            layout.Controls.Add(ironWaitPanel, 1, 5);
+            layout.Controls.Add(NewLabel("Iron Pill save time"), 0, 6);
+            layout.Controls.Add(ironWaitPanel, 1, 6);
 
             var ironWorthPanel = NewInlineFlowPanel();
             _customIronPillMinWorth = NewTextBox(180);
@@ -369,6 +384,11 @@ namespace NGUInjector
             {
                 if (_initializing || _customPlanInitializing)
                     return;
+                if (_customIronPillMinWorth.Text == _customIronPillMinWorthLoadedText)
+                {
+                    moneyPitError.SetError(_customIronPillMinWorth, string.Empty);
+                    return;
+                }
                 if (!double.TryParse(_customIronPillMinWorth.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var worth)
                     || double.IsNaN(worth) || double.IsInfinity(worth) || worth < 0d || worth > 1e8)
                 {
@@ -377,8 +397,7 @@ namespace NGUInjector
                     return;
                 }
                 moneyPitError.SetError(_customIronPillMinWorth, string.Empty);
-                if (worth != Main.Settings.CustomIronPillMinWorth)
-                    RunCustomUiAction("Save Iron Pill worth", () => Main.Settings.CustomIronPillMinWorth = worth, false);
+                CustomBloodControl_Changed(sender, EventArgs.Empty);
             };
             _customIronPillMinWorth.KeyDown += (sender, args) =>
             {
@@ -389,18 +408,18 @@ namespace NGUInjector
             };
             ironWorthPanel.Controls.Add(_customIronPillMinWorth);
             ironWorthPanel.Controls.Add(NewInlineLabel("0..1e8 (100 million); scientific notation allowed. Saves on leaving or Enter."));
-            layout.Controls.Add(NewLabel("Iron Pill min worth"), 0, 6);
-            layout.Controls.Add(ironWorthPanel, 1, 6);
+            layout.Controls.Add(NewLabel("Iron Pill min worth"), 0, 7);
+            layout.Controls.Add(ironWorthPanel, 1, 7);
 
             var note = new Label
             {
                 AutoSize = true,
                 MaximumSize = new Size(700, 0),
                 Margin = new Padding(3, 5, 10, 5),
-                Text = "Estimates assume ALL available magic is put into the optimal sustainable blood ritual, using current gear bonuses, gold income, and the current auto-spell split, including unspent blood. This is a read-only projection, not current production; Iron Pill prep, rebirths, and future spell split changes are not predicted. Custom plans up to 1h use NUMBER except while reserving blood; longer plans use Spaghetti and Counterfeit Gold until their goals, then NUMBER. Automatic Iron Pill requires auto blood spells and active Custom plan resource automation, actual elapsed rebirth time >= 1h, and boss stage >= 100. While eligible, reserve blood and focus Augments + Blood when the pill is ready or its cooldown is within the configured saving time (900s lookahead when only worth is enabled). Cast when ready and EITHER the saving-time threshold OR minimum pill worth is reached. Zero disables that threshold; both zero cast immediately when ready. Defaults: 900s saving time, 0 worth. Actual pill worth is the base Power and base Toughness gained each, capped at 100 million (1e8). Reservation yields to manual rebirth and boss push."
+                Text = "Controls edit the selected Custom plan, even while stopped. Unset values inherit legacy global settings until individually edited; Quick without a running plan uses globals, not these overrides. Estimates show runtime scope below, not a stopped plan preview. Cast history covers all plans. Estimates assume all magic funds the optimal sustainable ritual with current gear, gold income, and spell split; they are read-only projections. Automatic Iron Pill requires plan permission, auto blood spells, active Custom plan resource automation, rebirth time >= 1h, and boss stage >= 100. Begin saving when ready or within the cooldown lookahead (900s in worth-only mode). Spend existing blood on NUMBER once, then pause other automatic spells. Blood Magic moves first in the magic order, except Time Machine and Wandoos stay first during their stages. Energy, gear, targets, and stage timing are unchanged. Cast when ready and EITHER saving time OR worth is reached; zero disables a threshold, both zero cast as soon as ready. Defaults: 900s saving time, 0 worth. Prep expires after max(900, saving seconds) + 60s; timeout or a failed NUMBER cast restores normal operation for 900s. Pill worth is base Power and Toughness gained each, capped at 100 million. Manual/boss preparation and ready automatic rebirth preempt saving. Outside reservation, Energy NGU stages and Quick Energy NGU prioritize blood until enabled Spaghetti/Counterfeit goals are reached, then restore the saved order. This does not flush blood; dedicated Magic/All NGU keep their order."
             };
-            layout.Controls.Add(new Label(), 0, 7);
-            layout.Controls.Add(note, 1, 7);
+            layout.Controls.Add(new Label(), 0, 8);
+            layout.Controls.Add(note, 1, 8);
 
             _customIronPillHistory = new TextBox
             {
@@ -414,8 +433,8 @@ namespace NGUInjector
                 Font = new Font(FontFamily.GenericMonospace, 8.25f),
                 Text = "No successful automatic Iron Pill casts recorded yet."
             };
-            layout.Controls.Add(NewLabel("Last 10 automatic casts"), 0, 8);
-            layout.Controls.Add(_customIronPillHistory, 1, 8);
+            layout.Controls.Add(NewLabel("Last 10 casts (all plans)"), 0, 9);
+            layout.Controls.Add(_customIronPillHistory, 1, 9);
 
             group.Controls.Add(layout);
             return group;
@@ -452,9 +471,7 @@ namespace NGUInjector
 
             var toggles = NewStackPanel();
             _customAutoActivateFruits = NewPlanCheckBox("Activate affordable fruits during active Custom plan/adventure automation over 1h");
-            _customPrepRequireMaxedFruit = NewPlanCheckBox("Only consume maxed Fruit of Power alpha before rebirth");
             toggles.Controls.Add(_customAutoActivateFruits);
-            toggles.Controls.Add(_customPrepRequireMaxedFruit);
             layout.Controls.Add(NewLabel("Plan toggles"), 0, 0);
             layout.Controls.Add(toggles, 1, 0);
 
@@ -610,28 +627,11 @@ namespace NGUInjector
             triggerLayout.Controls.Add(NewLabel("NUMBER"), 0, 1);
             triggerLayout.Controls.Add(numberPanel, 1, 1);
 
-            var climbPanel = NewInlineFlowPanel();
-            _customNumberClimbEnabled = NewPlanCheckBox("Enabled");
-            _customNumberClimbTarget = NewTextBox(90);
-            _customNumberClimbTarget.TextChanged += CustomPlanControl_Changed;
-            _customNumberClimbMinutes = NewNumber(0, 100000);
-            _customNumberClimbSeconds = NewNumber(0, 59);
-            climbPanel.Controls.Add(_customNumberClimbEnabled);
-            climbPanel.Controls.Add(NewInlineLabel("target x >="));
-            climbPanel.Controls.Add(_customNumberClimbTarget);
-            climbPanel.Controls.Add(NewInlineLabel("after"));
-            climbPanel.Controls.Add(_customNumberClimbMinutes);
-            climbPanel.Controls.Add(NewInlineLabel("m"));
-            climbPanel.Controls.Add(_customNumberClimbSeconds);
-            climbPanel.Controls.Add(NewInlineLabel("s"));
-            triggerLayout.Controls.Add(NewLabel("Climb"), 0, 2);
-            triggerLayout.Controls.Add(climbPanel, 1, 2);
-
             _customTriggerMode = NewComboBox(190);
             _customTriggerMode.Items.AddRange(new object[] {"Any enabled trigger", "All enabled triggers"});
             _customTriggerMode.SelectedIndexChanged += CustomPlanControl_Changed;
-            triggerLayout.Controls.Add(NewLabel("Mode"), 0, 3);
-            triggerLayout.Controls.Add(_customTriggerMode, 1, 3);
+            triggerLayout.Controls.Add(NewLabel("Mode"), 0, 2);
+            triggerLayout.Controls.Add(_customTriggerMode, 1, 2);
             triggerGroup.Controls.Add(triggerLayout);
             layout.Controls.Add(triggerGroup);
 
@@ -651,6 +651,15 @@ namespace NGUInjector
             durationPanel.Controls.Add(_customStageSeconds);
             durationPanel.Controls.Add(NewInlineLabel("s"));
             stepsLayout.Controls.Add(durationPanel);
+
+            stepsLayout.Controls.Add(new Label
+            {
+                AutoSize = true,
+                MaximumSize = new Size(CustomWideEditorMinWidth, 0),
+                ForeColor = Color.DimGray,
+                Margin = new Padding(3, 4, 10, 6),
+                Text = "Fixed duration: positive seconds require actual applied time. Flexible share: 0 seconds shares the remaining budget by weight; delays can shrink this to zero. AT targets: mandatory, with no fixed completion time. Automatic rebirth waits for fixed work and AT targets. The budget uses the enabled positive rebirth time, otherwise planned length, even for all-fixed plans. Row previews are nominal estimates; the summary shows reported runtime progress. Preset and AT-condition changes preserve fixed seconds; set seconds to 0 explicitly to use a flexible share."
+            });
 
             var stageEditor = NewStackPanel();
             stageEditor.MaximumSize = new Size(CustomWideEditorMinWidth, 0);
@@ -672,15 +681,26 @@ namespace NGUInjector
             {
                 Multiline = true,
                 ReadOnly = true,
-                ScrollBars = ScrollBars.Vertical,
+                ScrollBars = ScrollBars.Both,
+                WordWrap = false,
                 Dock = DockStyle.Fill,
-                MinimumSize = new Size(CustomWideEditorMinWidth, 75),
-                Height = 75,
+                MinimumSize = new Size(CustomWideEditorMinWidth, 140),
+                Height = 140,
                 Margin = new Padding(3, 4, 10, 6),
                 Font = new Font(FontFamily.GenericMonospace, 8.25f),
                 BackColor = SystemColors.Control
             };
             stepsLayout.Controls.Add(_customStageSummary);
+            var stageActions = NewInlineFlowPanel();
+            _customStageSkipButton = NewButton("Skip current", (sender, args) => CustomOverrideStage("skip"));
+            _customStageRestartButton = NewButton("Restart stage", (sender, args) => CustomOverrideStage("restart"));
+            _customStageSkipButton.Enabled = false;
+            _customStageRestartButton.Enabled = false;
+            _customStageSkipButton.AccessibleDescription = "Immediately skips required work; automatic rebirth may happen earlier.";
+            _customStageRestartButton.AccessibleDescription = "Immediately restarts the currently observed stage from its beginning.";
+            stageActions.Controls.Add(_customStageSkipButton);
+            stageActions.Controls.Add(_customStageRestartButton);
+            stepsLayout.Controls.Add(stageActions);
             stepsGroup.Controls.Add(stepsLayout);
             layout.Controls.Add(stepsGroup);
 
@@ -702,7 +722,7 @@ namespace NGUInjector
             layout.Controls.Add(_customAdventureEnabled, 1, 0);
 
             _customAdventureMode = NewComboBox(220);
-            _customAdventureMode.Items.AddRange(new object[] {"Optimal ITOPOD", "Farm zone", "Farm boosts"});
+            _customAdventureMode.Items.AddRange(new object[] {"Optimal ITOPOD", "Farm zone", "Farm boosts", "Max ITOPOD push"});
             _customAdventureMode.SelectedIndexChanged += CustomAdventureControl_Changed;
             layout.Controls.Add(NewLabel("Adventure goal"), 0, 1);
             layout.Controls.Add(_customAdventureMode, 1, 1);
@@ -712,20 +732,25 @@ namespace NGUInjector
             layout.Controls.Add(NewLabel("Farm zone"), 0, 2);
             layout.Controls.Add(_customAdventureZone, 1, 2);
 
-            _customAdventureGoldPush = NewCheckBox("Try each highest unlocked zone boss in Gold gear during the first hour, then restore and return to the adventure goal (give up on death)");
+            _customAdventureGoldPush = NewCheckBox("Try the highest unlocked zone boss in 90% Gold / 10% combat gear during the first hour; on death, try the next lower zone");
             _customAdventureGoldPush.CheckedChanged += CustomAdventureControl_Changed;
             layout.Controls.Add(NewLabel("Gold push"), 0, 3);
             layout.Controls.Add(_customAdventureGoldPush, 1, 3);
+
+            _customAdventureMaxItopodDeaths = NewSettingsNumber(1, 1000);
+            _customAdventureMaxItopodDeaths.ValueChanged += CustomAdventureControl_Changed;
+            layout.Controls.Add(NewLabel("Max ITOPOD death limit"), 0, 4);
+            layout.Controls.Add(_customAdventureMaxItopodDeaths, 1, 4);
 
             var note = new Label
             {
                 AutoSize = true,
                 MaximumSize = new Size(700, 0),
                 Margin = new Padding(3, 5, 10, 5),
-                Text = "Farm boosts chooses the best unlocked boost-farming target from current adventure stats, drop chance, boost recycling, and active boost filters, then updates as stats change. If a fixed farm zone is locked, Custom falls back to optimized ITOPOD and says so in the Now status. Gold push is independent: during the first 60 minutes it tries each newly highest unlocked zone boss once in generated Gold gear, then restores gear and returns to the selected adventure goal after a kill or death. Titan gold auto-kills still use generated Gold gear when titan gold targets are configured."
+                Text = "Max ITOPOD push climbs until the death limit, then switches Adventure mode to Optimal ITOPOD. Changing the limit applies to the next push. Farm boosts chooses the best unlocked boost-farming target from current adventure stats, drop chance, boost recycling, and active boost filters, then updates as stats change. If a fixed farm zone is locked, Custom falls back to optimized ITOPOD and says so in the Now status. Gold push is independent: during the first 60 minutes it starts at each newly highest unlocked zone boss in generated 90% Gold / 10% power-and-toughness gear. Each death heals and retries one lower unlocked non-titan zone; a kill or exhausting the zones restores gear and returns to the selected adventure goal. Configured titan gold targets try gold gear three seconds before spawn, then required power/toughness/regen gear if needed. All titan swaps must pass native autokill checks and restore after completion."
             };
-            layout.Controls.Add(new Label(), 0, 4);
-            layout.Controls.Add(note, 1, 4);
+            layout.Controls.Add(new Label(), 0, 5);
+            layout.Controls.Add(note, 1, 5);
 
             group.Controls.Add(layout);
             return group;
@@ -964,6 +989,9 @@ namespace NGUInjector
         private void UpdateCustomBloodGoalEstimates()
         {
             var estimates = Main.GetBloodGoalEstimates();
+            var scope = Main.Settings?.UseCustomRebirthPlan == true
+                ? $"Runtime selected plan: '{Main.Settings.CustomPlanFile}'"
+                : "Runtime globals (plan stopped / Quick); not the selected plan's overrides";
             var labels = new[] { _customBloodSpaghettiEstimate, _customBloodCounterfeitEstimate };
             for (var i = 0; i < labels.Length; i++)
             {
@@ -971,7 +999,7 @@ namespace NGUInjector
                     continue;
                 if (estimates.Length != 2)
                 {
-                    labels[i].Text = "Blood data unavailable";
+                    labels[i].Text = scope + "\nBlood data unavailable";
                     continue;
                 }
                 var estimate = estimates[i];
@@ -982,7 +1010,7 @@ namespace NGUInjector
                     eta = $"about {Math.Floor(total / 3600):0}h {Math.Floor(total % 3600 / 60):0}m {total % 60:0}s";
                 }
                 var remaining = estimate.RemainingBlood.HasValue ? $" | Blood needed: {FormatCompact(estimate.RemainingBlood.Value)}" : string.Empty;
-                labels[i].Text = $"Current: {estimate.CurrentPercent:0}% / Goal: {estimate.GoalPercent}% | Time to goal with all magic: {eta}{remaining}\n{estimate.ProductionAssumption} | Projected spell share: {FormatCompact(estimate.BloodPerSecond)} blood/s";
+                labels[i].Text = $"{scope}\nCurrent: {estimate.CurrentPercent:0}% / Goal: {estimate.GoalPercent}% | Time to goal with all magic: {eta}{remaining}\n{estimate.ProductionAssumption} | Projected spell share: {FormatCompact(estimate.BloodPerSecond)} blood/s";
             }
         }
 
@@ -996,6 +1024,7 @@ namespace NGUInjector
 
         private void LoadCustomPlanIntoUi(CustomPlan plan)
         {
+            LoadCustomBloodSettingsIntoUi(plan);
             _customPlanAutoRebirth.Checked = plan.AutoRebirthEnabled;
             _customTimeEnabled.Checked = plan.TimeTriggerEnabled;
             _customHours.Value = Math.Min(_customHours.Maximum, plan.TimeTriggerSeconds / 3600);
@@ -1003,10 +1032,6 @@ namespace NGUInjector
             _customSeconds.Value = Math.Min(_customSeconds.Maximum, plan.TimeTriggerSeconds % 60);
             _customNumberEnabled.Checked = plan.NumberTriggerEnabled;
             _customNumberTarget.Text = plan.NumberMultiplierTarget.ToString(CultureInfo.InvariantCulture);
-            _customNumberClimbEnabled.Checked = plan.NumberClimbEnabled;
-            _customNumberClimbTarget.Text = plan.NumberClimbMultiplierTarget.ToString(CultureInfo.InvariantCulture);
-            _customNumberClimbMinutes.Value = Math.Min(_customNumberClimbMinutes.Maximum, plan.NumberClimbMinSeconds / 60);
-            _customNumberClimbSeconds.Value = Math.Min(_customNumberClimbSeconds.Maximum, plan.NumberClimbMinSeconds % 60);
             _customTriggerMode.SelectedIndex = plan.TriggerMode == 1 ? 1 : 0;
             _customAutoActivateFruits.Checked = plan.AutoActivateFruits;
             _customStageSchedulerEnabled.Checked = plan.StageSchedulerEnabled;
@@ -1014,11 +1039,12 @@ namespace NGUInjector
             _customStageMinutes.Value = Math.Min(_customStageMinutes.Maximum, plan.StageDurationSeconds % 3600 / 60);
             _customStageSeconds.Value = Math.Min(_customStageSeconds.Maximum, plan.StageDurationSeconds % 60);
             LoadCustomStageRows(plan.Stages);
+            _customStageRowsRevision = plan.RuntimeRevision;
             _customFightScoreMode.SelectedValue = GearOptimizer.FightScoreModeLabels.ContainsKey(plan.FightScoreMode) ? plan.FightScoreMode : 0;
             LoadGoalPresetsIntoUi(plan);
-            _customPrepRequireMaxedFruit.Checked = plan.PrepRequireMaxedFruit;
             RefreshCustomHistory(plan);
             UpdateCustomRebirthDashboard(plan);
+            UpdateCustomBloodGoalEstimates();
             SetCustomStatus($"Loaded '{Main.Settings.CustomPlanFile}'");
         }
 
@@ -1030,12 +1056,6 @@ namespace NGUInjector
             if (!double.TryParse(_customNumberTarget.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var numberTarget) || numberTarget < 0)
             {
                 SetCustomStatus("Number trigger target must be a non-negative number.");
-                return;
-            }
-
-            if (!double.TryParse(_customNumberClimbTarget.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var numberClimbTarget) || numberClimbTarget < 1)
-            {
-                SetCustomStatus("NUMBER climb target must be at least 1.", true);
                 return;
             }
 
@@ -1054,10 +1074,6 @@ namespace NGUInjector
                                       + decimal.ToInt32(_customSeconds.Value);
             plan.NumberTriggerEnabled = _customNumberEnabled.Checked;
             plan.NumberMultiplierTarget = numberTarget;
-            plan.NumberClimbEnabled = _customNumberClimbEnabled.Checked;
-            plan.NumberClimbMultiplierTarget = numberClimbTarget;
-            plan.NumberClimbMinSeconds = decimal.ToInt32(_customNumberClimbMinutes.Value) * 60
-                                         + decimal.ToInt32(_customNumberClimbSeconds.Value);
             plan.TriggerMode = Math.Max(0, _customTriggerMode.SelectedIndex);
             plan.AutoActivateFruits = _customAutoActivateFruits.Checked;
             plan.StageSchedulerEnabled = _customStageSchedulerEnabled.Checked;
@@ -1067,8 +1083,8 @@ namespace NGUInjector
             plan.Stages = stages;
             plan.FightScoreMode = _customFightScoreMode.SelectedValue is int fightScoreMode ? fightScoreMode : 0;
             SaveGoalPresetFromUi(plan);
-            plan.PrepRequireMaxedFruit = _customPrepRequireMaxedFruit.Checked;
             Main.CustomPlanStore.Save(planName, plan);
+            _customStageRowsRevision = plan.RuntimeRevision;
             UpdateCustomRebirthDashboard(plan);
             RefreshStageRowPreviews();
             SetCustomStatus($"Auto-saved '{planName}'");
@@ -1079,6 +1095,8 @@ namespace NGUInjector
             if (plan == null)
                 return;
 
+            _customStageSummaryPlan = plan;
+            UpdateCustomStageRuntimeDetails(Main.reference?.GetCustomPlanProgress());
             if (_customPlanStatus != null)
             {
                 var mode = plan.TriggerMode == 1 ? "all triggers" : "any trigger";
@@ -1087,7 +1105,9 @@ namespace NGUInjector
 
             if (_customStageSummary != null)
             {
-                _customStageSummary.Text = BuildStageSummary(plan);
+                var summary = BuildStageSummary(plan, _customStageActionProgress);
+                if (_customStageSummary.Text != summary)
+                    _customStageSummary.Text = summary;
             }
         }
 
@@ -1096,7 +1116,7 @@ namespace NGUInjector
             return value ? "on" : "off";
         }
 
-        private static string BuildStageSummary(CustomPlan plan)
+        private static string BuildStageSummary(CustomPlan plan, JSONObject progress)
         {
             if (plan == null)
                 return "No plan loaded.";
@@ -1107,42 +1127,55 @@ namespace NGUInjector
             if (plan.Stages == null || plan.Stages.Length == 0)
                 return "No stages are configured.";
 
-            var duration = Math.Max(1, plan.StageDurationSeconds);
-            var totalPercent = Math.Max(1d, plan.Stages.Sum(x => x == null ? 0.001d : Math.Max(0.001d, x.Percent)));
-            var sequential = plan.Stages.Any(x => x != null && x.CompletionMode != (int) CustomStageCompletionMode.TimePercent);
-            var totalTimePercent = Math.Max(0.001d, plan.Stages
-                .Where(x => x != null && x.CompletionMode == (int) CustomStageCompletionMode.TimePercent)
-                .Sum(x => Math.Max(0.001d, x.Percent)));
-            var lines = new List<string>();
-            lines.Add("Step                     Until              Energy        Magic         Gear");
-            lines.Add("----                     -----              ------        -----         ----");
+            var snapshot = CustomStageAllocator.GetSchedulerSnapshot(plan, Main.Character?.rebirthTime?.totalseconds ?? 0d);
+            if (snapshot == null)
+                return "Stage timing is unavailable.";
 
-            var cumulative = 0d;
+            var initialized = snapshot.ActiveStageIndex >= 0;
+            var lines = new List<string>();
+            lines.Add(snapshot.ProtectedWorkComplete
+                ? "Automatic rebirth stage gate: clear (other triggers still apply)."
+                : "Automatic rebirth stage gate: blocked by fixed work, AT targets, or unconfirmed progress.");
+            lines.Add(initialized
+                ? $"Fixed applied time remaining: {snapshot.ProtectedSecondsRemaining:0.#}s."
+                : "Fixed applied time remaining: not yet reported; nominal estimates only.");
+            lines.Add(snapshot.ScheduleComplete ? "Schedule complete; holding last allocation."
+                : initialized ? $"Current step: {snapshot.ActiveStageIndex + 1}; cycle {snapshot.Cycle:0}." : "Waiting for timing to initialize.");
+            if (!string.IsNullOrEmpty(snapshot.TimingReason))
+                lines.Add(snapshot.TimingReason);
+
             for (var i = 0; i < plan.Stages.Length; i++)
             {
-                var stage = plan.Stages[i] ?? new CustomPlanStage {Name = $"Stage {i + 1}"};
-                string until;
-                if (sequential)
+                var stage = plan.Stages[i];
+                var active = i == snapshot.ActiveStageIndex && !snapshot.ScheduleComplete;
+                var reported = progress == null ? null : progress["stages"][i];
+                var state = reported != null && reported["state"].IsString ? reported["state"].Value
+                    : active ? "current" : "not reported";
+                string timing;
+                if (stage.CompletionMode == (int) CustomStageCompletionMode.AdvancedTrainingStats)
                 {
-                    var stepDuration = stage.CompletionMode == (int) CustomStageCompletionMode.TimePercent
-                        ? Math.Max(1, (int) Math.Round(Math.Max(0.001d, stage.Percent) / totalTimePercent * duration))
-                        : 0;
-                    until = StageUntilSummary(stage, 0, stepDuration, true);
+                    timing = $"AT targets {FormatCompact(stage.TargetAdvancedTrainingPower)}/{FormatCompact(stage.TargetAdvancedTrainingToughness)}; indeterminate duration";
+                }
+                else if (stage.DurationSeconds > 0)
+                {
+                    timing = $"Fixed duration {CustomStageAllocator.FormatSeconds(stage.DurationSeconds)}";
+                    if (active)
+                        timing += $"; credited {snapshot.StageElapsedSeconds:0.#}s; remaining {Math.Max(0d, stage.DurationSeconds - snapshot.StageElapsedSeconds):0.#}s";
                 }
                 else
                 {
-                    var startPercent = cumulative;
-                    cumulative += Math.Max(0.001d, stage.Percent);
-                    var start = (int) Math.Floor(startPercent / totalPercent * duration);
-                    var end = i == plan.Stages.Length - 1
-                        ? duration
-                        : (int) Math.Floor(cumulative / totalPercent * duration);
-                    until = StageUntilSummary(stage, start, end, false);
+                    var assigned = snapshot.DurationSeconds[i];
+                    timing = $"Flexible share ({stage.Percent:0.###} weight); {(initialized ? "assigned" : "nominal estimate")} {CustomStageAllocator.FormatSeconds(assigned)}";
+                    if (active)
+                        timing += $"; elapsed {snapshot.StageElapsedSeconds:0.#}s; remaining {Math.Max(0d, assigned - snapshot.StageElapsedSeconds):0.#}s";
                 }
                 var gear = stage.GearGoal >= 0 && GearOptimizer.GoalLabels.ContainsKey(stage.GearGoal)
                     ? GearOptimizer.GoalLabels[stage.GearGoal]
                     : "Current";
-                lines.Add($"{Truncate(stage.Name, 24),-24} {until,-18} {CustomStageAllocator.FocusLabel(stage.EnergyFocus),-13} {CustomStageAllocator.FocusLabel(stage.MagicFocus),-13} {gear}");
+                lines.Add($"{i + 1}. {stage.Name} [{state}]: {timing}");
+                if (reported != null)
+                    lines.Add("  " + CustomStageRuntimeDescription(reported));
+                lines.Add($"  Energy: {CustomStageAllocator.FocusLabel(stage.EnergyFocus)} | Magic: {CustomStageAllocator.FocusLabel(stage.MagicFocus)} | Gear: {gear}");
                 if (stage.EnergyPriorities != null && stage.EnergyPriorities.Length > 0)
                     lines.Add("  Energy override: " + string.Join(" > ", stage.EnergyPriorities));
                 if (stage.MagicPriorities != null && stage.MagicPriorities.Length > 0)
@@ -1152,23 +1185,121 @@ namespace NGUInjector
             return string.Join(Environment.NewLine, lines.ToArray());
         }
 
-        private static string StageUntilSummary(CustomPlanStage stage, int start, int end, bool sequential)
+        private bool CustomStageActionsReady(JSONObject progress)
         {
-            if (stage != null && stage.CompletionMode == (int) CustomStageCompletionMode.AdvancedTrainingStats)
-                return $"AT {FormatCompact(stage.TargetAdvancedTrainingPower)}/{FormatCompact(stage.TargetAdvancedTrainingToughness)}";
-
-            if (sequential)
-                return $"time {CustomStageAllocator.FormatSeconds(end)}";
-
-            return $"{CustomStageAllocator.FormatSeconds(start)}-{CustomStageAllocator.FormatSeconds(end)}";
+            var selected = _customPlanSelector?.SelectedItem as string;
+            return !_initializing && !_customPlanInitializing && !_customStageRowsInitializing
+                   && Main.reference != null && Main.CustomPlanStore != null && Main.Settings != null
+                   && Main.Settings.UseCustomRebirthPlan && selected != null && selected == Main.Settings.CustomPlanFile
+                   && progress != null && progress["available"].AsBool && progress["status"].Value == "running"
+                   && progress["planName"].Value == selected && !string.IsNullOrEmpty(_customStageRowsRevision)
+                   && progress["planRevision"].Value == _customStageRowsRevision
+                   && progress["stageEntry"].IsString && !string.IsNullOrEmpty(progress["stageEntry"].Value)
+                   && progress["activeStageIndex"].IsNumber && progress["activeStageIndex"].AsInt >= 0
+                   && progress["activeStageIndex"].AsDouble == progress["activeStageIndex"].AsInt
+                   && progress["activeStageIndex"].AsInt < _customStageRows.Count
+                   && progress["stages"].IsArray && progress["stages"].Count == _customStageRows.Count;
         }
 
-        private static string Truncate(string text, int maxLength)
+        private void CustomOverrideStage(string action, int stageIndex = -1)
         {
-            if (string.IsNullOrWhiteSpace(text))
-                return string.Empty;
+            var observed = _customStageActionProgress;
+            if (_customStageOverridePending || !CustomStageActionsReady(observed))
+            {
+                SetCustomStatus("Stage actions require the selected running plan and reported current progress.", true);
+                return;
+            }
 
-            return text.Length <= maxLength ? text : text.Substring(0, maxLength - 3) + "...";
+            _customStageOverridePending = true;
+            try
+            {
+                UpdateCustomStageRuntimeDetails(observed);
+                var name = _customPlanSelector.SelectedItem.ToString();
+                var entry = observed["stageEntry"].Value;
+                var plan = Main.CustomPlanStore.Load(name);
+                var current = Main.reference.GetCustomPlanProgress();
+                // Never substitute a newly observed entry for the one the user acted on.
+                if (string.IsNullOrEmpty(plan.RuntimeRevision) || plan.RuntimeRevision != observed["planRevision"].Value
+                    || !CustomStageActionsReady(current) || current["stageEntry"].Value != entry)
+                    throw new InvalidOperationException("The plan or current stage changed. Review the refreshed progress and try again.");
+                if (action != "skip" && action != "set" && action != "restart")
+                    throw new InvalidOperationException("Unknown stage action.");
+
+                if (action != "set")
+                    stageIndex = observed["activeStageIndex"].AsInt;
+                if (stageIndex < 0 || stageIndex >= plan.Stages.Length)
+                    throw new InvalidOperationException("That stage is no longer available. Reload the plan and try again.");
+
+                var args = new JSONObject();
+                args["name"] = name;
+                args["expectedRevision"] = plan.RuntimeRevision;
+                args["expectedEntry"] = entry;
+                args["action"] = action;
+                args["stageIndex"] = stageIndex;
+                current = Main.reference?.GetCustomPlanProgress();
+                if (!CustomStageActionsReady(current) || current["stageEntry"].Value != entry
+                    || _customPlanSelector.SelectedItem?.ToString() != name)
+                    throw new InvalidOperationException("The selected running plan or current stage changed before submitting. No stage action was sent.");
+                SetCustomStatus(Main.reference.OverrideCustomStage(args));
+            }
+            catch (Exception error)
+            {
+                SetCustomStatus("Stage action rejected: " + error.Message, true);
+            }
+            finally
+            {
+                _customStageOverridePending = false;
+                UpdateCustomRebirthDashboard(_customStageSummaryPlan);
+            }
+        }
+
+        private static string CustomStageRuntimeDescription(JSONNode stage)
+        {
+            if (stage == null || !stage.IsObject)
+                return "Runtime timing is unavailable for this row; no applied or wall time is inferred.";
+
+            Func<string, string> metric = key => stage[key].IsNumber && stage[key].AsDouble >= 0d
+                && !double.IsInfinity(stage[key].AsDouble) && !double.IsNaN(stage[key].AsDouble)
+                    ? stage[key].AsDouble.ToString("0.###", CultureInfo.InvariantCulture) : "not reported";
+            var state = stage["state"].IsString ? stage["state"].Value : "not reported";
+            return $"Actual applied time: {metric("appliedSeconds")} s; wall time selected: {metric("elapsedSeconds")} s; visits: {metric("visits")}; state (including skipped): {state}.";
+        }
+
+        private void SetCustomStageRuntimeDescription(Control control, string description)
+        {
+            if (_customStageToolTip == null)
+                _customStageToolTip = new ToolTip(components ?? (components = new System.ComponentModel.Container())) {ShowAlways = true};
+            if (_customStageToolTip.GetToolTip(control) != description)
+                _customStageToolTip.SetToolTip(control, description);
+            control.AccessibleDescription = description;
+            foreach (Control child in control.Controls)
+                SetCustomStageRuntimeDescription(child, description);
+        }
+
+        private void UpdateCustomStageRuntimeDetails(JSONObject progress)
+        {
+            var selected = _customPlanSelector?.SelectedItem as string;
+            var matches = selected != null && Main.Settings?.CustomPlanFile == selected
+                          && progress != null && progress["available"].AsBool && progress["planName"].Value == selected
+                          && !string.IsNullOrEmpty(_customStageRowsRevision) && progress["planRevision"].Value == _customStageRowsRevision
+                          && progress["stages"].IsArray && progress["stages"].Count == _customStageRows.Count;
+            _customStageActionProgress = matches ? progress : null;
+            var ready = !_customStageOverridePending && CustomStageActionsReady(_customStageActionProgress);
+            if (_customStageSkipButton != null)
+                _customStageSkipButton.Enabled = ready;
+            if (_customStageRestartButton != null)
+                _customStageRestartButton.Enabled = ready;
+            for (var i = 0; i < _customStageRows.Count; i++)
+            {
+                var row = _customStageRows[i];
+                var reported = matches && progress["stages"][i]["index"].IsNumber
+                               && progress["stages"][i]["index"].AsDouble == i ? progress["stages"][i] : null;
+                var description = CustomStageRuntimeDescription(reported);
+                SetCustomStageRuntimeDescription(row.Container, description);
+                row.SetCurrentButton.Enabled = ready;
+                row.SetCurrentButton.AccessibleName = $"Set current stage to step {i + 1}";
+                row.SetCurrentButton.AccessibleDescription = description + " Takes effect immediately; jumping forward bypasses required work and automatic rebirth may happen earlier.";
+            }
         }
 
         private void LoadCustomAdventureIntoUi(SavedSettings settings)
@@ -1178,6 +1309,7 @@ namespace NGUInjector
 
             _customAdventureEnabled.Checked = settings.CustomAdventureEnabled;
             _customAdventureGoldPush.Checked = settings.CustomAdventureGoldPush;
+            _customAdventureMaxItopodDeaths.Value = settings.CustomAdventureMaxItopodDeaths;
             _customAdventureMode.SelectedIndex = Math.Max(0, Math.Min(_customAdventureMode.Items.Count - 1, settings.CustomAdventureMode));
 
             if (_customAdventureZone.DataSource == null && ZoneList != null)
@@ -1211,6 +1343,7 @@ namespace NGUInjector
             {
                 Main.Settings.CustomAdventureEnabled = _customAdventureEnabled.Checked;
                 Main.Settings.CustomAdventureGoldPush = _customAdventureGoldPush.Checked;
+                Main.Settings.CustomAdventureMaxItopodDeaths = (int)_customAdventureMaxItopodDeaths.Value;
                 Main.Settings.CustomAdventureMode = Math.Max(0, _customAdventureMode.SelectedIndex);
                 Main.Settings.CustomAdventureZone = zone;
             }
@@ -1314,18 +1447,76 @@ namespace NGUInjector
             var ratio = settings.CustomAutoBoostCubePowerRatio;
             _customAutoBoostCubeRatio.SelectedValue = ratio >= 1 && ratio <= 4 ? ratio : 2;
             _customAutoMoneyPit.Checked = settings.CustomAutoMoneyPitEnabled;
-            _customAutoBloodSpells.Checked = settings.CustomAutoBloodSpellsEnabled;
+        }
+
+        private void LoadCustomBloodSettingsIntoUi(CustomPlan plan)
+        {
+            if (_customAutoBloodSpells == null)
+                return;
+
+            var planChanged = _customBloodPlanFile != Main.Settings.CustomPlanFile;
+            _customBloodPlanFile = Main.Settings.CustomPlanFile;
+            _customAutoBloodSpells.Checked = Main.EffectiveCustomAutoBloodSpellsEnabled(plan);
+            _customAutoIronPill.Checked = plan.AutoIronPillEnabled;
             _customBloodSpaghettiGoalPercent.Value = Math.Min(
                 _customBloodSpaghettiGoalPercent.Maximum,
-                Math.Max(_customBloodSpaghettiGoalPercent.Minimum, settings.CustomBloodSpaghettiGoalPercent));
+                Math.Max(_customBloodSpaghettiGoalPercent.Minimum, Main.EffectiveCustomBloodSpaghettiGoalPercent(plan)));
             _customBloodCounterfeitGoalPercent.Value = Math.Min(
                 _customBloodCounterfeitGoalPercent.Maximum,
-                Math.Max(_customBloodCounterfeitGoalPercent.Minimum, settings.CustomBloodCounterfeitGoalPercent));
-            if (!_customIronPillSaveSeconds.Focused)
+                Math.Max(_customBloodCounterfeitGoalPercent.Minimum, Main.EffectiveCustomBloodCounterfeitGoalPercent(plan)));
+            if (planChanged || !_customIronPillSaveSeconds.Focused)
                 _customIronPillSaveSeconds.Value = Math.Min(_customIronPillSaveSeconds.Maximum,
-                    Math.Max(_customIronPillSaveSeconds.Minimum, settings.CustomIronPillSaveSeconds));
-            if (!_customIronPillMinWorth.Focused)
-                _customIronPillMinWorth.Text = settings.CustomIronPillMinWorth.ToString("R", CultureInfo.InvariantCulture);
+                    Math.Max(_customIronPillSaveSeconds.Minimum, Main.EffectiveCustomIronPillSaveSeconds(plan)));
+            if (planChanged || !_customIronPillMinWorth.Focused)
+            {
+                _customIronPillMinWorth.Text = Main.EffectiveCustomIronPillMinWorth(plan).ToString("R", CultureInfo.InvariantCulture);
+                _customIronPillMinWorthLoadedText = _customIronPillMinWorth.Text;
+                moneyPitError.SetError(_customIronPillMinWorth, string.Empty);
+            }
+        }
+
+        private void CustomBloodControl_Changed(object sender, EventArgs e)
+        {
+            if (_initializing || _customPlanInitializing || Main.CustomPlanStore == null)
+                return;
+
+            RunCustomUiAction("Save selected plan Blood Magic", () =>
+            {
+                var planName = Main.Settings.CustomPlanFile;
+                var plan = Main.CustomPlanStore.Load(planName);
+                // Only the edited control creates an override; displayed inherited values stay unset.
+                if (sender == _customAutoBloodSpells)
+                    plan.AutoBloodSpellsEnabled = _customAutoBloodSpells.Checked;
+                else if (sender == _customAutoIronPill)
+                    plan.AutoIronPillEnabled = _customAutoIronPill.Checked;
+                else if (sender == _customBloodSpaghettiGoalPercent)
+                    plan.BloodSpaghettiGoalPercent = decimal.ToInt32(_customBloodSpaghettiGoalPercent.Value);
+                else if (sender == _customBloodCounterfeitGoalPercent)
+                    plan.BloodCounterfeitGoalPercent = decimal.ToInt32(_customBloodCounterfeitGoalPercent.Value);
+                else if (sender == _customIronPillSaveSeconds)
+                    plan.IronPillSaveSeconds = decimal.ToInt32(_customIronPillSaveSeconds.Value);
+                else if (sender == _customIronPillMinWorth)
+                {
+                    var worth = double.Parse(_customIronPillMinWorth.Text, NumberStyles.Float, CultureInfo.InvariantCulture);
+                    // Validation also runs on focus changes without an edit.
+                    if (worth == Main.EffectiveCustomIronPillMinWorth(plan))
+                    {
+                        _customIronPillMinWorthLoadedText = _customIronPillMinWorth.Text;
+                        return;
+                    }
+                    plan.IronPillMinWorth = worth;
+                }
+                else
+                    return;
+
+                Main.CustomPlanStore.Save(planName, plan);
+                if (sender == _customIronPillMinWorth)
+                    _customIronPillMinWorthLoadedText = _customIronPillMinWorth.Text;
+                _customStageRowsRevision = plan.RuntimeRevision;
+                UpdateCustomRebirthDashboard(plan);
+                UpdateCustomBloodGoalEstimates();
+                SetCustomStatus($"Saved Blood Magic for '{planName}'.");
+            }, false);
         }
 
         private void SaveCustomTogglesFromUi()
@@ -1340,10 +1531,6 @@ namespace NGUInjector
                 Main.Settings.CustomAutoBoostEnabled = _customAutoBoost.Checked;
                 Main.Settings.CustomAutoBoostCubePowerRatio = ratio;
                 Main.Settings.CustomAutoMoneyPitEnabled = _customAutoMoneyPit.Checked;
-                Main.Settings.CustomAutoBloodSpellsEnabled = _customAutoBloodSpells.Checked;
-                Main.Settings.CustomBloodSpaghettiGoalPercent = decimal.ToInt32(_customBloodSpaghettiGoalPercent.Value);
-                Main.Settings.CustomBloodCounterfeitGoalPercent = decimal.ToInt32(_customBloodCounterfeitGoalPercent.Value);
-                Main.Settings.CustomIronPillSaveSeconds = decimal.ToInt32(_customIronPillSaveSeconds.Value);
             }
             finally
             {
@@ -1652,7 +1839,7 @@ namespace NGUInjector
             var fightScoreMode = _customFightScoreMode.SelectedValue is int selectedMode
                 ? (FightScoreMode) selectedMode
                 : FightScoreMode.SqrtPowerToughness;
-            var result = GearOptimizer.OptimizeAndEquip((GearOptimizationGoal) goal, fightScoreMode);
+            var result = Main.reference.ApplyManualGearSelectionIngress((GearOptimizationGoal) goal, fightScoreMode);
             SetCustomStatus(result.Message, !result.Success);
             if (result.Success)
             {
@@ -1700,7 +1887,7 @@ namespace NGUInjector
 
         private void CustomAllocateAugment_Click(object sender, EventArgs e)
         {
-            var result = AugmentOptimizer.OptimizeAndAllocate(CustomAugmentsBloodEstimateSeconds());
+            var result = Main.reference.RequestAugmentAllocation(AugmentOptimizer.OptimizeBest(CustomAugmentsBloodEstimateSeconds()));
             var message = FormatAugmentPreview(result);
             if (_customAugmentPreview != null)
                 _customAugmentPreview.Text = message;
@@ -1790,6 +1977,11 @@ namespace NGUInjector
             _customStageRowsInitializing = true;
             try
             {
+                _customStageRowsRevision = null;
+                UpdateCustomStageRuntimeDetails(null);
+                _customStageToolTip?.RemoveAll();
+                foreach (Control control in _customStageSteps.Controls.Cast<Control>().ToArray())
+                    control.Dispose();
                 _customStageRows.Clear();
                 _customStageSteps.Controls.Clear();
                 var safeStages = stages == null || stages.Length == 0
@@ -1851,6 +2043,10 @@ namespace NGUInjector
             header.Controls.Add(row.Name);
             row.DeleteButton = NewSmallButton("Delete", (sender, args) => DeleteCustomStageRow(row));
             header.Controls.Add(row.DeleteButton);
+            row.SetCurrentButton = NewSmallButton("Set current", (sender, args) => CustomOverrideStage("set", _customStageRows.IndexOf(row)));
+            row.SetCurrentButton.Enabled = false;
+            row.SetCurrentButton.AccessibleName = $"Set current stage to step {index + 1}";
+            header.Controls.Add(row.SetCurrentButton);
             layout.Controls.Add(NewLabel("Name"), 0, 0);
             layout.Controls.Add(header, 1, 0);
 
@@ -1880,7 +2076,7 @@ namespace NGUInjector
             layout.Controls.Add(action, 1, 1);
 
             var until = NewInlineFlowPanel();
-            row.CompletionMode = NewComboBox(190);
+            row.CompletionMode = NewComboBox(240);
             BindCombo(row.CompletionMode, StageCompletionModeLabels().ToList(), stage.CompletionMode, null);
             row.CompletionMode.SelectedIndexChanged += (sender, args) =>
             {
@@ -1889,19 +2085,28 @@ namespace NGUInjector
             };
             until.Controls.Add(row.CompletionMode);
 
-            row.PercentLabel = NewInlineLabel("time weight");
-            until.Controls.Add(row.PercentLabel);
-            row.Percent = new NumericUpDown
+            row.FixedSecondsLabel = NewInlineLabel("fixed seconds (0 = flex)");
+            until.Controls.Add(row.FixedSecondsLabel);
+            row.FixedSeconds = new NumericUpDown
             {
-                Minimum = 0.001m,
-                Maximum = 100000m,
-                DecimalPlaces = 3,
-                Increment = 1m,
-                Width = 76,
+                Minimum = 0,
+                Maximum = int.MaxValue,
+                Width = 100,
                 Margin = new Padding(3, 4, 6, 4),
-                Value = Math.Min(100000m, Math.Max(0.001m, (decimal) stage.Percent))
+                Value = Math.Max(0, stage.DurationSeconds)
             };
-            row.Percent.ValueChanged += CustomStageRow_Changed;
+            row.FixedSeconds.ValueChanged += (sender, args) =>
+            {
+                UpdateStageRowConditionVisibility(row);
+                CustomStageRow_Changed(sender, args);
+            };
+            until.Controls.Add(row.FixedSeconds);
+
+            row.PercentLabel = NewInlineLabel("flex weight");
+            until.Controls.Add(row.PercentLabel);
+            row.Percent = NewTextBox(110);
+            row.Percent.Text = stage.Percent.ToString("R", CultureInfo.InvariantCulture);
+            row.Percent.TextChanged += CustomStageRow_Changed;
             until.Controls.Add(row.Percent);
 
             row.TargetPowerLabel = NewInlineLabel("power >=");
@@ -1930,7 +2135,7 @@ namespace NGUInjector
             };
             until.Controls.Add(row.Duration);
 
-            layout.Controls.Add(NewLabel("Until"), 0, 2);
+            layout.Controls.Add(NewLabel("Timing"), 0, 2);
             layout.Controls.Add(until, 1, 2);
 
             row.EnergyPriorities = NewTextBox(440);
@@ -1975,6 +2180,7 @@ namespace NGUInjector
             EnableCustomStageDrop(row.Container);
             UpdateStageRowPresetDetails(row);
             UpdateStageRowConditionVisibility(row);
+            SetCustomStageRuntimeDescription(row.Container, CustomStageRuntimeDescription(null));
             return row;
         }
 
@@ -1992,8 +2198,8 @@ namespace NGUInjector
         {
             return new Dictionary<int, string>
             {
-                {(int) CustomStageCompletionMode.TimePercent, "Time share"},
-                {(int) CustomStageCompletionMode.AdvancedTrainingStats, "Advanced Training P/T"}
+                {(int) CustomStageCompletionMode.TimePercent, "Fixed duration / Flexible share"},
+                {(int) CustomStageCompletionMode.AdvancedTrainingStats, "AT targets (mandatory)"}
             };
         }
 
@@ -2059,10 +2265,13 @@ namespace NGUInjector
                 DurationUnit = stage.DurationUnit,
                 EnergyFocus = stage.EnergyFocus,
                 MagicFocus = stage.MagicFocus,
+                ExecutionMode = stage.ExecutionMode,
+                PresetId = stage.PresetId,
                 EnergyPriorities = stage.EnergyPriorities == null ? null : (string[]) stage.EnergyPriorities.Clone(),
                 MagicPriorities = stage.MagicPriorities == null ? null : (string[]) stage.MagicPriorities.Clone(),
                 BlackBarLookaheadSeconds = stage.BlackBarLookaheadSeconds,
                 GearGoal = stage.GearGoal,
+                AdventureDynamicWeight = stage.AdventureDynamicWeight,
                 FightOnEntry = stage.FightOnEntry,
                 CompletionMode = stage.CompletionMode,
                 TargetAdvancedTrainingPower = stage.TargetAdvancedTrainingPower,
@@ -2104,14 +2313,43 @@ namespace NGUInjector
             if (_customStageRows == null || _customStageRows.Count == 0)
                 return;
 
-            var duration = Math.Max(1,
-                decimal.ToInt32(_customStageHours.Value) * 3600
-                + decimal.ToInt32(_customStageMinutes.Value) * 60
-                + decimal.ToInt32(_customStageSeconds.Value));
-            var sequential = _customStageRows.Any(row => ReadComboValue(row.CompletionMode, (int) CustomStageCompletionMode.TimePercent) != (int) CustomStageCompletionMode.TimePercent);
-            var totalTimeWeight = Math.Max(0.001d, _customStageRows
-                .Where(row => ReadComboValue(row.CompletionMode, (int) CustomStageCompletionMode.TimePercent) == (int) CustomStageCompletionMode.TimePercent)
-                .Sum(row => Math.Max(0.001d, (double) row.Percent.Value)));
+            var stages = new CustomPlanStage[_customStageRows.Count];
+            for (var i = 0; i < _customStageRows.Count; i++)
+            {
+                var row = _customStageRows[i];
+                if (!TryReadStageWeight(row.Percent.Text, out var weight))
+                {
+                    row.Duration.Text = "Flex weight must be a finite number greater than 0; scientific notation is allowed.";
+                    return;
+                }
+                stages[i] = new CustomPlanStage
+                {
+                    CompletionMode = ReadComboValue(row.CompletionMode, (int) CustomStageCompletionMode.TimePercent),
+                    DurationSeconds = decimal.ToInt32(row.FixedSeconds.Value),
+                    Percent = weight
+                };
+            }
+
+            var plan = new CustomPlan
+            {
+                TimeTriggerEnabled = _customTimeEnabled.Checked,
+                TimeTriggerSeconds = decimal.ToInt32(_customHours.Value) * 3600
+                                     + decimal.ToInt32(_customMinutes.Value) * 60 + decimal.ToInt32(_customSeconds.Value),
+                StageDurationSeconds = decimal.ToInt32(_customStageHours.Value) * 3600
+                                       + decimal.ToInt32(_customStageMinutes.Value) * 60 + decimal.ToInt32(_customStageSeconds.Value),
+                Stages = stages
+            };
+            int[] durations;
+            try
+            {
+                durations = CustomStageAllocator.EffectiveStageDurations(plan);
+            }
+            catch (InvalidOperationException error)
+            {
+                foreach (var row in _customStageRows)
+                    row.Duration.Text = error.Message;
+                return;
+            }
 
             for (var i = 0; i < _customStageRows.Count; i++)
             {
@@ -2119,18 +2357,18 @@ namespace NGUInjector
                 row.Container.Text = $"Step {i + 1}";
                 row.DeleteButton.Enabled = _customStageRows.Count > 1;
                 UpdateStageRowPresetDetails(row);
+                UpdateStageRowConditionVisibility(row);
 
                 var mode = ReadComboValue(row.CompletionMode, (int) CustomStageCompletionMode.TimePercent);
                 if (mode == (int) CustomStageCompletionMode.AdvancedTrainingStats)
                 {
-                    row.Duration.Text = $"runs until AT {row.TargetPower.Text.Trim()}/{row.TargetToughness.Text.Trim()}";
+                    row.Duration.Text = $"AT targets: mandatory {row.TargetPower.Text.Trim()}/{row.TargetToughness.Text.Trim()}; indeterminate duration";
                     continue;
                 }
 
-                var seconds = Math.Max(1, (int) Math.Round(Math.Max(0.001d, (double) row.Percent.Value) / totalTimeWeight * duration));
-                row.Duration.Text = sequential
-                    ? $"runs for about {CustomStageAllocator.FormatSeconds(seconds)} after prior until-steps"
-                    : $"runs for about {CustomStageAllocator.FormatSeconds(seconds)}";
+                row.Duration.Text = row.FixedSeconds.Value > 0
+                    ? $"Fixed duration: {CustomStageAllocator.FormatSeconds(durations[i])} actual applied time required"
+                    : $"Flexible share: about {CustomStageAllocator.FormatSeconds(durations[i])} nominally; absorbs delays";
             }
         }
 
@@ -2196,8 +2434,10 @@ namespace NGUInjector
         {
             var mode = ReadComboValue(row.CompletionMode, (int) CustomStageCompletionMode.TimePercent);
             var advancedTraining = mode == (int) CustomStageCompletionMode.AdvancedTrainingStats;
-            row.PercentLabel.Visible = !advancedTraining;
-            row.Percent.Visible = !advancedTraining;
+            row.FixedSecondsLabel.Visible = !advancedTraining;
+            row.FixedSeconds.Visible = !advancedTraining;
+            row.PercentLabel.Visible = !advancedTraining && row.FixedSeconds.Value == 0;
+            row.Percent.Visible = !advancedTraining && row.FixedSeconds.Value == 0;
             row.TargetPowerLabel.Visible = advancedTraining;
             row.TargetPower.Visible = advancedTraining;
             row.TargetToughnessLabel.Visible = advancedTraining;
@@ -2337,7 +2577,13 @@ namespace NGUInjector
                 var mode = ReadComboValue(row.CompletionMode, (int) CustomStageCompletionMode.TimePercent);
                 var stage = StageFromRowPreset(row, i);
                 stage.CompletionMode = mode;
-                stage.Percent = (double) row.Percent.Value;
+                if (!TryReadStageWeight(row.Percent.Text, out stage.Percent))
+                {
+                    stages = null;
+                    error = $"Step {i + 1} flex weight must be a finite number greater than 0; scientific notation is allowed.";
+                    return false;
+                }
+                stage.DurationSeconds = decimal.ToInt32(row.FixedSeconds.Value);
                 stage.BlackBarLookaheadSeconds = decimal.ToInt32(row.BlackBarLookaheadSeconds.Value);
                 stage.FightOnEntry = row.FightOnEntry.Checked;
 
@@ -2373,6 +2619,12 @@ namespace NGUInjector
             stages = parsed.ToArray();
             error = null;
             return true;
+        }
+
+        private static bool TryReadStageWeight(string text, out double weight)
+        {
+            return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out weight)
+                   && weight > 0d && !double.IsNaN(weight) && !double.IsInfinity(weight);
         }
 
         private static bool TryReadStagePriorities(string text, bool energy, out string[] priorities, out string error)
@@ -2704,6 +2956,7 @@ namespace NGUInjector
             UpdateCustomFocusButtonHighlights();
             UpdateCustomBloodGoalEstimates();
             RefreshCustomIronPillHistory(Main.Settings);
+            UpdateCustomRebirthDashboard(_customStageSummaryPlan);
         }
 
         private static void ApplyRuntimeStatusStyle(Label label, string status)
@@ -2775,7 +3028,7 @@ namespace NGUInjector
                 return;
             }
 
-            SetCustomStatus(Main.reference.RunManualFightPrep());
+            SetCustomStatus(Main.reference.RunManualPreparationIngress(false));
             UpdateCustomFocusButtonHighlights();
         }
 
@@ -2787,7 +3040,7 @@ namespace NGUInjector
                 return;
             }
 
-            SetCustomStatus(Main.reference.RunManualRebirth());
+            SetCustomStatus(Main.reference.RunManualPreparationIngress(true));
             UpdateCustomFocusButtonHighlights();
         }
 

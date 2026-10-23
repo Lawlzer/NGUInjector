@@ -9,7 +9,22 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="AutoRebirthDefaultsChecks.cs" />
+    <Compile Include="NativeSettingsPersistenceChecks.cs" />
+    <Compile Include="SettingsCasChecks.cs" />
+    <EmbeddedResource Include="../settings-contract.json" LogicalName="SettingsContract.json" />
+    <Compile Include="../../NGUInjector/AllocationProfiles/RebirthStuff/CustomPlanRebirth.cs" Link="Production/CustomPlanRebirth.cs" />
+    <Compile Include="IronPillHistoryChecks.cs" />
+    <Compile Include="PlanBloodPersistenceChecks.cs" />
+    <Compile Include="AdventureDynamicWeightChecks.cs" />
+    <Compile Include="AutoExpSettingsChecks.cs" />
+    <Compile Include="AdventureSettingsChecks.cs" />
+    <Compile Include="AdventureRuleSettingsChecks.cs" />
+    <Compile Include="MaxItopodPushChecks.cs" />
+    <Compile Include="LoadoutPresetChecks.cs" />
+    <Compile Include="LoadoutPresetBridgeChecks.cs" />
     <Compile Include="Stubs.cs" />
+    <Compile Include="ExecutionBoundary.cs" />
     <Compile Include="../../NGUInjector/Loader.cs" Link="Production/Loader.cs" />
     <Compile Include="../../NGUInjector/Main.Lifecycle.cs" Link="Production/Main.Lifecycle.cs" />
     <Compile Include="../../NGUInjector/Main.ExternalUi.cs" Link="Production/Main.ExternalUi.cs" />
@@ -17,8 +32,14 @@
     <Compile Include="../../NGUInjector/JsonFiles.cs" Link="Production/JsonFiles.cs" />
     <Compile Include="../../NGUInjector/SimpleJson.cs" Link="Production/SimpleJson.cs" />
     <Compile Include="../../NGUInjector/SavedSettings.cs" Link="Production/SavedSettings.cs" />
+    <Compile Include="../../NGUInjector/AdventureRule.cs" Link="Production/AdventureRule.cs" />
     <Compile Include="../../NGUInjector/CustomPlans/CustomPlan.cs" Link="Production/CustomPlan.cs" />
+    <Compile Include="../../NGUInjector/CustomPlans/LoadoutPreset.cs" Link="Production/LoadoutPreset.cs" />
+    <Compile Include="../../NGUInjector/CustomPlans/PresetDefinitions.cs" Link="Production/PresetDefinitions.cs" />
+    <EmbeddedResource Include="../../NGUInjector/Data/PresetDefinitions.json" LogicalName="NGUInjector.PresetDefinitions.json" />
     <Compile Include="../../NGUInjector/CustomPlans/CustomPlanStore.cs" Link="Production/CustomPlanStore.cs" />
+    <Compile Include="../../NGUInjector/CustomPlans/PresetLibraryStore.cs" Link="Production/PresetLibraryStore.cs" />
+    <EmbeddedResource Include="../../NGUInjector/Data/ActivityPolicies.json" LogicalName="NGUInjector.ActivityPolicies.json" />
     <Compile Include="../../NGUInjector/Managers/BloodGoalEstimate.cs" Link="Production/BloodGoalEstimate.cs" />
     <Compile Include="../../NGUInjector/Managers/IronPillAutomation.cs" Link="Production/IronPillAutomation.cs" />
   </ItemGroup>

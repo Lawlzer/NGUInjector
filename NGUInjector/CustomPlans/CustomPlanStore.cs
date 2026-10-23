@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -14,15 +15,17 @@ namespace NGUInjector.CustomPlans
         private const string OneHourThreeMinuteRebirthPlanName = "1h-3m-rebirth";
         private const string InfinitePlanName = "infinite";
         private const int MaxRebirthHistoryEntries = 20;
-        internal const int CurrentPlanVersion = 16;
+        internal const int CurrentPlanVersion = 17;
         internal const string ExternalUiRevisionField = "__externalUiRevision";
         private static readonly Encoding PlanEncoding = new UTF8Encoding(false, true);
         private readonly string _plansDir;
+        internal PresetLibraryStore PresetLibrary { get; private set; }
 
         internal CustomPlanStore(string plansDir)
         {
             _plansDir = plansDir;
             Directory.CreateDirectory(_plansDir);
+            PresetLibrary = new PresetLibraryStore(Path.GetDirectoryName(Path.GetFullPath(_plansDir)), _plansDir);
             EnsureBuiltInPlans();
         }
 
@@ -69,6 +72,17 @@ namespace NGUInjector.CustomPlans
             }
 
             plan.Name = planName;
+            if (planName == TwentyFourHourPlanName || planName == InfinitePlanName)
+            {
+                var seconds = new[] {3600, 1800, 1800, 10800};
+                for (var i = 0; i < seconds.Length; i++)
+                {
+                    plan.Stages[i].DurationSeconds = seconds[i];
+                    plan.Stages[i].DurationUnit = seconds[i] % 3600 == 0 ? "h" : "min";
+                    plan.Stages[i].Percent = 1;
+                }
+                plan.Stages[4].Percent = 1;
+            }
             Save(planName, plan);
         }
 
@@ -84,6 +98,7 @@ namespace NGUInjector.CustomPlans
                 var plan = DeserializePlan(PlanEncoding.GetString(bytes).TrimStart('\uFEFF'));
                 plan.RuntimeRevision = JsonFiles.ComputeRevision(bytes);
                 NormalizePlan(plan, planName);
+                PresetLibrary.MigratePlan(plan, planName);
                 return plan;
             }
             catch (Exception e)
@@ -111,7 +126,10 @@ namespace NGUInjector.CustomPlans
                 return plans[0];
             var path = GetPlanPath(planName);
             if (File.Exists(path))
+            {
                 File.Delete(path);
+                Main.reference?.ForgetStageProgress(planName);
+            }
             return ListPlanNames().FirstOrDefault() ?? EnsureDefaultPlan();
         }
 
@@ -139,6 +157,7 @@ namespace NGUInjector.CustomPlans
                 Main.Settings.ApplyPatch(patch);
             }
             File.Delete(path);
+            Main.reference?.ForgetStageProgress(planName);
             if (selected)
                 Main.reference?.InvalidateCustomRuntimePlanCache();
             return fallback;
@@ -146,15 +165,24 @@ namespace NGUInjector.CustomPlans
 
         internal void Save(string planName, CustomPlan plan)
         {
-            planName = NormalizePlanName(planName);
-            NormalizePlan(plan, planName);
-            var path = GetPlanPath(planName);
-            var serialized = SerializePlan(plan);
-            var changed = !File.Exists(path) || File.ReadAllText(path) != serialized;
-            JsonFiles.WriteAtomic(path, serialized);
-            plan.RuntimeRevision = JsonFiles.ComputeRevision(PlanEncoding.GetBytes(serialized));
-            if (changed && string.Equals(Main.Settings?.CustomPlanFile, planName, StringComparison.OrdinalIgnoreCase))
-                Main.reference?.InvalidateCustomRuntimePlanCache(false);
+            lock (PresetLibraryStore.SyncRoot)
+            {
+                planName = NormalizePlanName(planName);
+                NormalizePlan(plan, planName);
+                PresetLibrary.MigratePlan(plan, planName);
+                PresetLibrary.ValidateReferences(plan);
+                Main.reference?.ValidateScheduledPlanEdit(planName, plan);
+                var path = GetPlanPath(planName);
+                var serialized = SerializePlan(plan);
+                var previous = File.Exists(path) ? File.ReadAllText(path) : null;
+                var changed = previous != serialized;
+                JsonFiles.WriteAtomic(path, serialized);
+                plan.RuntimeRevision = JsonFiles.ComputeRevision(PlanEncoding.GetBytes(serialized));
+                if (previous == null)
+                    Main.reference?.ForgetStageProgress(planName);
+                if (changed && string.Equals(Main.Settings?.CustomPlanFile, planName, StringComparison.OrdinalIgnoreCase))
+                    Main.reference?.InvalidateCustomRuntimePlanCache();
+            }
         }
 
         internal JSONObject ReadExternalPlan(string name)
@@ -163,6 +191,7 @@ namespace NGUInjector.CustomPlans
             var bytes = File.ReadAllBytes(GetPlanPath(name));
             var plan = DeserializePlan(PlanEncoding.GetString(bytes).TrimStart('\uFEFF'));
             NormalizePlan(plan, name);
+            PresetLibrary.MigratePlan(plan, name);
             var root = JsonFiles.ParseObject(SerializePlan(plan));
             root[ExternalUiRevisionField] = JsonFiles.ComputeRevision(bytes);
             return root;
@@ -170,25 +199,36 @@ namespace NGUInjector.CustomPlans
 
         internal string SaveExternalPlan(string name, JSONNode root, string expectedRevision)
         {
-            ValidateExternalPlanName(name);
-            if (root == null || !root.IsObject)
-                throw new FormatException("args.plan must be a JSON object.");
-            if (expectedRevision == null || expectedRevision.Length != 0 && (expectedRevision.Length != 64 || !expectedRevision.All(Uri.IsHexDigit)))
-                throw new FormatException("args.expectedRevision must be a SHA-256 hex token, or an empty string for a nonexistent plan.");
-            var path = GetPlanPath(name);
-            var bytes = File.Exists(path) ? File.ReadAllBytes(path) : null;
-            var revision = bytes == null ? string.Empty : JsonFiles.ComputeRevision(bytes);
-            if (!string.Equals(expectedRevision, revision, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Plan revision conflict; readPlan again before saving.");
-            var plan = DeserializePlan(root.ToString());
-            if (bytes != null && (root["Version"] == null || plan.Version < CurrentPlanVersion))
-                throw new InvalidOperationException("Read the legacy plan through readPlan before editing and saving it.");
-            // The injector owns history. Do not replace it with a stale editor snapshot.
-            plan.RebirthHistory = bytes != null
-                ? DeserializePlan(PlanEncoding.GetString(bytes).TrimStart('\uFEFF')).RebirthHistory : new CustomRebirthHistoryEntry[0];
-            plan.Name = name;
-            Save(name, plan);
-            return JsonFiles.ComputeRevision(File.ReadAllBytes(path));
+            lock (PresetLibraryStore.SyncRoot)
+            {
+                ValidateExternalPlanName(name);
+                if (root == null || !root.IsObject)
+                    throw new FormatException("args.plan must be a JSON object.");
+                if (expectedRevision == null || expectedRevision.Length != 0 && (expectedRevision.Length != 64 || !expectedRevision.All(Uri.IsHexDigit)))
+                    throw new FormatException("args.expectedRevision must be a SHA-256 hex token, or an empty string for a nonexistent plan.");
+                var path = GetPlanPath(name);
+                var bytes = File.Exists(path) ? File.ReadAllBytes(path) : null;
+                var revision = bytes == null ? string.Empty : JsonFiles.ComputeRevision(bytes);
+                if (!string.Equals(expectedRevision, revision, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Plan revision conflict; readPlan again before saving.");
+                var plan = DeserializePlan(root.ToString());
+                if (bytes != null && (root["Version"] == null || plan.Version < CurrentPlanVersion))
+                    throw new InvalidOperationException("Read the legacy plan through readPlan before editing and saving it.");
+                if (bytes != null)
+                {
+                    var previous = JsonFiles.ParseObject(SerializePlan(ReadForPresetMigration(PlanEncoding.GetString(bytes).TrimStart('\uFEFF'), name)));
+                    var proposed = JsonFiles.ParseObject(SerializePlan(plan));
+                    foreach (var field in new[] {"LoadoutPresets", "GoalPresets", "ActiveGoalPresetIndex"})
+                        if (GetExistingNode(proposed, field)?.ToString() != GetExistingNode(previous, field)?.ToString())
+                            throw new InvalidOperationException(field + " is historical provenance; edit the global preset library instead.");
+                }
+                // The injector owns history. Do not replace it with a stale editor snapshot.
+                plan.RebirthHistory = bytes != null
+                    ? DeserializePlan(PlanEncoding.GetString(bytes).TrimStart('\uFEFF')).RebirthHistory : new CustomRebirthHistoryEntry[0];
+                plan.Name = name;
+                Save(name, plan);
+                return JsonFiles.ComputeRevision(File.ReadAllBytes(path));
+            }
         }
 
         internal string CreateExternalPlan(string requestedName, JSONNode source)
@@ -265,6 +305,10 @@ namespace NGUInjector.CustomPlans
                 return;
 
             var path = GetPlanPath(planName);
+            var source = JsonFiles.ParseObject(File.ReadAllText(path));
+            if (!string.IsNullOrEmpty(ReadString(source, "ActivePresetId", string.Empty))
+                || GetExistingNode(source, "Stages")?.Children.Any(stage => !string.IsNullOrEmpty(ReadString(stage, "PresetId", string.Empty))) == true)
+                return;
             if (!PlanMissingSerializedArray(path, "Stages") && !BuiltInGoalPresetNeedsRepair(path, planName, template))
                 return;
 
@@ -284,10 +328,28 @@ namespace NGUInjector.CustomPlans
             var root = JsonFiles.ParseObject(plan.SourceJson?.ToString() ?? "{}");
             root.Remove(ExternalUiRevisionField);
             root.Remove("NguGoal");
+            root.Remove("EnergyNguWeights");
+            root.Remove("MagicNguWeights");
+            root.Remove("ProtectedStageTiming");
             root["Version"] = plan.Version;
             root["Name"] = plan.Name;
+            root["ActivePresetId"] = plan.ActivePresetId ?? string.Empty;
+            var migrationIssues = new JSONArray();
+            foreach (var issue in plan.PresetMigrationIssues ?? new string[0]) migrationIssues.Add(issue);
+            root["PresetMigrationIssues"] = migrationIssues;
             root["AutoRebirthEnabled"] = plan.AutoRebirthEnabled;
             root["AutoIronPillEnabled"] = plan.AutoIronPillEnabled;
+            ValidateBloodOverrides(plan);
+            root.Remove("AutoBloodSpellsEnabled");
+            root.Remove("BloodSpaghettiGoalPercent");
+            root.Remove("BloodCounterfeitGoalPercent");
+            root.Remove("IronPillSaveSeconds");
+            root.Remove("IronPillMinWorth");
+            if (plan.AutoBloodSpellsEnabled.HasValue) root["AutoBloodSpellsEnabled"] = plan.AutoBloodSpellsEnabled.Value;
+            if (plan.BloodSpaghettiGoalPercent.HasValue) root["BloodSpaghettiGoalPercent"] = plan.BloodSpaghettiGoalPercent.Value;
+            if (plan.BloodCounterfeitGoalPercent.HasValue) root["BloodCounterfeitGoalPercent"] = plan.BloodCounterfeitGoalPercent.Value;
+            if (plan.IronPillSaveSeconds.HasValue) root["IronPillSaveSeconds"] = plan.IronPillSaveSeconds.Value;
+            if (plan.IronPillMinWorth.HasValue) root["IronPillMinWorth"] = plan.IronPillMinWorth.Value;
             root["TimeTriggerEnabled"] = plan.TimeTriggerEnabled;
             root["TimeTriggerSeconds"] = plan.TimeTriggerSeconds;
             root["NumberTriggerEnabled"] = plan.NumberTriggerEnabled;
@@ -301,12 +363,21 @@ namespace NGUInjector.CustomPlans
             root["StageLoopStartIndex"] = plan.StageLoopStartIndex;
             root["Stages"] = SerializeStages(plan.Stages);
             root["AutoActivateFruits"] = plan.AutoActivateFruits;
-            root["EnergyNguWeights"] = SerializeNguWeights(plan.EnergyNguWeights, 9, "EnergyNguWeights");
-            root["MagicNguWeights"] = SerializeNguWeights(plan.MagicNguWeights, 7, "MagicNguWeights");
             root["GearGoal"] = plan.GearGoal;
             root["FightScoreMode"] = plan.FightScoreMode;
             root["ActiveGoalPresetIndex"] = plan.ActiveGoalPresetIndex;
             root["GoalPresets"] = SerializeGoalPresets(plan.GoalPresets);
+            ValidateLoadoutPresets(plan.LoadoutPresets);
+            var loadoutPresets = new JSONArray();
+            foreach (var preset in plan.LoadoutPresets)
+                loadoutPresets.Add(preset.ToJson());
+            root["LoadoutPresets"] = plan.SourceJson != null && !ReferenceEquals(GetExistingNode(plan.SourceJson, "LoadoutPresets"), null)
+                ? JsonFiles.ParseObject(plan.SourceJson.ToString())["LoadoutPresets"] : loadoutPresets;
+            foreach (var preset in root["LoadoutPresets"].Children)
+            {
+                preset.Remove("EnergyNguWeights");
+                preset.Remove("MagicNguWeights");
+            }
             root["PrepRequireMaxedFruit"] = plan.PrepRequireMaxedFruit;
             root["RebirthHistory"] = SerializeHistory(plan.RebirthHistory);
             return root.ToString(4);
@@ -327,12 +398,36 @@ namespace NGUInjector.CustomPlans
             // Versionless documents predate the weights schema, unlike newly constructed models.
             plan.Version = ReadInt(root, "Version", 15);
             plan.Name = ReadString(root, "Name", plan.Name);
+            plan.ActivePresetId = ReadPresetReference(root, "ActivePresetId");
+            var issues = GetExistingNode(root, "PresetMigrationIssues");
+            if (!ReferenceEquals(issues, null))
+            {
+                if (!issues.IsArray || issues.Children.Any(issue => !issue.IsString))
+                    throw new FormatException("PresetMigrationIssues must be an array of strings.");
+                plan.PresetMigrationIssues = issues.Children.Select(issue => issue.Value).ToArray();
+            }
             var builtIn = BuiltInTemplate(plan.Name);
-            plan.AutoRebirthEnabled = ReadBool(root, "AutoRebirthEnabled", plan.AutoRebirthEnabled);
+            plan.AutoRebirthEnabled = ReadBool(root, "AutoRebirthEnabled", builtIn?.AutoRebirthEnabled ?? plan.AutoRebirthEnabled);
             var autoIronPill = GetExistingNode(root, "AutoIronPillEnabled");
             if (!ReferenceEquals(autoIronPill, null) && !autoIronPill.IsBoolean)
                 throw new FormatException("AutoIronPillEnabled must be a boolean.");
             plan.AutoIronPillEnabled = ReferenceEquals(autoIronPill, null) || autoIronPill.AsBool;
+            var autoBlood = GetExistingNode(root, "AutoBloodSpellsEnabled");
+            if (!ReferenceEquals(autoBlood, null) && !autoBlood.IsNull)
+            {
+                if (!autoBlood.IsBoolean) throw new FormatException("AutoBloodSpellsEnabled must be a boolean or null.");
+                plan.AutoBloodSpellsEnabled = autoBlood.AsBool;
+            }
+            plan.BloodSpaghettiGoalPercent = ReadOptionalBloodInt(root, "BloodSpaghettiGoalPercent", 100000);
+            plan.BloodCounterfeitGoalPercent = ReadOptionalBloodInt(root, "BloodCounterfeitGoalPercent", 100000);
+            plan.IronPillSaveSeconds = ReadOptionalBloodInt(root, "IronPillSaveSeconds", 604800);
+            var worth = GetExistingNode(root, "IronPillMinWorth");
+            if (!ReferenceEquals(worth, null) && !worth.IsNull)
+            {
+                if (!worth.IsNumber) throw new FormatException("IronPillMinWorth must be a number or null.");
+                plan.IronPillMinWorth = worth.AsDouble;
+            }
+            ValidateBloodOverrides(plan);
             plan.TimeTriggerEnabled = ReadBool(root, "TimeTriggerEnabled", plan.TimeTriggerEnabled);
             plan.TimeTriggerSeconds = ReadInt(root, "TimeTriggerSeconds", plan.TimeTriggerSeconds);
             plan.NumberTriggerEnabled = ReadBool(root, "NumberTriggerEnabled", plan.NumberTriggerEnabled);
@@ -343,17 +438,12 @@ namespace NGUInjector.CustomPlans
             plan.TriggerMode = ReadInt(root, "TriggerMode", plan.TriggerMode);
             plan.StageSchedulerEnabled = ReadBool(root, "StageSchedulerEnabled", plan.StageSchedulerEnabled);
             var budget = GetExistingNode(root, "StageDurationSeconds");
-            if (plan.Version >= 15 && !ReferenceEquals(budget, null) && (!budget.IsNumber || budget.AsDouble < 0
+            if (!ReferenceEquals(budget, null) && (!budget.IsNumber || budget.AsDouble < 0
                 || budget.AsDouble > int.MaxValue || budget.AsDouble != Math.Truncate(budget.AsDouble)))
                 throw new FormatException("StageDurationSeconds must be a nonnegative whole Int32 number.");
             plan.StageDurationSeconds = ReadInt(root, "StageDurationSeconds", plan.StageDurationSeconds);
             plan.StageLoopStartIndex = ReadInt(root, "StageLoopStartIndex", plan.StageLoopStartIndex);
             plan.AutoActivateFruits = ReadBool(root, "AutoActivateFruits", plan.AutoActivateFruits);
-            var legacyAdventureDrop = plan.Version >= 11 && ReadInt(root, "NguGoal", 0) == 1;
-            plan.EnergyNguWeights = DeserializeNguWeights(root, "EnergyNguWeights", 9, plan.Version <= 15
-                ? legacyAdventureDrop ? new[] {0, 0, 0, 0, 1, 0, 1, 0, 0} : new[] {1, 1, 0, 1, 0, 1, 0, 0, 0} : null);
-            plan.MagicNguWeights = DeserializeNguWeights(root, "MagicNguWeights", 7, plan.Version <= 15
-                ? legacyAdventureDrop ? new[] {0, 0, 0, 0, 0, 0, 1} : new[] {0, 0, 1, 0, 0, 0, 0} : null);
             plan.GearGoal = ReadInt(root, "GearGoal", plan.GearGoal);
             plan.FightScoreMode = ReadInt(root, "FightScoreMode", plan.FightScoreMode);
             plan.ActiveGoalPresetIndex = ReadInt(root, "ActiveGoalPresetIndex", plan.ActiveGoalPresetIndex);
@@ -388,46 +478,81 @@ namespace NGUInjector.CustomPlans
                 plan.RebirthHistory = historyNode.AsArray.Children.Select(DeserializeHistoryEntry).Where(x => x != null).ToArray();
             }
 
+            var loadoutPresetsNode = GetExistingNode(root, "LoadoutPresets");
+            if (!ReferenceEquals(loadoutPresetsNode, null))
+            {
+                if (!loadoutPresetsNode.IsArray || loadoutPresetsNode.Count > 32)
+                    throw new FormatException("LoadoutPresets must be an array of at most 32 presets.");
+                plan.LoadoutPresets = loadoutPresetsNode.Children.Select(CustomLoadoutPreset.Parse).ToArray();
+            }
+            ValidateLoadoutPresets(plan.LoadoutPresets);
             return plan;
         }
 
-        private static int[] DeserializeNguWeights(JSONNode root, string key, int count, int[] legacyWeights)
+        private static void ValidateLoadoutPresets(CustomLoadoutPreset[] presets)
         {
+            if (presets == null || presets.Length > 32)
+                throw new FormatException("LoadoutPresets must be an array of at most 32 presets.");
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var preset in presets)
+            {
+                CustomLoadoutPreset.Validate(preset);
+                if (!ids.Add(preset.Id))
+                    throw new FormatException("LoadoutPresets IDs must be unique: " + preset.Id);
+            }
+        }
+
+        internal static int[] ReadLegacyNguWeights(JSONNode root, bool energy)
+        {
+            var key = energy ? "EnergyNguWeights" : "MagicNguWeights";
             var node = GetExistingNode(root, key);
-            if (ReferenceEquals(node, null) && legacyWeights != null)
-                return legacyWeights;
+            if (!ReferenceEquals(node, null)) return ReadNguWeights(node, key, energy ? 9 : 7);
+            var version = ReadInt(root, "Version", 15);
+            if (version > 15)
+                return energy ? new[] {0, 0, 0, 0, 1, 0, 1, 0, 0} : new[] {1, 0, 0, 0, 0, 0, 0};
+            var adventure = version >= 11 && ReadInt(root, "NguGoal", 0) == 1;
+            return energy
+                ? adventure ? new[] {0, 0, 0, 0, 1, 0, 1, 0, 0} : new[] {1, 1, 0, 1, 0, 1, 0, 0, 0}
+                : adventure ? new[] {0, 0, 0, 0, 0, 0, 1} : new[] {0, 0, 1, 0, 0, 0, 0};
+        }
+
+        internal static int[] ReadNguWeights(JSONNode node, string key, int count)
+        {
             if (ReferenceEquals(node, null) || !node.IsArray || node.Count != count)
                 throw new FormatException(key + " must contain exactly " + count + " nonnegative whole Int32 numbers.");
 
             var weights = new int[count];
             for (var i = 0; i < count; i++)
-            {
-                var entry = node[i];
-                if (!entry.IsNumber)
-                    throw new FormatException(key + " entries must be nonnegative whole Int32 numbers.");
-
-                // Check the exact JSON token, not a rounded double (including tiny fractions).
-                var parts = entry.Value.Split(new[] {'e', 'E'});
-                var point = parts[0].IndexOf('.');
-                var digits = parts[0].Replace(".", "").TrimStart('-').TrimStart('0');
-                if (digits.Length == 0)
-                    continue;
-                long exponent = 0;
-                if (parts[0][0] == '-' || parts.Length > 1 && !long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out exponent))
-                    throw new FormatException(key + " entries must be nonnegative whole Int32 numbers.");
-                var significant = digits.TrimEnd('0');
-                var fractional = point < 0 ? 0 : parts[0].Length - point - 1;
-                var adjustment = (long) digits.Length - significant.Length - fractional;
-                if (exponent < -adjustment || exponent > 10 - significant.Length - adjustment)
-                    throw new FormatException(key + " entries must be nonnegative whole Int32 numbers.");
-                var integer = significant + new string('0', (int) (exponent + adjustment));
-                if (!int.TryParse(integer, NumberStyles.None, CultureInfo.InvariantCulture, out weights[i]))
-                    throw new FormatException(key + " entries must be nonnegative whole Int32 numbers.");
-            }
+                weights[i] = ReadNonnegativeInt(node[i], key + " entries");
             return weights;
         }
 
-        private static JSONArray SerializeNguWeights(int[] weights, int count, string key)
+        private static int ReadNonnegativeInt(JSONNode entry, string key)
+        {
+            if (!entry.IsNumber)
+                throw new FormatException(key + " must be nonnegative whole Int32 numbers.");
+
+            // Check the exact JSON token, not a rounded double (including tiny fractions).
+            var parts = entry.Value.Split(new[] {'e', 'E'});
+            var point = parts[0].IndexOf('.');
+            var digits = parts[0].Replace(".", "").TrimStart('-').TrimStart('0');
+            if (digits.Length == 0) return 0;
+            long exponent = 0;
+            if (parts[0][0] == '-' || parts.Length > 1 && !long.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out exponent))
+                throw new FormatException(key + " must be nonnegative whole Int32 numbers.");
+            var significant = digits.TrimEnd('0');
+            var fractional = point < 0 ? 0 : parts[0].Length - point - 1;
+            var adjustment = (long) digits.Length - significant.Length - fractional;
+            if (exponent < -adjustment || exponent > 10 - significant.Length - adjustment)
+                throw new FormatException(key + " must be nonnegative whole Int32 numbers.");
+            var integer = significant + new string('0', (int) (exponent + adjustment));
+            int value;
+            if (!int.TryParse(integer, NumberStyles.None, CultureInfo.InvariantCulture, out value))
+                throw new FormatException(key + " must be nonnegative whole Int32 numbers.");
+            return value;
+        }
+
+        internal static JSONArray SerializeNguWeights(int[] weights, int count, string key)
         {
             if (weights == null || weights.Length != count || weights.Any(weight => weight < 0))
                 throw new FormatException(key + " must contain exactly " + count + " nonnegative whole Int32 numbers.");
@@ -435,6 +560,28 @@ namespace NGUInjector.CustomPlans
             foreach (var weight in weights)
                 array.Add(weight);
             return array;
+        }
+
+        private static int? ReadOptionalBloodInt(JSONNode root, string key, int maximum)
+        {
+            var node = GetExistingNode(root, key);
+            if (ReferenceEquals(node, null) || node.IsNull) return null;
+            var value = ReadNonnegativeInt(node, key);
+            if (value > maximum) throw new FormatException(key + " must be between 0 and " + maximum + ", or null.");
+            return value;
+        }
+
+        private static void ValidateBloodOverrides(CustomPlan plan)
+        {
+            if (plan.BloodSpaghettiGoalPercent < 0 || plan.BloodSpaghettiGoalPercent > 100000)
+                throw new FormatException("BloodSpaghettiGoalPercent must be between 0 and 100000, or null.");
+            if (plan.BloodCounterfeitGoalPercent < 0 || plan.BloodCounterfeitGoalPercent > 100000)
+                throw new FormatException("BloodCounterfeitGoalPercent must be between 0 and 100000, or null.");
+            if (plan.IronPillSaveSeconds < 0 || plan.IronPillSaveSeconds > 604800)
+                throw new FormatException("IronPillSaveSeconds must be between 0 and 604800, or null.");
+            if (plan.IronPillMinWorth.HasValue && (double.IsNaN(plan.IronPillMinWorth.Value)
+                || double.IsInfinity(plan.IronPillMinWorth.Value) || plan.IronPillMinWorth < 0 || plan.IronPillMinWorth > 1e8))
+                throw new FormatException("IronPillMinWorth must be finite and between 0 and 100000000, or null.");
         }
 
         private static JSONArray SerializeStages(CustomPlanStage[] stages)
@@ -445,17 +592,21 @@ namespace NGUInjector.CustomPlans
 
             foreach (var stage in stages.Where(x => x != null))
             {
+                ValidateAdventureDynamicWeight(stage);
                 var item = JsonFiles.ParseObject(stage.SourceJson?.ToString() ?? "{}");
                 item["Name"] = stage.Name;
+                item["PresetId"] = stage.PresetId ?? string.Empty;
                 item["Percent"] = stage.Percent;
                 item["DurationSeconds"] = stage.DurationSeconds;
                 item["DurationUnit"] = stage.DurationUnit;
                 item["EnergyFocus"] = stage.EnergyFocus;
                 item["MagicFocus"] = stage.MagicFocus;
+                item["ExecutionMode"] = stage.ExecutionMode;
                 item["EnergyPriorities"] = SerializePriorities(stage.EnergyPriorities);
                 item["MagicPriorities"] = SerializePriorities(stage.MagicPriorities);
                 item["BlackBarLookaheadSeconds"] = stage.BlackBarLookaheadSeconds;
                 item["GearGoal"] = stage.GearGoal;
+                item["AdventureDynamicWeight"] = stage.AdventureDynamicWeight;
                 item["FightOnEntry"] = stage.FightOnEntry;
                 item["CompletionMode"] = stage.CompletionMode;
                 item["TargetAdvancedTrainingPower"] = stage.TargetAdvancedTrainingPower.ToString(CultureInfo.InvariantCulture);
@@ -473,6 +624,7 @@ namespace NGUInjector.CustomPlans
 
             var stage = new CustomPlanStage { SourceJson = node.AsObject };
             stage.Name = ReadString(node, "Name", stage.Name);
+            stage.PresetId = ReadPresetReference(node, "PresetId");
             stage.Percent = ReadDouble(node, "Percent", stage.Percent);
             var duration = GetExistingNode(node, "DurationSeconds");
             if (!ReferenceEquals(duration, null) && (!duration.IsNumber || duration.AsDouble < 0 || duration.AsDouble > int.MaxValue
@@ -485,10 +637,19 @@ namespace NGUInjector.CustomPlans
             stage.DurationUnit = ReferenceEquals(unit, null) ? "%" : unit.Value;
             stage.EnergyFocus = ReadInt(node, "EnergyFocus", stage.EnergyFocus);
             stage.MagicFocus = ReadInt(node, "MagicFocus", stage.MagicFocus);
+            var execution = GetExistingNode(node, "ExecutionMode");
+            if (!ReferenceEquals(execution, null) && (!execution.IsNumber || execution.AsDouble != 0 && execution.AsDouble != 1))
+                throw new FormatException("Stage ExecutionMode must be 0 (Standard) or 1 (AutoAugmentsWandoos).");
+            stage.ExecutionMode = ReferenceEquals(execution, null) ? 0 : execution.AsInt;
             stage.EnergyPriorities = DeserializePriorities(GetExistingNode(node, "EnergyPriorities"));
             stage.MagicPriorities = DeserializePriorities(GetExistingNode(node, "MagicPriorities"));
             stage.BlackBarLookaheadSeconds = ReadInt(node, "BlackBarLookaheadSeconds", stage.BlackBarLookaheadSeconds);
             stage.GearGoal = ReadInt(node, "GearGoal", stage.GearGoal);
+            var adventureDynamicWeight = GetExistingNode(node, "AdventureDynamicWeight");
+            if (!ReferenceEquals(adventureDynamicWeight, null) && !adventureDynamicWeight.IsNumber)
+                throw new FormatException("Stage AdventureDynamicWeight must be a finite number between 0 and 1000000.");
+            stage.AdventureDynamicWeight = ReferenceEquals(adventureDynamicWeight, null) ? 0d : adventureDynamicWeight.AsDouble;
+            ValidateAdventureDynamicWeight(stage);
             var fightOnEntry = GetExistingNode(node, "FightOnEntry");
             if (!ReferenceEquals(fightOnEntry, null) && !fightOnEntry.IsBoolean)
                 throw new FormatException("Stage FightOnEntry must be a boolean.");
@@ -497,6 +658,13 @@ namespace NGUInjector.CustomPlans
             stage.TargetAdvancedTrainingPower = ReadLong(node, "TargetAdvancedTrainingPower", stage.TargetAdvancedTrainingPower);
             stage.TargetAdvancedTrainingToughness = ReadLong(node, "TargetAdvancedTrainingToughness", stage.TargetAdvancedTrainingToughness);
             return stage;
+        }
+
+        private static void ValidateAdventureDynamicWeight(CustomPlanStage stage)
+        {
+            if (double.IsNaN(stage.AdventureDynamicWeight) || double.IsInfinity(stage.AdventureDynamicWeight)
+                || stage.AdventureDynamicWeight < 0 || stage.AdventureDynamicWeight > 1e6)
+                throw new FormatException("Stage AdventureDynamicWeight must be a finite number between 0 and 1000000.");
         }
 
         private static JSONArray SerializePriorities(string[] priorities)
@@ -527,6 +695,8 @@ namespace NGUInjector.CustomPlans
             foreach (var preset in presets.Where(x => x != null))
             {
                 var item = JsonFiles.ParseObject(preset.SourceJson?.ToString() ?? "{}");
+                item.Remove("EnergyNguWeights");
+                item.Remove("MagicNguWeights");
                 item["Name"] = preset.Name;
                 item["GearGoal"] = preset.GearGoal;
                 array.Add(item);
@@ -608,13 +778,14 @@ namespace NGUInjector.CustomPlans
             try
             {
                 var root = JSON.Parse(File.ReadAllText(path));
+                if (!string.IsNullOrEmpty(ReadString(root, "ActivePresetId", string.Empty)))
+                    return false;
                 var presets = GetExistingNode(root, "GoalPresets");
                 if (presets == null || !presets.IsArray || presets.Count == 0)
                     return true;
 
-                var first = presets.AsArray[0];
-                var templateGoal = template.GoalPresets != null && template.GoalPresets.Length > 0 ? template.GoalPresets[0].GearGoal : template.GearGoal;
-                return ReadInt(first, "GearGoal", templateGoal) != templateGoal;
+                // A different saved goal is a user choice, not evidence of a broken built-in.
+                return false;
             }
             catch
             {
@@ -640,6 +811,23 @@ namespace NGUInjector.CustomPlans
         {
             var node = GetExistingNode(root, key);
             return node == null || node.IsNull ? fallback : node.Value;
+        }
+
+        private static string ReadPresetReference(JSONNode root, string key)
+        {
+            var node = GetExistingNode(root, key);
+            if (ReferenceEquals(node, null)) return string.Empty;
+            if (node.IsString && key == "PresetId" && node.Value == "@active") return node.Value;
+            if (!node.IsString || node.Value.Length != 0 && !System.Text.RegularExpressions.Regex.IsMatch(node.Value, @"\A[A-Za-z0-9_-]{1,64}\z"))
+                throw new FormatException(key + " must be empty or a valid preset ID" + (key == "PresetId" ? ", or @active." : "."));
+            return node.Value;
+        }
+
+        internal static CustomPlan ReadForPresetMigration(string text, string name)
+        {
+            var plan = DeserializePlan(text);
+            NormalizePlan(plan, name);
+            return plan;
         }
 
         private static int ReadInt(JSONNode root, string key, int fallback)
@@ -699,6 +887,8 @@ namespace NGUInjector.CustomPlans
 
         private static void NormalizePlan(CustomPlan plan, string fallbackName)
         {
+            ValidateBloodOverrides(plan);
+            ValidateLoadoutPresets(plan.LoadoutPresets);
             if (plan.GoalPresets == null || plan.GoalPresets.Length == 0)
             {
                 plan.GoalPresets = new[]
@@ -719,10 +909,6 @@ namespace NGUInjector.CustomPlans
                     plan.GoalPresets[i].Name = $"Goal {i + 1}";
                 }
 
-                if (plan.GoalPresets[i].GearGoal < 0 || !NGUInjector.Managers.GearOptimizer.GoalLabels.ContainsKey(plan.GoalPresets[i].GearGoal))
-                {
-                    plan.GoalPresets[i].GearGoal = 0;
-                }
             }
 
             if (plan.ActiveGoalPresetIndex < 0 || plan.ActiveGoalPresetIndex >= plan.GoalPresets.Length)
@@ -732,30 +918,12 @@ namespace NGUInjector.CustomPlans
 
             plan.GearGoal = plan.GoalPresets[plan.ActiveGoalPresetIndex].GearGoal;
 
-            if (plan.Version < 6)
-            {
-                plan.NumberClimbEnabled = true;
-                plan.NumberClimbMinSeconds = 480;
-                plan.NumberClimbMultiplierTarget = Math.Max(100.0, plan.NumberMultiplierTarget);
-                plan.StageSchedulerEnabled = true;
-                plan.StageDurationSeconds = 1800;
-                plan.Stages = CustomPlan.DefaultNumberClimbStages();
-                plan.StageLoopStartIndex = 5;
-            }
-
             if (plan.Version < 7 && plan.Stages != null)
             {
                 foreach (var stage in plan.Stages.Where(stage => stage != null && stage.EnergyFocus == (int) CustomStageFocus.Augments && stage.MagicFocus == (int) CustomStageFocus.None))
                 {
                     stage.MagicFocus = (int) CustomStageFocus.BloodMagic;
                 }
-            }
-
-            if (plan.Version < 8 && ShouldUpgradeOldNumberClimbStages(plan))
-            {
-                plan.StageDurationSeconds = 1800;
-                plan.Stages = CustomPlan.DefaultNumberClimbStages();
-                plan.StageLoopStartIndex = 5;
             }
 
             if (plan.Version < 9 && plan.Stages != null)
@@ -800,19 +968,22 @@ namespace NGUInjector.CustomPlans
                 plan.NumberClimbMultiplierTarget = 1;
             }
 
-            if (plan.StageDurationSeconds <= 0)
-            {
-                plan.StageDurationSeconds = plan.TimeTriggerSeconds > 0 ? plan.TimeTriggerSeconds : 1800;
-            }
+            if (plan.StageDurationSeconds < 0)
+                throw new FormatException("StageDurationSeconds must be nonnegative.");
 
             var timedStages = plan.Stages.Where(stage => stage.CompletionMode == (int) CustomStageCompletionMode.TimePercent).ToArray();
             var fixedTotal = timedStages.Sum(stage => (long) stage.DurationSeconds);
             if (fixedTotal > int.MaxValue)
                 throw new FormatException("Fixed stage durations exceed the Int32 schedule limit.");
-            if (timedStages.Length > 0 && timedStages.All(stage => stage.DurationSeconds > 0))
-                plan.StageDurationSeconds = (int) fixedTotal;
-            else if (timedStages.Any(stage => stage.DurationSeconds == 0) && fixedTotal >= plan.StageDurationSeconds)
-                throw new FormatException("Fixed stage durations must be less than StageDurationSeconds when percent stages exist.");
+            var flexibleWeight = timedStages.Where(stage => stage.DurationSeconds == 0).Sum(stage => stage.Percent);
+            var horizon = plan.TimeTriggerEnabled && plan.TimeTriggerSeconds > 0 ? plan.TimeTriggerSeconds : plan.StageDurationSeconds;
+            var flexibleBudget = Math.Max(0, horizon - fixedTotal);
+            foreach (var stage in timedStages.Where(stage => stage.ExecutionMode == (int) CustomStageExecutionMode.AutoAugmentsWandoos))
+            {
+                var budget = stage.DurationSeconds > 0 ? stage.DurationSeconds : flexibleBudget * (stage.Percent / flexibleWeight);
+                if (budget > CustomPlanStage.MaximumAutomaticDurationSeconds)
+                    throw new FormatException("AutoAugmentsWandoos effective stage budget must not exceed 86400 seconds (24 hours), including flexible allocation. Reduce the stage duration, share, or plan horizon.");
+            }
 
             if (plan.StageLoopStartIndex < -1 || plan.Stages == null || plan.StageLoopStartIndex >= plan.Stages.Length)
             {
@@ -824,10 +995,6 @@ namespace NGUInjector.CustomPlans
                 plan.TriggerMode = 0;
             }
 
-            if (plan.GearGoal < 0)
-            {
-                plan.GearGoal = 0;
-            }
 
             if (plan.FightScoreMode < 0 || !NGUInjector.Managers.GearOptimizer.FightScoreModeLabels.ContainsKey(plan.FightScoreMode))
             {
@@ -850,6 +1017,7 @@ namespace NGUInjector.CustomPlans
                     plan.Stages[i] = new CustomPlanStage {Name = $"Stage {i + 1}", Percent = 100.0};
                 }
 
+                ValidateAdventureDynamicWeight(plan.Stages[i]);
                 if (string.IsNullOrWhiteSpace(plan.Stages[i].Name))
                 {
                     plan.Stages[i].Name = $"Stage {i + 1}";
@@ -857,6 +1025,10 @@ namespace NGUInjector.CustomPlans
 
                 if (plan.Stages[i].DurationSeconds < 0)
                     throw new FormatException("Stage DurationSeconds must be nonnegative.");
+                if (plan.Stages[i].ExecutionMode < 0 || plan.Stages[i].ExecutionMode > 1)
+                    throw new FormatException("Unknown stage ExecutionMode.");
+                if (plan.Stages[i].ExecutionMode == 1 && plan.Stages[i].CompletionMode != 0)
+                    throw new FormatException("AutoAugmentsWandoos requires a timed stage, not an AT-stat completion gate.");
                 if (plan.Stages[i].DurationUnit != "%" && plan.Stages[i].DurationUnit != "s"
                     && plan.Stages[i].DurationUnit != "min" && plan.Stages[i].DurationUnit != "h")
                     throw new FormatException("Stage DurationUnit must be %, s, min, or h.");
@@ -879,10 +1051,6 @@ namespace NGUInjector.CustomPlans
 
                 plan.Stages[i].BlackBarLookaheadSeconds = Math.Max(3, plan.Stages[i].BlackBarLookaheadSeconds);
 
-                if (plan.Stages[i].GearGoal < -1 || plan.Stages[i].GearGoal >= 0 && !NGUInjector.Managers.GearOptimizer.GoalLabels.ContainsKey(plan.Stages[i].GearGoal))
-                {
-                    plan.Stages[i].GearGoal = -1;
-                }
 
                 if (plan.Stages[i].CompletionMode < (int) CustomStageCompletionMode.TimePercent
                     || plan.Stages[i].CompletionMode > (int) CustomStageCompletionMode.AdvancedTrainingStats)
@@ -904,19 +1072,6 @@ namespace NGUInjector.CustomPlans
             if (double.IsInfinity(plan.Stages.Where(stage => stage.CompletionMode == (int) CustomStageCompletionMode.TimePercent
                 && stage.DurationSeconds == 0).Sum(stage => stage.Percent)))
                 throw new FormatException("Custom stage weights must have a finite total.");
-        }
-
-        private static bool ShouldUpgradeOldNumberClimbStages(CustomPlan plan)
-        {
-            if (plan.Stages == null || plan.Stages.Length == 0)
-                return true;
-
-            if (plan.Stages.Length != 3)
-                return false;
-
-            return plan.Stages.Any(stage => stage != null && !string.IsNullOrEmpty(stage.Name) && stage.Name.IndexOf("Time Machine", StringComparison.OrdinalIgnoreCase) >= 0)
-                   && plan.Stages.Any(stage => stage != null && !string.IsNullOrEmpty(stage.Name) && stage.Name.IndexOf("Augment", StringComparison.OrdinalIgnoreCase) >= 0)
-                   && plan.Stages.Any(stage => stage != null && !string.IsNullOrEmpty(stage.Name) && stage.Name.IndexOf("Wandoos", StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         private static void NormalizeHistory(CustomPlan plan)

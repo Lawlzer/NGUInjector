@@ -20,33 +20,6 @@ namespace NGUInjector.AllocationProfiles.BreakpointTypes
             return target == -1 || target > 0 && level >= target;
         }
 
-        internal override bool Allocate()
-        {
-            if (Type == ResourceType.Energy)
-            {
-                AllocateEnergy();
-            }
-            else
-            {
-                AllocateMagic();
-            }
-            return true;
-        }
-
-        private void AllocateEnergy()
-        {
-            var toAllocate = CalculateTMEnergyCap();
-            SetInput(toAllocate);
-            Character.timeMachineController.addEnergy();
-        }
-
-        private void AllocateMagic()
-        {
-            var toAllocate = CalculateTMMagicCap();
-            SetInput(toAllocate);
-            Character.timeMachineController.addMagic();
-        }
-
         protected override bool CorrectResourceType()
         {
             return Type == ResourceType.Energy || Type == ResourceType.Magic;

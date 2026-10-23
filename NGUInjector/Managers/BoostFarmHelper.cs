@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 
@@ -59,6 +60,14 @@ namespace NGUInjector.Managers
             new BoostFarmZone(41, 0.75d, 13700000000000000000000000000000000d, Drop(10000, 0.000000016d, 0.17d), Drop(10000, 0.000000016d, 0.17d)),
             new BoostFarmZone(43, 0.8095d, 877000000000000000000000000000000000d, Drop(10000, 0.000000010d, 0.17d), Drop(10000, 0.000000010d, 0.17d))
         };
+
+        // Immutable Almanac index; recurring acquired-route observation must not scan alternatives.
+        private static readonly Dictionary<int, BoostFarmZone> ZonesById = Zones.ToDictionary(x => x.Zone);
+        internal static object PresetZoneRow(int zone)
+        {
+            BoostFarmZone row;
+            return ZonesById.TryGetValue(zone, out row) ? row : null;
+        }
 
         internal static BoostFarmTarget GetBestTarget()
         {

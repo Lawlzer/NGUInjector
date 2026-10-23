@@ -23,6 +23,23 @@ internal static class GearSearchChecks
         _goal = assembly.GetType("NGUInjector.Managers.GearOptimizationGoal", true);
         _mode = assembly.GetType("NGUInjector.Managers.FightScoreMode", true);
         _item = assembly.GetType("NGUInjector.Managers.ih", true);
+        CheckAutokillThresholds();
+        CheckAutokillSpecialists();
+        CheckAutokillWeapons();
+        CheckAutokillImpossible();
+        CheckAutokillEarlyStop();
+        CheckAutokillSwapAndDfs();
+        CheckAutokillFloatOrder();
+        CheckAutokillFloatBound();
+        CheckAutokillBudget();
+        CheckAutokillExhaustive();
+        Console.WriteLine("Autokill feasibility checks passed: " + _assertions + " assertions (100 exhaustive inventories).");
+        CheckAdventureGoldScore();
+        CheckAdventureGoldSpareSlots();
+        CheckAdventureGoldTradeoffs();
+        CheckAdventureGoldExactSearch();
+        CheckAdventureGoldBound();
+        CheckAdventureGoldOffhand();
         CheckDominance();
         CheckWeaponIds();
         CheckAccessoryIds();
@@ -37,6 +54,424 @@ internal static class GearSearchChecks
         CheckMixedTenSlots();
         Console.WriteLine("Gear search checks passed: " + _assertions + " assertions.");
         return _assertions;
+    }
+
+    private static Func<double, double, double> AutokillScore(double power, double toughness)
+    {
+        return (p, t) => (Math.Min(1, p / power) + Math.Min(1, t / toughness)) / 2;
+    }
+
+    private static IList AutokillInventory(double power = 0, double toughness = 0)
+    {
+        var candidates = List(_candidate);
+        var slots = new[] {"Head", "Chest", "Legs", "Boots"};
+        for (var i = 0; i < slots.Length; i++) candidates.Add(InventoryCandidate(100 + i, slots[i]));
+        candidates.Add(InventoryCandidate(200, "Weapon", "Power", power, "Toughness", toughness));
+        return candidates;
+    }
+
+    private static object Autokill(IList candidates, int slots, float factor, Func<double, double, double> score)
+    {
+        return Call("OptimizeAutokillCandidates", candidates, slots, factor, score);
+    }
+
+    private static bool HasResultId(object result, int id)
+    {
+        return Array.IndexOf((int[]) Get(result, "ItemIds"), id) >= 0;
+    }
+
+    private static void CheckAutokillThresholds()
+    {
+        var candidates = AutokillInventory(10, 10);
+        candidates.Add(InventoryCandidate(300, "Accessory", "Power", 10000d, "MoveCooldown", 100000d));
+        candidates.Add(InventoryCandidate(301, "Accessory", "Toughness", 90d));
+        var generic = Call("OptimizeCandidates", Enum.Parse(_goal, "Fight"), Enum.Parse(_mode, "PowerTimesToughness"), candidates, 1, 0f);
+        Equal(true, HasResultId(generic, 300), "generic P*T*cooldown winner cannot meet toughness");
+        var score = AutokillScore(10, 100);
+        Near(.55, score(1000000, 10), "power surplus cannot compensate for unmet toughness");
+        var result = Autokill(candidates, 1, 0f, score);
+        Equal(true, (bool) Get(result, "Success"), "autokill finds feasible non-product winner");
+        Equal(true, HasResultId(result, 301), "autokill selects required toughness");
+        Near(1, (double) Get(result, "Score"), "autokill returns only fully capped fitness");
+        ((IDictionary) Get(candidates[5], "Stats"))[Enum.Parse(_stat, "MoveCooldown")] = double.NaN;
+        result = Autokill(candidates, 1, 0f, score);
+        Equal(true, (bool) Get(result, "Success"), "autokill has no cooldown dependency even for nonfinite irrelevant stats");
+        Equal(true, HasResultId(result, 301), "cooldown cannot change feasibility selection");
+    }
+
+    private static void CheckAutokillSpecialists()
+    {
+        foreach (var powerFocused in new[] {true, false})
+        {
+            var candidates = AutokillInventory(10, 10);
+            candidates.Add(InventoryCandidate(300, "Accessory", "Power", 90d));
+            candidates.Add(InventoryCandidate(301, "Accessory", "Toughness", 90d));
+            var result = Autokill(candidates, 1, 0f, AutokillScore(powerFocused ? 100 : 10, powerFocused ? 10 : 100));
+            Equal(true, (bool) Get(result, "Success"), "specialist feasibility " + powerFocused);
+            Equal(true, HasResultId(result, powerFocused ? 300 : 301), "selects the deficient component " + powerFocused);
+        }
+    }
+
+    private static void CheckAutokillWeapons()
+    {
+        var candidates = AutokillInventory(10, 100);
+        candidates.Add(InventoryCandidate(200, "Weapon", "Power", 1000d, "Toughness", 1d));
+        candidates.Add(InventoryCandidate(201, "Weapon", "Power", 100d, "Toughness", 10d));
+        var result = Autokill(candidates, 0, .25f, AutokillScore(35, 102.5));
+        Equal(true, (bool) Get(result, "Success"), "dual weapons can meet complementary thresholds");
+        var items = (Array) Get(result, "Items");
+        Equal(6, items.Length, "autokill returns complete dual-weapon selection");
+        Equal(true, ReferenceEquals(Get(candidates[4], "Item"), items.GetValue(0)), "correct physical mainhand copy");
+        Equal(true, ReferenceEquals(Get(candidates[6], "Item"), items.GetValue(1)), "offhand uses different ID and correct factor");
+        result = Autokill(candidates, 0, 0f, AutokillScore(35, 102.5));
+        Equal(false, (bool) Get(result, "Success"), "offhand contribution is required");
+
+        candidates = AutokillInventory(1, 100);
+        candidates.Add(InventoryCandidate(201, "Weapon", "Power", 16777215d));
+        result = Autokill(candidates, 0, .1f, AutokillScore(1677722.51, 100));
+        Equal(false, (bool) Get(result, "Success"), "offhand product rounds to float before accumulation and scoring");
+        Equal(0, ((Array) Get(result, "Items")).Length, "double-only offhand feasibility never exposes gear");
+    }
+
+    private static void CheckAutokillImpossible()
+    {
+        var candidates = AutokillInventory(100, 10);
+        for (var i = 0; i < 50; i++) candidates.Add(InventoryCandidate(300 + i, "Accessory", "Power", (double) i));
+        var result = Autokill(candidates, 10, 0f, AutokillScore(1, 100));
+        Equal(false, (bool) Get(result, "Success"), "impossible toughness fails");
+        Equal(0, ((Array) Get(result, "Items")).Length, "impossible best is never returned for equipping");
+        Equal(0L, (long) Get(result, "EvaluatedCombinations"), "component bound rejects impossible inventory before seeding");
+        Equal(false, ((string) Get(result, "Message")).Contains("incomplete"), "completed sum-model failure differs from budget exhaustion");
+        result = Autokill(List(_candidate), 0, 0f, AutokillScore(1, 1));
+        Equal(false, (bool) Get(result, "Success"), "empty inventory cannot produce a complete feasible selection");
+        result = Autokill(candidates, 0, 0f, null);
+        Equal(false, (bool) Get(result, "Success"), "missing feasibility scorer fails closed");
+    }
+
+    private static void CheckAutokillEarlyStop()
+    {
+        var candidates = AutokillInventory(100, 100);
+        for (var i = 0; i < 40; i++) candidates.Add(InventoryCandidate(300 + i, "Accessory", "Power", (double) i));
+        var result = Autokill(candidates, 10, 0f, AutokillScore(100, 100));
+        Equal(true, (bool) Get(result, "Success"), "complete feasible seed succeeds");
+        Equal(15, ((Array) Get(result, "Items")).Length, "partial feasible seed still fills all available slots");
+        Equal(1L, (long) Get(result, "EvaluatedCombinations"), "first complete feasible seed stops scoring");
+        Equal(0L, (long) Get(result, "VisitedNodes"), "feasible seed skips DFS");
+
+        candidates = AutokillInventory(10, 10);
+        for (var i = 0; i < 28; i++) candidates.Add(InventoryCandidate(300 + i, "Accessory", "Power", 1000d));
+        candidates.Add(InventoryCandidate(328, "Accessory", "Toughness", 90d));
+        result = Autokill(candidates, 8, 0f, AutokillScore(7000, 100));
+        Equal(true, (bool) Get(result, "Success"), "full candidate list finds late complementary candidate");
+        Equal(true, HasResultId(result, 328), "candidate beyond former top-N is retained");
+    }
+
+    private static void CheckAutokillFloatOrder()
+    {
+        var candidates = AutokillInventory(16777216, 100);
+        ((IDictionary) Get(candidates[0], "Stats"))[Enum.Parse(_stat, "Power")] = 1d;
+        ((IDictionary) Get(candidates[1], "Stats"))[Enum.Parse(_stat, "Power")] = 1d;
+        var result = Autokill(candidates, 0, 0f, AutokillScore(16777218, 100));
+        Equal(false, (bool) Get(result, "Success"), "double-feasible loadout fails native float complete rescore");
+        Equal(0, ((Array) Get(result, "Items")).Length, "float-infeasible complete selection is not exposed");
+
+        // Source slot order is deliberately unrelated to destination order.
+        Set(Get(candidates[0], "Item"), "slot", 90);
+        Set(Get(candidates[4], "Item"), "slot", 20);
+        ((IDictionary) Get(candidates[0], "Stats"))[Enum.Parse(_stat, "Power")] = 3d;
+        ((IDictionary) Get(candidates[1], "Stats"))[Enum.Parse(_stat, "Power")] = 3d;
+        result = Autokill(candidates, 0, 0f, AutokillScore(16777224, 100));
+        Equal(true, (bool) Get(result, "Success"), "native upward rounding can satisfy a threshold above the double sum");
+    }
+
+    private static void CheckAutokillSwapAndDfs()
+    {
+        var candidates = AutokillInventory(100, 0);
+        candidates.Add(InventoryCandidate(201, "Weapon", "Toughness", 100d));
+        candidates.Add(InventoryCandidate(300, "Accessory", "Power", 100d));
+        var result = Autokill(candidates, 1, 0f, AutokillScore(100, 100));
+        Equal(true, (bool) Get(result, "Success"), "complete local swap can find feasibility");
+        Equal(true, HasResultId(result, 201), "local swap repairs an earlier weapon choice");
+        Equal(0L, (long) Get(result, "VisitedNodes"), "feasible local swap stops before DFS");
+
+        candidates = AutokillInventory();
+        candidates.Add(InventoryCandidate(300, "Accessory", "Power", 80d, "Toughness", 46d));
+        candidates.Add(InventoryCandidate(301, "Accessory", "Power", 9d, "Toughness", 68d));
+        candidates.Add(InventoryCandidate(302, "Accessory", "Power", 117d, "Toughness", 11d));
+        candidates.Add(InventoryCandidate(303, "Accessory", "Power", 4d, "Toughness", 109d));
+        result = Autokill(candidates, 2, 0f, AutokillScore(100, 100));
+        Equal(true, (bool) Get(result, "Success"), "DFS escapes capped-fitness one-swap trap");
+        Equal(true, HasResultId(result, 302) && HasResultId(result, 303), "DFS selects both complementary specialists");
+        Equal(true, (long) Get(result, "VisitedNodes") > 0, "genuine infeasible seed requires DFS");
+    }
+
+    private static void CheckAutokillFloatBound()
+    {
+        var candidates = AutokillInventory(16777216, 100);
+        ((IDictionary) Get(candidates[0], "Stats"))[Enum.Parse(_stat, "Power")] = 3d;
+        ((IDictionary) Get(candidates[1], "Stats"))[Enum.Parse(_stat, "Power")] = 3d;
+        var state = Activator.CreateInstance(_state, true);
+        Set(state, "RelevantStats", Call("GetRelevantStats", Enum.ToObject(_goal, -1)));
+        _state.GetField("CustomScore", Instance).SetValue(state, AutokillScore(16777224, 100));
+        _state.GetField("Budget", Instance).SetValue(state, Stopwatch.StartNew());
+        var groups = MainGroups();
+        for (var i = 0; i < 4; i++) groups.Add(List(_candidate, candidates[i]));
+        Call("SearchGear", groups, WeaponSets(candidates[4]), List(_candidate), 0, state);
+        Near(1, (double) Get(state, "BestScore"), "float-padded root bound retains upward rounding crossing");
+        Near(0, (double) Get(state, "LinearAnchorScore"), "custom scorer never enables product AM-GM bounds");
+    }
+
+    private static void CheckAutokillBudget()
+    {
+        var state = Activator.CreateInstance(_state, true);
+        _state.GetField("CustomScore", Instance).SetValue(state, AutokillScore(1, 1));
+        _state.GetField("Budget", Instance).SetValue(state, Stopwatch.StartNew());
+        _state.GetField("SearchWork", Instance).SetValue(state, 100000L);
+        Equal(true, (bool) Call("SearchStopped", state), "custom work budget stops search deterministically");
+        Equal(true, (bool) Get(state, "BudgetExceeded"), "budget stop marks search incomplete");
+        _state.GetField("CustomScore", Instance).SetValue(state, null);
+        Equal(false, (bool) Call("SearchStopped", state), "generic exact solver ignores custom budget");
+
+        var delayed = false;
+        Func<double, double, double> score = (p, t) => {
+            if (!delayed) { delayed = true; System.Threading.Thread.Sleep(760); }
+            return .5;
+        };
+        var candidates = AutokillInventory(100, 100);
+        candidates.Add(InventoryCandidate(300, "Accessory", "Power", 1d));
+        var result = Autokill(candidates, 1, 0f, score);
+        Equal(false, (bool) Get(result, "Success"), "budget exhaustion never returns success");
+        Equal(0, ((Array) Get(result, "Items")).Length, "budget exhaustion never exposes infeasible gear");
+        Equal(true, ((string) Get(result, "Message")).Contains("incomplete"), "budget result explicitly reports incomplete, not impossible");
+    }
+
+    private static void CheckAutokillExhaustive()
+    {
+        var random = new Random(58291);
+        for (var trial = 0; trial < 100; trial++)
+        {
+            var candidates = AutokillInventory();
+            var slots = new[] {"Head", "Chest", "Legs", "Boots", "Weapon", "Accessory"};
+            foreach (var slot in slots)
+            for (var i = 0; i < (slot == "Accessory" ? 8 : 3); i++)
+                candidates.Add(InventoryCandidate((slot == "Accessory" ? 300 : slot == "Weapon" ? 200 : 110 + Array.IndexOf(slots, slot) * 10) + i / 2,
+                    slot, "Power", (double) random.Next(21), "Toughness", (double) random.Next(21), "MoveCooldown", (double) random.Next(100000)));
+            var score = AutokillScore(random.Next(1, 130), random.Next(1, 130));
+            var factor = trial % 3 == 0 ? 0f : .5f;
+            var picks = trial % 5;
+            var expected = ExhaustiveAutokill(candidates, picks, factor, score);
+            var result = Autokill(candidates, picks, factor, score);
+            Equal(expected == 1, (bool) Get(result, "Success"), "autokill exhaustive feasibility " + trial);
+            if (expected != 1)
+            {
+                Equal(0, ((Array) Get(result, "Items")).Length, "oracle-infeasible result has no equip selection " + trial);
+                continue;
+            }
+            var items = (Array) Get(result, "Items");
+            var ids = new HashSet<int>();
+            double power = 0, toughness = 0;
+            var weapon = 0;
+            foreach (var item in items)
+            {
+                object candidate = null;
+                foreach (var c in candidates) if (ReferenceEquals(item, Get(c, "Item"))) candidate = c;
+                Equal(true, ids.Add(Id(candidate)), "autokill selected distinct IDs " + trial);
+                var scale = Get(candidate, "Slot").ToString() == "Weapon" && weapon++ > 0 ? factor : 1;
+                var stats = (IDictionary) Get(candidate, "Stats");
+                foreach (var key in new[] {"Power", "Toughness"})
+                {
+                    var value = stats.Contains(Enum.Parse(_stat, key)) ? (double) stats[Enum.Parse(_stat, key)] * scale : 0;
+                    if (key == "Power") power += value; else toughness += value;
+                }
+            }
+            Near(1, score(power, toughness), "oracle rescoring actual selected instances " + trial);
+            Equal(5 + (factor > 0 ? 1 : 0) + picks, items.Length, "oracle complete loadout " + trial);
+        }
+    }
+
+    private static double ExhaustiveAutokill(IList candidates, int picks, float factor, Func<double, double, double> score)
+    {
+        var groups = MainGroups();
+        var weapons = List(_candidate);
+        var accessories = List(_candidate);
+        foreach (var slot in new[] {"Head", "Chest", "Legs", "Boots", "Weapon", "Accessory"})
+        {
+            var group = List(_candidate);
+            foreach (var candidate in candidates) if (Get(candidate, "Slot").ToString() == slot) group.Add(candidate);
+            if (slot == "Weapon") weapons = group;
+            else if (slot == "Accessory") accessories = group;
+            else groups.Add(group);
+        }
+        var used = new HashSet<int>();
+        var best = 0d;
+        Action<int, int, double, double> visit = null;
+        visit = (index, start, power, toughness) => {
+            if (index == 4 + picks) { best = Math.Max(best, score(power, toughness)); return; }
+            var options = index < 4 ? (IList) groups[index] : accessories;
+            for (var i = index < 4 ? 0 : start; i < options.Count; i++)
+            {
+                var c = options[i];
+                if (!used.Add(Id(c))) continue;
+                var stats = (IDictionary) Get(c, "Stats");
+                var p = stats.Contains(Enum.Parse(_stat, "Power")) ? (double) stats[Enum.Parse(_stat, "Power")] : 0;
+                var t = stats.Contains(Enum.Parse(_stat, "Toughness")) ? (double) stats[Enum.Parse(_stat, "Toughness")] : 0;
+                visit(index + 1, index < 4 ? 0 : i + 1, power + p, toughness + t);
+                used.Remove(Id(c));
+            }
+        };
+        // Independent enumeration: do not reuse production filtering, weapon-set builder or scoring.
+        foreach (var main in weapons)
+        foreach (var off in factor > 0 ? weapons : List(_candidate, new object[] {null}))
+        {
+            if (off != null && Id(main) == Id(off)) continue;
+            var a = (IDictionary) Get(main, "Stats");
+            var b = off == null ? null : (IDictionary) Get(off, "Stats");
+            var p = Enum.Parse(_stat, "Power");
+            var t = Enum.Parse(_stat, "Toughness");
+            visit(0, 0, (double) a[p] + (b == null ? 0 : (double) b[p] * factor), (double) a[t] + (b == null ? 0 : (double) b[t] * factor));
+        }
+        return best;
+    }
+
+    private static void CheckAdventureGoldScore()
+    {
+        Equal(14, (int) Enum.Parse(_goal, "AdventureGold"), "AdventureGold is appended at value 14");
+        Equal(7, (int) Enum.Parse(_goal, "Gold"), "Gold keeps its persisted enum value");
+        Equal(13, (int) Enum.Parse(_goal, "ManualAdventure"), "previous final goal keeps its enum value");
+        var labels = (IDictionary) _optimizer.GetField("GoalLabels", Static).GetValue(null);
+        Equal("Adventure Gold (90% Gold / 10% sqrt(Power * Toughness))", (string) labels[14], "AdventureGold describes its weighting");
+        var relevant = (Array) Call("GetRelevantStats", Enum.Parse(_goal, "AdventureGold"));
+        Equal(3, relevant.Length, "AdventureGold uses exactly three relevant stats");
+        Equal("Gold", relevant.GetValue(0).ToString(), "AdventureGold includes gold");
+        Equal("Power", relevant.GetValue(1).ToString(), "AdventureGold includes power");
+        Equal("Toughness", relevant.GetValue(2).ToString(), "AdventureGold includes toughness");
+
+        var gear = Candidate(100, "Gold", 300d, "Power", 100d, "Toughness", 400d, "MoveCooldown", 100000d);
+        var selection = List(_selected, Select(gear));
+        var expected = Math.Pow(4, .9) * Math.Pow(100, .05) * Math.Pow(400, .05);
+        foreach (var mode in Enum.GetNames(_mode))
+            Near(expected, Score("AdventureGold", mode, selection), "AdventureGold formula ignores cooldown and fight mode " + mode);
+        Near(4, Score("Gold", "SqrtPowerToughness", selection), "Gold remains gold-only");
+        Near(0, Score("AdventureGold", "SqrtPowerToughness", List(_selected)), "AdventureGold has no base combat stats");
+        foreach (var stat in new[] {"Power", "Toughness"})
+        foreach (var value in new[] {0d, -100d})
+        {
+            ((IDictionary) Get(gear, "Stats"))[Enum.Parse(_stat, stat)] = value;
+            Near(0, Score("AdventureGold", "SqrtPowerToughness", selection), "AdventureGold clamps " + stat + "=" + value);
+            ((IDictionary) Get(gear, "Stats"))[Enum.Parse(_stat, stat)] = stat == "Power" ? 100d : 400d;
+        }
+    }
+
+    private static void CheckAdventureGoldSpareSlots()
+    {
+        var candidates = List(_candidate);
+        var expectedArmor = new List<object>();
+        var slots = new[] {"Head", "Chest", "Legs", "Boots"};
+        for (var i = 0; i < slots.Length; i++)
+        {
+            candidates.Add(InventoryCandidate(100 + i * 10, slots[i]));
+            var armor = InventoryCandidate(101 + i * 10, slots[i], "Power", 10d, "Toughness", 20d);
+            candidates.Add(armor);
+            expectedArmor.Add(armor);
+        }
+        candidates.Add(InventoryCandidate(200, "Weapon", "Gold", 100d, "Power", 100d, "Toughness", 100d));
+        candidates.Add(InventoryCandidate(300, "Accessory", "MoveCooldown", 100000d));
+        var power = InventoryCandidate(301, "Accessory", "Power", 900d);
+        var toughness = InventoryCandidate(302, "Accessory", "Toughness", 900d);
+        candidates.Add(power);
+        candidates.Add(toughness);
+        var result = Call("OptimizeCandidates", Enum.Parse(_goal, "AdventureGold"), Enum.Parse(_mode, "SqrtPowerToughness"), candidates, 2, 0f);
+        Equal(true, (bool) Get(result, "Success"), "AdventureGold inventory optimization succeeds");
+        Near(Math.Pow(2, .9) * Math.Pow(1040, .05) * Math.Pow(1080, .05), (double) Get(result, "Score"),
+            "AdventureGold fills gold-free slots with combat stats");
+        var items = (Array) Get(result, "Items");
+        Equal(7, items.Length, "AdventureGold fills five main and two accessory slots");
+        for (var i = 0; i < slots.Length; i++)
+            Equal(true, ReferenceEquals(Get(expectedArmor[i], "Item"), items.GetValue(i + 1)), "AdventureGold selects stat-only " + slots[i]);
+        foreach (var accessory in new[] {power, toughness})
+            Equal(true, Array.IndexOf((int[]) Get(result, "ItemIds"), Id(accessory)) >= 0, "AdventureGold selects stat-only accessory " + Id(accessory));
+    }
+
+    private static void CheckAdventureGoldTradeoffs()
+    {
+        var groups = MainGroups();
+        var weapons = WeaponSets(Candidate(200, "Gold", 100d, "Power", 100d, "Toughness", 100d));
+        var gold = Candidate(300, "Gold", 100d);
+        var stats = Candidate(301, "Power", 900d, "Toughness", 900d);
+        var state = Search("AdventureGold", "SqrtPowerToughness", groups, weapons, List(_candidate, stats, gold), 1);
+        Equal(true, ContainsCandidate((IList) Get(state, "BestItems"), gold), "50% more total gold beats tenfold combat stats");
+        Near(Math.Pow(3, .9) * Math.Pow(100, .1), (double) Get(state, "BestScore"), "gold-dominant tradeoff score");
+
+        var slightGold = Candidate(302, "Gold", 10d);
+        state = Search("AdventureGold", "SqrtPowerToughness", groups, weapons, List(_candidate, slightGold, stats), 1);
+        Equal(true, ContainsCandidate((IList) Get(state, "BestItems"), stats), "tenfold combat stats beat 5% more total gold");
+        Near(Math.Pow(2, .9) * Math.Pow(1000, .1), (double) Get(state, "BestScore"), "combat tradeoff score");
+
+        var unbalanced = Candidate(303, "Power", 1800d);
+        state = Search("AdventureGold", "PowerPlusToughness", groups, weapons, List(_candidate, unbalanced, stats), 1);
+        Equal(true, ContainsCandidate((IList) Get(state, "BestItems"), stats), "equal P+T prefers balanced combat stats even in sum fight mode");
+        Near(Math.Pow(2, .9) * Math.Pow(1000, .1), (double) Get(state, "BestScore"), "balanced combat score");
+    }
+
+    private static void CheckAdventureGoldExactSearch()
+    {
+        var groups = MainGroups();
+        var weapons = WeaponSets(Candidate(200, "Gold", 100d, "Power", 100d, "Toughness", 100d));
+        var power = Candidate(302, "Power", 240d);
+        var toughness = Candidate(303, "Toughness", 240d);
+        var accessories = List(_candidate, Candidate(300, "Power", 100d, "Toughness", 100d),
+            Candidate(301, "Power", 100d, "Toughness", 100d), power, toughness);
+        var state = Search("AdventureGold", "SqrtPowerToughness", groups, weapons, accessories, 2);
+        Near(Math.Pow(2, .9) * Math.Pow(300, .1), (double) Get(state, "SeedScore"), "AdventureGold has a genuine one-swap local trap");
+        Near(Math.Pow(2, .9) * Math.Pow(340, .1), (double) Get(state, "BestScore"), "AdventureGold DFS escapes the seed trap");
+        Equal(true, ContainsCandidate((IList) Get(state, "BestItems"), power), "AdventureGold exact optimum includes power specialist");
+        Equal(true, ContainsCandidate((IList) Get(state, "BestItems"), toughness), "AdventureGold exact optimum includes toughness specialist");
+        Near(Exhaustive("AdventureGold", "SqrtPowerToughness", groups, weapons, accessories, 2), (double) Get(state, "BestScore"),
+            "AdventureGold trap agrees with exhaustive oracle");
+    }
+
+    private static void CheckAdventureGoldBound()
+    {
+        var anchor = Candidate(100, "Power", 1000d, "Toughness", 1000d);
+        var optimum = Candidate(101, "Gold", 100d, "Power", 100d, "Toughness", 100d);
+        var weapon = Candidate(200);
+        var state = Search("AdventureGold", "SqrtPowerToughness", MainGroups(List(_candidate, anchor, optimum)),
+            WeaponSets(weapon), List(_candidate), 0);
+
+        // Re-anchor at a feasible weaker incumbent. Unit exponents would wrongly prune
+        // the gold-rich optimum because its tenfold stat loss outweighs gold in that bound.
+        Set(state, "BestScore", Math.Pow(1000, .1));
+        Set(state, "BestItems", List(_selected, Select(anchor), Select(weapon)));
+        _state.GetField("LinearAnchorScore", Instance).SetValue(state, 0d);
+        var totals = new double[Enum.GetValues(_stat).Length];
+        totals[(int) Enum.Parse(_stat, "Gold")] = 100;
+        totals[(int) Enum.Parse(_stat, "Power")] = 1000;
+        totals[(int) Enum.Parse(_stat, "Toughness")] = 1000;
+        Call("UpdateLinearBounds", totals, state);
+        Call("SearchMainSlots", 0, 0, state);
+        Near(Math.Pow(2, .9) * Math.Pow(100, .1), (double) Get(state, "BestScore"),
+            "AdventureGold AM-GM bound preserves a gold-rich lower-stat improvement");
+        Equal(true, ContainsCandidate((IList) Get(state, "BestItems"), optimum), "AdventureGold bound retains the optimal branch");
+    }
+
+    private static void CheckAdventureGoldOffhand()
+    {
+        var candidates = List(_candidate);
+        var slots = new[] {"Head", "Chest", "Legs", "Boots"};
+        for (var i = 0; i < slots.Length; i++) candidates.Add(InventoryCandidate(100 + i, slots[i]));
+        var mainhand = InventoryCandidate(200, "Weapon", "Gold", 100d, "Power", 100d, "Toughness", 20d);
+        candidates.Add(mainhand);
+        candidates.Add(InventoryCandidate(200, "Weapon", "Power", 1000d, "Toughness", 20d));
+        var offhand = InventoryCandidate(201, "Weapon", "Gold", 50d, "Power", 20d, "Toughness", 100d);
+        candidates.Add(offhand);
+        var result = Call("OptimizeCandidates", Enum.Parse(_goal, "AdventureGold"), Enum.Parse(_mode, "PowerTimesToughness"), candidates, 0, .5f);
+        Equal(true, (bool) Get(result, "Success"), "AdventureGold offhand optimization succeeds");
+        var items = (Array) Get(result, "Items");
+        Equal(6, items.Length, "AdventureGold equips two distinct weapon IDs");
+        Equal(true, ReferenceEquals(Get(mainhand, "Item"), items.GetValue(0)), "AdventureGold keeps correct physical mainhand copy");
+        Equal(true, ReferenceEquals(Get(offhand, "Item"), items.GetValue(1)), "AdventureGold offhand cannot reuse mainhand ID");
+        Near(Math.Pow(2.25, .9) * Math.Pow(110, .05) * Math.Pow(70, .05), (double) Get(result, "Score"),
+            "AdventureGold offhand scales gold and both combat bonuses before scoring");
     }
 
     private static void CheckDominance()
@@ -276,7 +711,7 @@ internal static class GearSearchChecks
 
     private static void CheckMixedTenSlots()
     {
-        foreach (var goal in new[] {"EnergyNgu", "AllNgu", "Fight"})
+        foreach (var goal in new[] {"EnergyNgu", "AllNgu", "Fight", "AdventureGold"})
         {
             var relevant = (Array) Call("GetRelevantStats", Enum.Parse(_goal, goal));
             var random = new Random(19473);
@@ -357,7 +792,7 @@ internal static class GearSearchChecks
     private static void CheckStructuredExhaustive()
     {
         var random = new Random(19127);
-        foreach (var goal in new[] {"EnergyNgu", "AllNgu", "Fight"})
+        foreach (var goal in new[] {"EnergyNgu", "AllNgu", "Fight", "AdventureGold"})
         for (var trial = 0; trial < 24; trial++)
         {
             var relevant = (Array) Call("GetRelevantStats", Enum.Parse(_goal, goal));
@@ -490,6 +925,15 @@ internal static class GearSearchChecks
         var selected = Activator.CreateInstance(_selected, true);
         Set(selected, "Candidate", candidate);
         return selected;
+    }
+
+    private static object InventoryCandidate(int id, string slot, params object[] stats)
+    {
+        var candidate = Candidate(id, stats);
+        var equipment = Get(Get(candidate, "Item"), "equipment");
+        var type = equipment.GetType().GetField("type", Instance);
+        type.SetValue(equipment, Enum.Parse(type.FieldType, slot));
+        return candidate;
     }
 
     private static int Id(object candidate) { return (int) Get(Get(candidate, "Item"), "id"); }

@@ -22,6 +22,13 @@ namespace NGUInjector
 
         private static void SaveWeights(string name, int[] energy, int[] magic)
         {
+            if (name != "editor")
+            {
+                NGUInjector.Main.Settings.EnergyNguWeights = energy.ToArray();
+                NGUInjector.Main.Settings.MagicNguWeights = magic.ToArray();
+                return;
+            }
+            // Conflicting legacy editor-plan fields must never override runtime global settings.
             var plan = NGUInjector.Main.CustomPlanStore.ReadExternalPlan(name);
             var energyJson = new JSONArray();
             var magicJson = new JSONArray();
@@ -32,23 +39,35 @@ namespace NGUInjector
             NGUInjector.Main.CustomPlanStore.SaveExternalPlan(name, plan, plan["__externalUiRevision"].Value);
         }
 
-        public static int Main()
+        public static int Main(string[] args)
         {
-            var dir = Path.Combine(Path.GetTempPath(), "ngu-sustain-" + Guid.NewGuid().ToString("N"));
+            var dir = Path.Combine(Path.GetTempPath(), "opencode", "ngu-sustain-" + Guid.NewGuid().ToString("N"));
             try
             {
                 NGUInjector.Main.Settings = new FocusSettings();
                 NGUInjector.Main.CustomPlanStore = new CustomPlanStore(dir);
+                if (args.Contains("--execution-core"))
+                {
+                    _assertions += ExecutionCoreChecks.Run();
+                    return 0;
+                }
+                _assertions += FocusFailureChecks.Run();
+                _assertions += ResourceCallerFailureChecks.Run();
+                if (args.Contains("--resource-compatibility")) return 0;
                 _assertions += NguSharingChecks.Run();
                 _assertions += IronPillAllocationChecks.Run();
+                _assertions += ProtectedApplicationChecks.Run();
+                _assertions += BloodGoalPriorityChecks.Run();
+                _assertions += EquipmentSetupChecks.Run();
+                _assertions += BeardAutomationChecks.Run();
+                _assertions += ExecutionCoreChecks.Run();
                 var defaults = new CustomPlan();
-                Assert(defaults.Version == 16 && defaults.EnergyNguWeights.SequenceEqual(new[] {0, 0, 0, 0, 1, 0, 1, 0, 0})
-                    && defaults.MagicNguWeights.SequenceEqual(EditedMagic), "new version-16 plans default to Adventure/Drop energy and Yggdrasil magic weights");
+                NGUInjector.Main.Settings = new FocusSettings();
+                Assert(defaults.Version == 17 && NGUInjector.Main.Settings.EnergyNguWeights.SequenceEqual(new[] {0, 0, 0, 0, 1, 0, 1, 0, 0})
+                    && NGUInjector.Main.Settings.MagicNguWeights.SequenceEqual(EditedMagic), "version-17 runtime consumes global Adventure/Drop energy and Yggdrasil magic defaults");
                 foreach (var name in new[] {"24hr", "infinite"})
                 {
                     var preset = NGUInjector.Main.CustomPlanStore.Load(name);
-                    Assert(preset.EnergyNguWeights.SequenceEqual(defaults.EnergyNguWeights) && preset.MagicNguWeights.SequenceEqual(defaults.MagicNguWeights),
-                        name + ": new NGU preset uses default lane weights");
                     NGUInjector.Main.Settings.CustomPlanFile = name;
                     foreach (var available in new[] {1000L, 253001L})
                     {
@@ -67,27 +86,28 @@ namespace NGUInjector
                             name + ": shares stay within each buffered cap");
                         Assert(c.NGU.skills.Where((_, index) => index != 4 && index != 6).All(skill => skill.energy == 0)
                             && c.NGU.skills.Sum(skill => skill.energy) + c.idleEnergy == available, name + ": preset excludes unrelated rows and conserves energy");
-                        Assert(c.EnergyRecalls == 1 && c.MagicRecalls == 1 && c.NGU.magicSkills[0].magic == 700
+                         Assert(c.EnergyRecalls == 0 && c.MagicRecalls == 0 && c.NGU.magicSkills[0].magic == 700
                             && c.NGU.magicSkills.Skip(1).All(skill => skill.magic == 0) && c.magic.idleMagic == 0,
-                            name + ": Energy NGU recalls both lanes and funds Yggdrasil index zero");
-                        Assert(owner.AppliedEnergyWeights.SequenceEqual(preset.EnergyNguWeights) && owner.AppliedMagicWeights.SequenceEqual(preset.MagicNguWeights),
+                             name + ": Energy NGU diffs both lanes and funds Yggdrasil index zero without native recalls");
+                        Assert(owner.AppliedEnergyWeights.SequenceEqual(NGUInjector.Main.Settings.EnergyNguWeights) && owner.AppliedMagicWeights.SequenceEqual(NGUInjector.Main.Settings.MagicNguWeights),
                             name + ": successful allocation snapshots both affected lanes");
-                        Assert(!ReferenceEquals(owner.AppliedEnergyWeights, owner.LastLoadedPlan.EnergyNguWeights)
-                            && !ReferenceEquals(owner.AppliedMagicWeights, owner.LastLoadedPlan.MagicNguWeights), name + ": snapshots are independent copies of loaded configuration");
-                        owner.LastLoadedPlan.EnergyNguWeights[4] = 99;
-                        owner.LastLoadedPlan.MagicNguWeights[0] = 99;
+                        Assert(!ReferenceEquals(owner.AppliedEnergyWeights, NGUInjector.Main.Settings.EnergyNguWeights)
+                            && !ReferenceEquals(owner.AppliedMagicWeights, NGUInjector.Main.Settings.MagicNguWeights), name + ": snapshots are independent copies of global configuration");
+                        NGUInjector.Main.Settings.EnergyNguWeights[4] = 99;
+                        NGUInjector.Main.Settings.MagicNguWeights[0] = 99;
                         Assert(owner.AppliedEnergyWeights[4] == 1 && owner.AppliedMagicWeights[0] == 1,
                             name + ": in-memory config edits cannot mutate successful-pass snapshots");
+                        NGUInjector.Main.Settings = new FocusSettings { CustomPlanFile = name };
                     }
                 }
                 SaveWeights("infinite", InitialEnergy, InitialMagic);
-                var saved = new CustomPlanStore(dir).Load("infinite");
-                Assert(saved.EnergyNguWeights.SequenceEqual(InitialEnergy) && saved.MagicNguWeights.SequenceEqual(InitialMagic),
-                    "explicit persisted weights survive built-in preset initialization");
+                Assert(NGUInjector.Main.Settings.EnergyNguWeights.SequenceEqual(InitialEnergy) && NGUInjector.Main.Settings.MagicNguWeights.SequenceEqual(InitialMagic),
+                    "global weight edits are independent of built-in presets");
+                NGUInjector.Main.Settings = new FocusSettings();
                 NGUInjector.Main.Settings.CustomPlanFile = "active";
                 NGUInjector.Main.CustomPlanStore.Save("active", new CustomPlan());
                 NGUInjector.Main.CustomPlanStore.Save("editor", new CustomPlan());
-                CheckSequentialTiming();
+                CheckStageTiming();
                 var failedOwner = new NGUInjector.Main();
                 NGUInjector.Main.reference = failedOwner;
                 var failedCharacter = new FocusCharacter();
@@ -98,8 +118,9 @@ namespace NGUInjector
                 var updateFailed = false;
                 try { failedOwner.Allocate(CustomFocusGoal.EnergyNgu); }
                 catch (InvalidOperationException error) { updateFailed = error.Message == "NGU UI unavailable"; }
-                Assert(updateFailed && failedOwner.AppliedEnergyWeights == null && failedOwner.AppliedMagicWeights == null,
-                    "a failed focus pass cannot snapshot configured weights as successfully applied");
+                Assert(!updateFailed && failedOwner.AppliedEnergyWeights != null && failedOwner.AppliedMagicWeights != null
+                    && failedOwner.FocusOutcomeForChecks.Disposition == MutationDisposition.ModelAppliedRenderFailed,
+                    "a fully verified model snapshots weights while reporting rendering failure separately");
                 Assert(failedCharacter.NGU.skills.Sum(skill => skill.energy) + failedCharacter.idleEnergy == 1000
                     && failedCharacter.NGU.magicSkills.Sum(skill => skill.magic) + failedCharacter.magic.idleMagic == 700,
                     "failed focus pass preserves both totals after UI accounting failure");
@@ -124,9 +145,9 @@ namespace NGUInjector
                     SaveWeights("active", EditedEnergy, EditedMagic);
                     owner.MarkJustRefreshed();
                     var refreshedAt = owner.LastRefresh;
-                    Assert(owner.Invalidations == 1, goal + ": selected weight save invalidates the runtime plan cache");
+                    Assert(owner.Invalidations == 0, goal + ": global weight changes require no plan save or cache reload");
                     owner.Tick();
-                    Assert(c.EnergyRecalls == (energy ? 1 : 0) && c.MagicRecalls == 1, goal + ": live weight edit bypasses cooldown and recalls managed lanes once");
+                    Assert(c.EnergyRecalls == 0 && c.MagicRecalls == 0, goal + ": live weight edit bypasses cooldown and diffs only managed lanes");
                     Assert(c.NGU.skills[0].energy == (energy ? 0 : 1000) && c.NGU.magicSkills[2].magic == 0,
                         goal + ": old allocations are removed only from managed lanes");
                     Assert(c.NGU.skills[4].energy == (energy ? 667 : 0) && c.NGU.skills[6].energy == (energy ? 333 : 0)
@@ -155,12 +176,12 @@ namespace NGUInjector
                         && schedulerBefore.DurationSeconds.SequenceEqual(schedulerAfter.DurationSeconds), goal + ": weight edit leaves duration scheduling unchanged");
                     owner.MarkJustRefreshed();
                     owner.Tick();
-                    Assert(c.EnergyRecalls == (energy ? 1 : 0) && c.MagicRecalls == 1 && owner.Publications == 1,
+                    Assert(c.EnergyRecalls == 0 && c.MagicRecalls == 0 && owner.Publications == 1,
                         goal + ": newly loaded equal-value arrays still observe normal cooldown");
                     SaveWeights("active", EditedEnergy.ToArray(), EditedMagic.ToArray());
                     owner.MarkJustRefreshed();
                     owner.Tick();
-                    Assert(c.EnergyRecalls == (energy ? 1 : 0) && c.MagicRecalls == 1 && owner.Publications == 1,
+                    Assert(c.EnergyRecalls == 0 && c.MagicRecalls == 0 && owner.Publications == 1,
                         goal + ": an equal-value CAS save does not masquerade as a live change");
                     SaveWeights("editor", InitialEnergy, InitialMagic);
                     owner.MarkJustRefreshed();
@@ -169,12 +190,12 @@ namespace NGUInjector
                         goal + ": another editor plan cannot change active weights");
                     owner.MarkRefreshDue();
                     owner.Tick();
-                    Assert(c.EnergyRecalls == (energy ? 2 : 0) && c.MagicRecalls == 2 && owner.Publications == 1,
-                        goal + ": elapsed cooldown refreshes without fabricating a weight-change publication");
+                    Assert(c.EnergyRecalls == 0 && c.MagicRecalls == 0 && owner.Publications == 1 && owner.FocusOutcomeForChecks.ModelWrites == 0,
+                        goal + ": elapsed cooldown with an unchanged desired map performs zero model writes or weight-change publication");
                     SaveWeights("active", InitialEnergy, InitialMagic);
                     owner.MarkJustRefreshed();
                     owner.Tick();
-                    Assert(c.EnergyRecalls == (energy ? 3 : 0) && c.MagicRecalls == 3 && c.NGU.skills[0].energy == 1000
+                    Assert(c.EnergyRecalls == 0 && c.MagicRecalls == 0 && c.NGU.skills[0].energy == 1000
                         && c.NGU.skills[4].energy == 0 && c.NGU.skills[6].energy == 0
                         && c.NGU.magicSkills[2].magic == 700 && c.NGU.magicSkills[0].magic == 0,
                         goal + ": reverse weight edit immediately restores original allocations");
@@ -195,7 +216,7 @@ namespace NGUInjector
                     SaveWeights("active", energyEdit ? EditedEnergy : InitialEnergy, energyEdit ? InitialMagic : EditedMagic);
                     owner.MarkJustRefreshed();
                     owner.Tick();
-                    Assert(c.EnergyRecalls == 1 && c.MagicRecalls == 1 && owner.Publications == 1,
+                    Assert(c.EnergyRecalls == 0 && c.MagicRecalls == 0 && owner.Publications == 1,
                         "editing either array alone immediately refreshes the paired focus");
                     Assert(c.NGU.skills[0].energy == (energyEdit ? 0 : 1000) && c.NGU.skills[4].energy == (energyEdit ? 667 : 0)
                         && c.NGU.skills[6].energy == (energyEdit ? 333 : 0)
@@ -240,7 +261,7 @@ namespace NGUInjector
                     owner.Begin(CustomFocusGoal.EnergyNgu);
                     var action = toggle ? "toggle off" : "stop";
                     var message = toggle ? owner.ToggleCustomFocusGoal(CustomFocusGoal.EnergyNgu) : owner.StopCustomFocusGoal();
-                    Assert(c.EnergyRecalls == 2 && c.MagicRecalls == 2, action + ": Energy NGU releases both managed lanes exactly once");
+                    Assert(c.EnergyRecalls == 0 && c.MagicRecalls == 0, action + ": explicit stop uses exact shared differences, not whole-lane recalls");
                     Assert(c.idleEnergy == 1000 && c.magic.idleMagic == 700
                         && c.NGU.skills.All(skill => skill.energy == 0) && c.NGU.magicSkills.All(skill => skill.magic == 0),
                         action + ": paired release returns all focused resources to idle");
@@ -252,7 +273,7 @@ namespace NGUInjector
                     SaveWeights("active", EditedEnergy, EditedMagic);
                     owner.MarkRefreshDue();
                     owner.Tick();
-                    Assert(c.EnergyRecalls == 2 && c.MagicRecalls == 2 && c.idleEnergy == 1000 && c.magic.idleMagic == 700
+                    Assert(c.EnergyRecalls == 0 && c.MagicRecalls == 0 && c.idleEnergy == 1000 && c.magic.idleMagic == 700
                         && owner.Publications == 1, action + ": later ticks cannot reacquire released resources");
                 }
 
@@ -276,7 +297,8 @@ namespace NGUInjector
                 var ngu = blockedCharacter.NGU;
                 blockedCharacter.NGU = null;
                 blockedOwner.Tick();
-                Assert(blockedCharacter.EnergyRecalls == 0 && blockedCharacter.MagicRecalls == 0 && blockedOwner.Publications == 0, "unavailable save data cannot trigger paired resource recall");
+                Assert(blockedCharacter.EnergyRecalls == 0 && blockedCharacter.MagicRecalls == 0, "unavailable save data cannot trigger paired resource recall");
+                Assert(blockedOwner.Publications == 0, "unavailable save data leaves existing focus telemetry unchanged");
                 blockedCharacter.NGU = ngu;
                 var skills = ngu.skills;
                 ngu.skills = null;
@@ -315,7 +337,7 @@ namespace NGUInjector
                     && blockedOwner.AppliedMagicWeights.SequenceEqual(InitialMagic) && blockedOwner.Publications == 0, "missing plan store cannot silently change weights");
                 NGUInjector.Main.CustomPlanStore = store;
                 blockedOwner.Tick();
-                Assert(blockedCharacter.EnergyRecalls == 1 && blockedCharacter.MagicRecalls == 1
+                Assert(blockedCharacter.EnergyRecalls == 0 && blockedCharacter.MagicRecalls == 0
                     && blockedCharacter.NGU.skills[0].energy == 0 && blockedCharacter.NGU.skills[4].energy == 667 && blockedCharacter.NGU.skills[6].energy == 333
                     && blockedCharacter.NGU.magicSkills[2].magic == 0 && blockedCharacter.NGU.magicSkills[0].magic == 700,
                     "restored save applies weighted energy and magic on its first eligible pass");
@@ -324,7 +346,7 @@ namespace NGUInjector
                 SaveWeights("active", InitialEnergy, InitialMagic);
                 blockedOwner.MarkJustRefreshed();
                 blockedOwner.Tick();
-                Assert(blockedCharacter.EnergyRecalls == 2 && blockedCharacter.MagicRecalls == 2
+                Assert(blockedCharacter.EnergyRecalls == 0 && blockedCharacter.MagicRecalls == 0
                     && blockedCharacter.NGU.skills[0].energy == 1000 && blockedCharacter.NGU.magicSkills[2].magic == 700,
                     "reverse weights also rebalance both lanes without waiting for cooldown");
                 SaveWeights("active", EditedEnergy, EditedMagic);
@@ -378,7 +400,7 @@ namespace NGUInjector
             }
         }
 
-        private static void CheckSequentialTiming()
+        private static void CheckStageTiming()
         {
             var store = NGUInjector.Main.CustomPlanStore;
             var owner = new NGUInjector.Main();
@@ -388,25 +410,37 @@ namespace NGUInjector
             NGUInjector.Main.Settings.CustomPlanFile = "timing";
             var plan = new CustomPlan { Name = "timing", StageLoopStartIndex = -1, StageDurationSeconds = 50, Stages = new[] {
                 new CustomPlanStage {Name = "AT", CompletionMode = 1, TargetAdvancedTrainingPower = 10, TargetAdvancedTrainingToughness = 5},
-                new CustomPlanStage {Name = "Timed A", DurationSeconds = 20, DurationUnit = "s"},
-                new CustomPlanStage {Name = "Timed B", DurationSeconds = 30, DurationUnit = "s"} } };
+                new CustomPlanStage {Name = "Timed A", DurationSeconds = 20, DurationUnit = "s", EnergyFocus = (int) CustomStageFocus.EnergyNgu},
+                new CustomPlanStage {Name = "Timed B", DurationSeconds = 30, DurationUnit = "s", EnergyFocus = (int) CustomStageFocus.EnergyNgu} } };
             store.Save("timing", plan);
-            CustomStageAllocator.ResetStageRuntime();
-            c.rebirthTime.totalseconds = 100;
+            owner.SetTimingForChecks(100, 0);
+            Assert(CustomStageAllocator.GetSchedulerSnapshot(store.Load("timing"), 100).ActiveStageIndex == -1
+                && owner.SchedulerStateForChecks == null, "snapshot does not initialize the coordinator");
             var active = CustomStageAllocator.GetActiveStage(store.Load("timing"));
             Assert(active.StageIndex == 0 && active.EffectiveDurationSeconds == 0, "positive AT targets wait on stats with no clock duration");
             c.advancedTraining.level[1] = 10;
             c.advancedTraining.level[0] = 4;
-            c.rebirthTime.totalseconds = 109;
+            owner.SetTimingForChecks(109, 9);
             Assert(CustomStageAllocator.GetActiveStage(store.Load("timing")).StageIndex == 0, "AT waits for both power and toughness targets");
             c.advancedTraining.level[0] = 5;
-            c.rebirthTime.totalseconds = 110;
+            owner.SetTimingForChecks(110, 10);
+            var state = owner.SchedulerStateForChecks;
+            Assert(CustomStageAllocator.GetSchedulerSnapshot(store.Load("timing"), 110).ActiveStageIndex == 0
+                && owner.SchedulerStateForChecks == state, "snapshot cannot consume a newly met AT gate");
             active = CustomStageAllocator.GetActiveStage(store.Load("timing"));
             Assert(active.StageIndex == 1 && active.StageStartSeconds == 110 && active.StageEndSeconds == 130,
-                "meeting actual AT stats advances to the timed row at the current rebirth clock");
+                "meeting actual AT stats selects the timed row at the current rebirth clock");
+            c.idleEnergy = 1000;
+            owner.ApplyStageForChecks(store.Load("timing"), active);
+            Assert(CustomStageAllocator.LastStageApplicationSucceeded && c.NGU.skills.Sum(skill => skill.energy) == 1000,
+                "timed row is armed only after actual allocator application");
+            owner.SetTimingForChecks(115, 15);
+            active = CustomStageAllocator.GetActiveStage(store.Load("timing"));
+            Assert(active.StageElapsedSeconds == 5 && active.RemainingSeconds == 15, "applied row earns five continuous seconds");
+            var recalls = c.EnergyRecalls;
             var edits = new Action<JSONObject>[] {
                 root => root["Stages"][1]["DurationUnit"] = "min",
-                root => root["EnergyNguWeights"][4] = 2,
+                root => root["futureScheduleExtension"] = "global weights are not plan configuration",
                 root => root["TimeTriggerSeconds"] = 5000,
                 root => root["Stages"][1]["GearGoal"] = 2,
                 root => root["futureScheduleExtension"] = "keep",
@@ -418,7 +452,10 @@ namespace NGUInjector
                 var root = store.ReadExternalPlan("timing");
                 edit(root);
                 store.SaveExternalPlan("timing", root, root["__externalUiRevision"].Value);
-                c.rebirthTime.totalseconds = 115;
+                var before = owner.SchedulerStateForChecks;
+                var snapshot = CustomStageAllocator.GetSchedulerSnapshot(store.Load("timing"), 115);
+                Assert(snapshot.SchedulerMode == "stages" && snapshot.ActiveStageIndex == 1 && snapshot.StageElapsedSeconds == 5
+                    && owner.SchedulerStateForChecks == before, "CAS invalidation preserves earned state and snapshot reads are inert");
                 active = CustomStageAllocator.GetActiveStage(store.Load("timing"));
                 Assert(active.StageIndex == 1 && active.StageStartSeconds == 110 && active.StageEndSeconds == 130,
                     "non-scheduling CAS edit preserves the timed row after real positive AT completion");
@@ -426,44 +463,51 @@ namespace NGUInjector
             var durationEdit = store.ReadExternalPlan("timing");
             durationEdit["Stages"][1]["DurationSeconds"] = 25;
             store.SaveExternalPlan("timing", durationEdit, durationEdit["__externalUiRevision"].Value);
-            c.rebirthTime.totalseconds = 120;
+            owner.SetTimingForChecks(120, 20);
             active = CustomStageAllocator.GetActiveStage(store.Load("timing"));
-            Assert(active.StageIndex == 1 && active.StageStartSeconds == 120 && active.StageEndSeconds == 145,
-                "effective duration edit restarts sequence and skips already-completed AT on the next pass");
+            Assert(active.StageIndex == 1 && active.StageStartSeconds == 110 && active.StageEndSeconds == 135
+                && active.StageElapsedSeconds == 5 && active.RemainingSeconds == 20,
+                "duration extension preserves earned time but CAS invalidation leaves credit unarmed");
+            owner.ApplyStageForChecks(store.Load("timing"), active);
+            owner.SetTimingForChecks(125, 25);
+            active = CustomStageAllocator.GetActiveStage(store.Load("timing"));
+            Assert(active.StageElapsedSeconds == 10 && active.RemainingSeconds == 15, "fresh allocator receipt resumes earned time after CAS invalidation");
+            durationEdit = store.ReadExternalPlan("timing");
+            durationEdit["Stages"][1]["DurationSeconds"] = 5;
+            store.SaveExternalPlan("timing", durationEdit, durationEdit["__externalUiRevision"].Value);
+            state = owner.SchedulerStateForChecks;
+            var beforeAdvance = CustomStageAllocator.GetSchedulerSnapshot(store.Load("timing"), 125);
+            Assert(beforeAdvance.ActiveStageIndex == 1 && beforeAdvance.StageElapsedSeconds == 10
+                && beforeAdvance.DurationSeconds[1] == 25 && owner.SchedulerStateForChecks == state,
+                "shortened stage snapshot retains the last evaluated timing without advancing execution");
+            active = CustomStageAllocator.GetActiveStage(store.Load("timing"));
+            Assert(active.StageIndex == 2 && active.StageStartSeconds == 125 && active.StageElapsedSeconds == 0 && active.RemainingSeconds == 30,
+                "shortening below earned time selects the next row without crediting unapplied work");
+            Assert(c.EnergyRecalls == recalls && c.MagicRecalls == 0, "scheduler evaluation, CAS edits and unchanged applications perform no native resource recalls");
             var targetEdit = store.ReadExternalPlan("timing");
             targetEdit["Stages"][0]["TargetAdvancedTrainingPower"] = "11";
             store.SaveExternalPlan("timing", targetEdit, targetEdit["__externalUiRevision"].Value);
-            c.rebirthTime.totalseconds = 125;
+            owner.SetTimingForChecks(130, 30);
             active = CustomStageAllocator.GetActiveStage(store.Load("timing"));
-            Assert(active.StageIndex == 0 && active.StageStartSeconds == 125 && active.EffectiveDurationSeconds == 0,
+            Assert(active.StageIndex == 0 && active.StageStartSeconds == 130 && active.EffectiveDurationSeconds == 0,
                 "AT target edit restarts at the now-unmet stat row");
-            Assert(c.EnergyRecalls == 0 && c.MagicRecalls == 0, "scheduler evaluation and plan edits do not perform game resource actions");
-            var rounded = new CustomPlan { StageDurationSeconds = 101, Stages = new[] {
+            // Nominal preview rounding is separate from the engine's fractional flex allocations.
+            var rounded = new CustomPlan { TimeTriggerEnabled = false, StageDurationSeconds = 101, Stages = new[] {
                 new CustomPlanStage {CompletionMode = 1}, new CustomPlanStage {Percent = 1}, new CustomPlanStage {Percent = 1} } };
-            Assert(CustomStageAllocator.GetSchedulerSnapshot(rounded, 0).DurationSeconds.SequenceEqual(new[] {0, 50, 50}),
-                "all-percent sequential timed rows retain nearest-even midpoint rounding");
+            Assert(CustomStageAllocator.GetSchedulerSnapshot(rounded, 0).DurationSeconds.SequenceEqual(new[] {0, 50, 51}),
+                "nominal flex preview conserves the horizon with an AT row");
             rounded.StageDurationSeconds = 1;
-            Assert(CustomStageAllocator.GetSchedulerSnapshot(rounded, 0).DurationSeconds.SequenceEqual(new[] {0, 1, 1}),
-                "all-percent sequential timed rows retain the legacy one-second minimum");
+            Assert(CustomStageAllocator.GetSchedulerSnapshot(rounded, 0).DurationSeconds.SequenceEqual(new[] {0, 0, 1}),
+                "nominal flex preview does not invent one-second minima");
             rounded.Stages = rounded.Stages.Skip(1).ToArray();
             rounded.StageDurationSeconds = 101;
             Assert(CustomStageAllocator.GetSchedulerSnapshot(rounded, 0).DurationSeconds.SequenceEqual(new[] {50, 51}),
-                "time-window rows use cumulative floor boundaries rather than sequential midpoint rounding");
-            var tinyMixed = new CustomPlan { Name = "zero-tail", StageDurationSeconds = 2, StageLoopStartIndex = -1, Stages = new[] {
+                "nominal flex preview uses the same cumulative floor boundaries without an AT row");
+            var tinyMixed = new CustomPlan { Name = "zero-tail", TimeTriggerEnabled = false, StageDurationSeconds = 2, StageLoopStartIndex = -1, Stages = new[] {
                 new CustomPlanStage {CompletionMode = 1}, new CustomPlanStage {DurationSeconds = 1},
                 new CustomPlanStage {Percent = 1}, new CustomPlanStage {Percent = double.Epsilon} } };
             Assert(CustomStageAllocator.GetSchedulerSnapshot(tinyMixed, 0).DurationSeconds.SequenceEqual(new[] {0, 1, 1, 0}),
-                "mixed sequential floor rounding permits zero-second weighted rows while conserving the budget");
-            c.rebirthTime.totalseconds = 200;
-            CustomStageAllocator.GetActiveStage(tinyMixed);
-            c.rebirthTime.totalseconds = 201;
-            CustomStageAllocator.GetActiveStage(tinyMixed);
-            c.rebirthTime.totalseconds = 202;
-            active = CustomStageAllocator.GetActiveStage(tinyMixed);
-            Assert(active.StageIndex == 3 && active.EffectiveDurationSeconds == 0, "zero-second last timed row retains the legacy final-focus hold");
-            Assert(CustomStageAllocator.GetSchedulerSnapshot(tinyMixed, 202).StageProgress == 1,
-                "zero-second timed progress is immediately complete, not an invented one-second clock");
-            CustomStageAllocator.ResetStageRuntime();
+                "nominal mixed preview permits zero-second weighted rows while conserving the budget");
             NGUInjector.Main.Settings.CustomPlanFile = "active";
         }
     }
