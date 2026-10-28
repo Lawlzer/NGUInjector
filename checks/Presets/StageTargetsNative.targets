@@ -1,9 +1,0 @@
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <PropertyGroup>
-    <DefineConstants>$(DefineConstants);PRESET_STAGE_NATIVE_CHECKS</DefineConstants>
-    <StartupObject>PresetStageTargetsNativeChecks</StartupObject>
-  </PropertyGroup>
-  <ItemGroup>
-    <Compile Include="$(MSBuildThisFileDirectory)StageTargetsNativeChecks.cs" />
-  </ItemGroup>
-</Project>

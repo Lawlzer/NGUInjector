@@ -1,4 +1,15 @@
-# Agent Guidelines
+# Retired Source Archive
+
+The old engine, UI, checks and all launchers are removed. Work on the active
+application in `../NGUInjector-rewrite` and follow its `AGENTS.md`. Do not recreate
+old build/test runners or rollback entry points from the historical material here.
+Preserve `.git`, license, sample/captured configuration and ignored artifacts,
+backups and saves. The source backup is commit `36cf9be` on `Lawlzer/NGUInjector`.
+
+The remaining guidelines below describe the former project and its handoff record;
+commands referencing deleted tooling are historical, not instructions to restore it.
+
+## Historical Agent Guidelines
 
 ## Working Contract
 

@@ -1,4 +1,22 @@
-# NGUInjector
+# NGUInjector (Retired)
+
+The old engine, desktop UI, checks, injector binaries and launchers have been
+removed. Use `../NGUInjector-rewrite` and its launchers directly; the old forwarding
+and `-Legacy` entry points no longer exist.
+
+The complete pre-retirement source is preserved at
+https://github.com/Lawlzer/NGUInjector/commit/36cf9bec6cb5d82a6abca41c7acd914f247b407d.
+The rewrite's pre-retirement snapshot is private at
+https://github.com/Lawlzer/NGUInjector-rewrite/commit/8d7fa03a84498f2894e0a714da4305d46fd6697b.
+
+This directory retains Git history, attribution, historical documentation, sample
+configuration, captured test evidence and existing local artifacts/backups. Their
+presence does not make the old engine a supported runtime or rollback option.
+No saves, live settings, ignored files or repository history were removed.
+
+## Historical Documentation
+
+The instructions below describe the retired engine, not supported current tooling.
 
 NGUInjector is an automation platform for the steam version of NGU Idle.
 
