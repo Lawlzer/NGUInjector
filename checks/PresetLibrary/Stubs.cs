@@ -15,6 +15,7 @@ namespace NGUInjector
         internal static void UpdateForm(SavedSettings settings) { }
         internal void ForgetStageProgress(string name) { }
         internal void InvalidateCustomRuntimePlanCache() { }
+        internal void InvalidateCustomFightSchedulePlanCache() { }
         internal void ValidateScheduledPlanEdit(string name, CustomPlan plan) { }
     }
 }

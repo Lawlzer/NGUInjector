@@ -4,7 +4,16 @@
     {
       "name": "24hour-ready",
       "path": "C:\\Users\\Kevin\\AppData\\LocalLow\\NGU Industries\\NGU Idle\\24hour-ready-test.txt",
-      "scenario": "Scheduled NGU allocation, loadout, beards, diggers, and configured overflow",
+      "scenario": "allocation",
+      "description": "Scheduled NGU allocation, loadout, beards, and diggers",
+      "plan": "24hr",
+      "stage": 3
+    },
+    {
+      "name": "24hour-ready-fallback",
+      "path": "C:\\Users\\Kevin\\AppData\\LocalLow\\NGU Industries\\NGU Idle\\24hour-ready-test.txt",
+      "scenario": "fallback",
+      "description": "Complete only the selected NGU targets, then verify real fallback spending",
       "plan": "24hr",
       "stage": 3
     }

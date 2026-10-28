@@ -19,6 +19,7 @@ namespace NGUInjector
                 NGUInjector.Main.Settings = new SavedSettings(_dir);
                 NGUInjector.Main.Settings.SaveSettings();
                 NGUInjector.Main.CustomPlanStore = new CustomPlanStore(Path.Combine(_dir, "custom-plans"));
+                SeedLegacyDefault(NGUInjector.Main.CustomPlanStore);
                 CheckAdventureDynamicWeight();
                 Console.WriteLine("PASS: AdventureDynamicWeight persistence: " + _assertions + " assertions.");
                 return 0;
@@ -39,7 +40,7 @@ namespace NGUInjector
             var store = NGUInjector.Main.CustomPlanStore;
             var plansDir = Path.Combine(_dir, "custom-plans");
             Assert(new CustomPlanStage().AdventureDynamicWeight == 0d, "new stage adventure weight defaults to zero");
-            foreach (var name in new[] {"default", "24hr", "infinite", "1h-3m-rebirth"})
+            foreach (var name in PlanCatalogNames)
                 Assert(store.Load(name).Stages.All(stage => stage.AdventureDynamicWeight == 0d), "built-in adventure weights default to zero: " + name);
 
             var legacy = store.ReadExternalPlan("default");

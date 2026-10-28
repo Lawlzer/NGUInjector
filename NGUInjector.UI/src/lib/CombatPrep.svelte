@@ -74,7 +74,7 @@
     {/each}
   </div>
   {#if validation}<p class="notice error" role="alert">{validation}</p>{/if}
-  {#if !connected}<p class="muted">Connect to an up-to-date injector to use the planner.</p>{/if}
+  {#if !connected}<p class="muted">{runtime.status === 'error' ? combatText(runtime.reason) : 'Connect to an up-to-date injector to use the planner.'}</p>{/if}
   <div class="button-row">
     <button type="button" disabled={state.busy || !connected || !!validation} on:click={onpreview}>{preview ? 'Refresh preview' : 'Preview'}</button>
     <button type="button" class="primary" title={cleanupRecoveryRequired ? recoveryReason : cleanupPending ? 'Waiting for equipment and resource cleanup.' : startReason || undefined} disabled={state.busy || !!startReason || active || cleanupRecoveryRequired || !combatPrepReady(state.snapshot, state.runtimeDir, 'startCombatPrep', state.now)} on:click={onstart}>Start selected</button>

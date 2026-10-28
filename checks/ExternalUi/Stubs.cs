@@ -23,6 +23,7 @@ namespace UnityEngine
         public static void DontDestroyOnLoad(Object value) { }
         public static void Destroy(Object value) { if (value is GameObject game) game.Destroyed = true; }
     }
+    public class MonoBehaviour : Object { }
     public class GameObject : Object
     {
         public static GameObject Last;
@@ -30,6 +31,7 @@ namespace UnityEngine
         public object Component;
         public bool Destroyed, Active = true;
         public GameObject() { Last = this; Created++; }
+        public GameObject(string name) : this() { }
         public T AddComponent<T>() { Component = Activator.CreateInstance(typeof(T), true); return (T)Component; }
         public T GetComponent<T>() where T : class { return Component as T; }
         public void SetActive(bool active) { Active = active; }
@@ -209,9 +211,10 @@ namespace NGUInjector
         private static string _dir, _profilesDir, _customPlansDir;
         private object _protectedScheduler;
         private void SaveProtectedStageProgress(bool force = false) { }
+        internal string StageProgressDirectory;
         internal void ForgetStageProgress(string planName)
         {
-            File.Delete(Path.Combine(_dir, "stage-progress-"
+            File.Delete(Path.Combine(StageProgressDirectory ?? _dir, "stage-progress-"
                 + JsonFiles.ComputeRevision(System.Text.Encoding.UTF8.GetBytes(planName.ToLowerInvariant())) + ".json"));
         }
         private static AllocationProfiles.CustomAllocation _profile;
@@ -376,6 +379,7 @@ namespace NGUInjector
         internal static string LogError(string context, Exception error) { return context + ": " + error.Message; }
         internal static string GetCustomAutomationStatus() { return "idle"; }
         internal void InvalidateCustomRuntimePlanCache() { Invalidations++; }
+        internal void InvalidateCustomFightSchedulePlanCache() { Invalidations++; }
         internal void ValidateScheduledPlanEdit(string name, CustomPlan plan) { }
         // Runtime policy is covered by the Blood/SustainedFocus fixtures; this fixture tests transport and persistence.
         private CustomPlan LoadRuntimeCustomPlan() => CustomPlanStore.Load(Settings.CustomPlanFile);

@@ -18,6 +18,16 @@ export function parseDurationText(text: string, fallback: DurationUnit): { amoun
   return { amount: Number(match[1]), unit: suffix === 'm' ? 'min' : (suffix as DurationUnit | undefined) ?? fallback };
 }
 
+export function fightDurationSeconds(text: string, current: number, repeat = false): number {
+  if (/\.\s*(?:s|m|min|h)?$/i.test(text)) throw new Error('Finish the decimal value before saving.');
+  const { amount, unit } = parseDurationText(text, parseDurationText(formatTime(current), 's').unit);
+  if (unit === '%') throw new Error('Fight timing requires a duration, not a percentage.');
+  const seconds = amount * factors[unit];
+  const rounded = Math.round(seconds);
+  if (Math.abs(rounded - seconds) > Math.max(1, Math.abs(seconds)) * Number.EPSILON * 8) throw new Error('Fight timing must resolve to whole seconds.');
+  return numeric(rounded, repeat ? 'Repeat interval seconds' : 'First fight delay seconds', repeat ? 1 : 0);
+}
+
 export function fixedSeconds(row: JsonObject): number {
   return numeric(row.DurationSeconds ?? 0, 'DurationSeconds', 0);
 }

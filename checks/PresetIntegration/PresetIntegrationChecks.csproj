@@ -18,12 +18,21 @@
     <Compile Include="SupportOverspendChecks.cs" />
     <Compile Include="DesiredMapExecutionChecks.cs" />
     <Compile Include="InlineStageSetupChecks.cs" />
+    <Compile Include="LockedTimeMachineFallbackChecks.cs" />
     <Compile Include="ExecutionFoundationChecks.cs" />
     <Compile Include="ExecutionPersistenceChecks.cs" />
     <Compile Include="ExecutionCoreCutoverChecks.cs" />
     <Compile Include="RetainedFarmingRebindChecks.cs" />
     <Compile Include="RouteExecutorCutoverChecks.cs" />
+    <Compile Include="OrdinaryTowerAuthorityChecks.cs" />
+    <Compile Include="PostRebirthRouteHandoffChecks.cs" />
+    <Compile Include="StageEntryHandoffChecks.cs" />
+    <Compile Include="OrdinaryCapacityFundingChecks.cs" />
+    <Compile Include="NguStartupObservationChecks.cs" />
     <Compile Include="FiniteActionNativeChecks.cs" />
+    <Compile Include="FruitCapacityChecks.cs" />
+    <Compile Include="RebirthFruitBeforeBossChecks.cs" />
+    <Compile Include="RepeatablePurchaseChecks.cs" />
     <Compile Include="ActionPreparationCommitmentChecks.cs" />
     <Compile Include="ActionPillPrecisionChecks.cs" />
     <Compile Include="..\CombatPrepIntegration\Program.cs" Link="CombatFixture.cs" />

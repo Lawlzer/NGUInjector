@@ -29,6 +29,7 @@
     <Compile Include="../Presets/SetupOnlyChecks.cs" />
     <Compile Include="../Presets/ResourceDemandChecks.cs" />
     <Compile Include="../Presets/LanePriorityChecks.cs" />
+    <Compile Include="../Presets/PurePlannerChecks.cs" />
     <Compile Include="../Presets/ExecutionChecks.cs" />
     <Compile Include="../Presets/CapacityObjectiveChecks.cs" />
     <Compile Include="../../NGUInjector/Managers/LoadoutPresetPlanner.cs" />

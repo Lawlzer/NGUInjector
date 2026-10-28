@@ -16,6 +16,10 @@ use uuid::Uuid;
 mod preset_library;
 use preset_library::*;
 
+#[cfg(test)]
+#[path = "fight-schedule-tests.rs"]
+mod fight_schedule_tests;
+
 const MARKER_FILE: &str = "external-ui.enabled";
 const OWNERSHIP_FILE: &str = ".injector.lock";
 const REVISION_FIELD: &str = "__externalUiRevision";
@@ -99,9 +103,9 @@ fn empty_object() -> Value {
 fn protocol_info() -> Value {
     let mut protocol = json!({
         "version": 3,
-        "planVersion": 17,
+        "planVersion": 18,
         "stageTimingVersion": 1,
-        "stageTiming": {"horizon": "TimeTriggerSeconds when TimeTriggerEnabled and positive, otherwise StageDurationSeconds. Zero is allowed", "timing": "DurationSeconds > 0 is fixed actual applied time; DurationSeconds == 0 shares max(0, horizon minus fixed total) by positive Percent weight. AT-target stages are untimed mandatory work and excluded from timed totals. Fixed totals may equal or exceed the horizon. All-fixed plans retain their saved budget", "liveWrites": "Saving/copying/creating, selecting, running, or enabling auto rebirth requires fresh runtime.stageTimingVersion == 1 AND runtime.planVersion >= 17, regardless of plan contents"},
+        "stageTiming": {"horizon": "TimeTriggerSeconds when TimeTriggerEnabled and positive, otherwise StageDurationSeconds. Zero is allowed", "timing": "DurationSeconds > 0 is fixed actual applied time; DurationSeconds == 0 shares max(0, horizon minus fixed total) by positive Percent weight. AT-target stages are untimed mandatory work and excluded from timed totals. Fixed totals may equal or exceed the horizon. All-fixed plans retain their saved budget", "liveWrites": "Reading/saving/copying/creating, selecting, running, or enabling auto rebirth requires fresh runtime.stageTimingVersion == 1 AND runtime.fightScheduleVersion == 1 AND runtime.planVersion >= 18, regardless of plan contents"},
         "globalNguWeightsVersion": 1,
         "nguWeights": {"owner": "settings.json only; never plans or presets", "_energyNguWeights": "exactly 9 nonnegative Int32 entries", "_magicNguWeights": "exactly 7 nonnegative Int32 entries", "energyDefault": [0,0,0,0,1,0,1,0,0], "magicDefault": [1,0,0,0,0,0,0], "allZero": "Allowed; disables that resource's NGUs", "migration": "Injector durably captures the selected legacy plan once before retiring plan ratios; offline writes that could lose unmigrated ratios require connecting first", "requiredRuntimeFields": {"globalNguWeightsVersion": 1}},
         "stageDurations": {"DurationSeconds": "Int32: 0 uses positive Percent weight; > 0 is fixed whole seconds of actual applied time", "DurationUnit": "%, s, min, or h; display hint only", "effectiveDuration": "Weighted flex shares max(0, horizon minus fixed total). AT-target rows (CompletionMode 1) retain validated duration fields but are excluded from timed totals. No minimum duration or rounding is applied"},
@@ -123,9 +127,9 @@ fn protocol_info() -> Value {
         "offlineMigration": "Plans with missing/legacy Version < 14 must be read through a connected injector to normalize migrations",
         "createPlanCommand": {"command": "createPlan", "args": {"requestedName": "safe file stem", "source": "optional JSON object; copy history is cleared"}, "resultName": "data.name"},
         "deletePlanCommand": {"command": "deletePlan", "args": {"name": "safe file stem"}, "resultSelection": "data.selectedPlan"},
-        "manualStageOverride": {"command": "setPlanStage", "transport": "enqueue_command", "connectedOnly": true, "args": {"name": "safe plan file stem", "expectedRevision": "nonempty current plan revision string; preserved exactly", "expectedEntry": "nonempty current stage entry token; preserved exactly", "action": "skip | set | restart", "stageIndex": "required nonnegative Int32 for every action"}, "requiredRuntimeFields": {"stageTimingVersion": 1, "planVersion": ">= 17", "stageOverridesV1": true}, "guards": "Injector checks the current selected plan, revision, entry token, and stage index immediately before execution. Overrides change runtime progress, never the plan definition; no offline fallback"},
+        "manualStageOverride": {"command": "setPlanStage", "transport": "enqueue_command", "connectedOnly": true, "args": {"name": "safe plan file stem", "expectedRevision": "nonempty current plan revision string; preserved exactly", "expectedEntry": "nonempty current stage entry token; preserved exactly", "action": "skip | set | restart", "stageIndex": "required nonnegative Int32 for every action"}, "requiredRuntimeFields": {"stageTimingVersion": 1, "fightScheduleVersion": 1, "planVersion": ">= 18", "stageOverridesV1": true}, "guards": "Injector checks the current selected plan, revision, entry token, and stage index immediately before execution. Overrides change runtime progress, never the plan definition; no offline fallback"},
         "augmentCommands": {"commands": ["previewAugments", "allocateAugments"], "args": "{} or {expectedSeconds: positive Int32}"},
-        "loadoutPresets": {"previewCommand": "previewLoadoutPreset", "applyCommand": "applyLoadoutPreset", "args": {"preset": "inline Pascal-case LoadoutPresets row; Weights contains 6, 10, 12 or 14 numbers (adventurePower/adventureToughness at indices 10/11, energyCap/magicCap at 12/13); DiggerWeights remains empty or 12 numbers; DiggerBudgetPercent and SwapSeconds are integers; legacy HorizonSeconds is ignored and not required", "candidateKey": "apply only: safe ASCII key <=64 from latest matching preview", "previewId": "apply only: server-owned 32-hex token from latest matching preview; consumed on application"}, "requiredRuntimeFields": {"loadoutPresetsVersion": 2, "globalNguWeightsVersion": 1, "startedAt": "identified injector session"}, "storage": "optional LoadoutPresets array, max32, empty allowed; independent of legacy GoalPresets; retired NGU fields stripped, other unknown fields preserved; plan Version remains 17", "nguWeights": "Captured from global settings only; lowercase ratio args are rejected", "result": "data.result version 1 with previewId; same-snapshot candidates, specialists, normalization and optional two-phase estimate with authoritative backend assumptions", "application": "explicit confirmed cached snapshot application; backend validates material state and epoch without replacing the selected candidate with a fresh search; runtime.loadoutPreset records Last applied, active:false, requiresReapply:true, mode:applied-snapshot"},
+        "loadoutPresets": {"previewCommand": "previewLoadoutPreset", "applyCommand": "applyLoadoutPreset", "args": {"preset": "inline Pascal-case LoadoutPresets row; Weights contains 6, 10, 12 or 14 numbers (adventurePower/adventureToughness at indices 10/11, energyCap/magicCap at 12/13); DiggerWeights remains empty or 12 numbers; DiggerBudgetPercent and SwapSeconds are integers; legacy HorizonSeconds is ignored and not required", "candidateKey": "apply only: safe ASCII key <=64 from latest matching preview", "previewId": "apply only: server-owned 32-hex token from latest matching preview; consumed on application"}, "requiredRuntimeFields": {"loadoutPresetsVersion": 2, "globalNguWeightsVersion": 1, "startedAt": "identified injector session"}, "storage": "optional LoadoutPresets array, max32, empty allowed; independent of legacy GoalPresets; retired NGU fields stripped, other unknown fields preserved; plan Version 18", "nguWeights": "Captured from global settings only; lowercase ratio args are rejected", "result": "data.result version 1 with previewId; same-snapshot candidates, specialists, normalization and optional two-phase estimate with authoritative backend assumptions", "application": "explicit confirmed cached snapshot application; backend validates material state and epoch without replacing the selected candidate with a fresh search; runtime.loadoutPreset records Last applied, active:false, requiresReapply:true, mode:applied-snapshot"},
         "combatPrep": {"previewCommand": "previewCombatPrep", "previewArgs": {"durationSeconds": "required integer 1..86400", "backgroundEnergyPercent": "required number 0..100", "backgroundMagicPercent": "required number 0..100"}, "startCommand": "startCombatPrep", "startArgs": {"previewId": "nonempty string <=128 UTF-16 units", "candidateId": "nonempty string <=128 UTF-16 units"}, "cancelCommand": "cancelCombatPrep", "cancelArgs": {"runId": "nonempty string <=128 UTF-16 units"}, "connectedOnly": true, "maxResultBytes": ACTION_RESULT_MAX_BYTES, "maxPreviewBytes": ACTION_RESULT_MAX_BYTES, "previewTtlSeconds": 120},
         "adventureModes": {"0": "Optimal ITOPOD", "1": "Farm selected zone", "2": "Farm boosts dynamically", "3": "Max ITOPOD push"},
         "maxItopodPush": {"modeSetting": "_customAdventureMode = 3", "deathLimitSetting": "_customAdventureMaxItopodDeaths: Int32 1..1000, default 3", "runtimeSetting": "settings.customAdventureMaxItopodDeaths", "startCommand": "startMaxItopodPush", "startArgs": {"deaths": "required integer 1..1000"}, "cancelCommand": "cancelMaxItopodPush", "cancelArgs": {}, "connectedOnly": true, "runtime": "maxItopodPush: {active: boolean, remainingDeaths: int, floor: int}", "behavior": "UI saves mode and death limit; custom Adventure enable starts the mode-owned push; changing mode away cancels it; after the death limit switches to Optimal ITOPOD. Start/cancel commands remain for external consumers"},
@@ -136,6 +140,8 @@ fn protocol_info() -> Value {
         "offlineSettingsPatches": "Only known serialized settings fields are editable; unknown stored fields are preserved",
         "offlineWriterLock": ".injector.lock is held across every offline read/modify/write with Windows FileShare.None semantics (fs2 exclusive lock on non-Windows); stale/missing heartbeat does not authorize writes when injector ownership is held; .external-ui-write.lock serializes UI operations"
     });
+    protocol["fightScheduleVersion"] = json!(1);
+    protocol["fightSchedule"] = json!({"stageField": "FightSchedule: null or {Id, Anchor, DelaySeconds, IntervalSeconds}", "id": "1..128 ASCII letters, digits, underscore or hyphen; unique within plan", "anchor": "0 stage entry; 1 verified Augments started", "seconds": "nonnegative Int32; interval 0 is once", "migration": "Only absent FightSchedule and true FightOnEntry migrate to legacy-entry-v1-<zero-based index>; explicit null wins; FightOnEntry is removed", "edits": "Timing freezes for the entry; edits apply next entry or restart; disabling stops future admission"});
     protocol["settingsCasVersion"] = json!(1);
     protocol["loadoutPresetsVersion"] = json!(2);
     protocol["globalPresetsVersion"] = json!(2);
@@ -776,6 +782,15 @@ fn take_plan_revision(plan: &mut Value) -> Result<Option<String>, String> {
 
 fn require_current_plan_version(plan: &Value) -> Result<(), String> {
     require_object(plan, "Plan")?;
+    if plan
+        .get("Version")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| version > 18)
+    {
+        return Err(
+            "Future plan Version is not supported; update the controller before editing".into(),
+        );
+    }
     if !plan
         .get("Version")
         .and_then(Value::as_u64)
@@ -790,6 +805,7 @@ fn normalize_offline_plan(mut plan: Value) -> Result<Value, String> {
     require_current_plan_version(&plan)?;
     validate_plan_presets(&plan)?;
     validate_plan_blood_overrides(&plan)?;
+    normalize_fight_schedules(&mut plan)?;
     strip_plan_ngu_weights(&mut plan);
     let object = plan.as_object_mut().unwrap();
     object.entry("AutoIronPillEnabled").or_insert(json!(true));
@@ -798,9 +814,57 @@ fn normalize_offline_plan(mut plan: Value) -> Result<Value, String> {
             object.remove(field);
         }
     }
-    object.insert("Version".into(), json!(17));
+    object.insert("Version".into(), json!(18));
     object.remove("ProtectedStageTiming");
     Ok(plan)
+}
+
+fn normalize_fight_schedules(plan: &mut Value) -> Result<(), String> {
+    let Some(stages) = plan.get_mut("Stages") else {
+        return Ok(());
+    };
+    let stages = stages
+        .as_array_mut()
+        .ok_or("Stages must be an array of objects")?;
+    let mut ids = std::collections::HashSet::new();
+    for (index, stage) in stages.iter_mut().enumerate() {
+        let label = format!("Stage {}", index + 1);
+        let row = stage
+            .as_object_mut()
+            .ok_or_else(|| format!("{label} must be an object"))?;
+        if row
+            .get("FightOnEntry")
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return Err(format!("{label} FightOnEntry must be boolean"));
+        }
+        let legacy = row.get("FightOnEntry").and_then(Value::as_bool) == Some(true);
+        let schedule = row.entry("FightSchedule").or_insert_with(|| if legacy {
+            json!({"Id": format!("legacy-entry-v1-{index}"), "Anchor": 0, "DelaySeconds": 0, "IntervalSeconds": 0})
+        } else { Value::Null });
+        if !schedule.is_null() {
+            require_object(schedule, &format!("{label} FightSchedule"))?;
+            let id = schedule["Id"].as_str().filter(|id| !id.is_empty() && id.len() <= 128 && id.bytes().all(|ch| ch.is_ascii_alphanumeric() || ch == b'_' || ch == b'-'))
+                .ok_or_else(|| format!("{label} FightSchedule Id must contain 1..128 ASCII letters, digits, underscores or hyphens"))?;
+            if !ids.insert(id.to_owned()) {
+                return Err("FightSchedule IDs must be unique within the plan".into());
+            }
+            for field in ["Anchor", "DelaySeconds", "IntervalSeconds"] {
+                let max = if field == "Anchor" {
+                    1
+                } else {
+                    i32::MAX as u64
+                };
+                if !schedule[field].as_u64().is_some_and(|value| value <= max) {
+                    return Err(format!(
+                        "{label} FightSchedule {field} must be an integer between 0 and {max}"
+                    ));
+                }
+            }
+        }
+        row.remove("FightOnEntry");
+    }
+    Ok(())
 }
 
 fn validate_plan_presets(plan: &Value) -> Result<(), String> {
@@ -862,7 +926,7 @@ fn require_durable_global_ngu_weights(
         return Err("Connect to the injector to durably migrate global NGU weights before retiring legacy plan ratios; files were not modified".into());
     }
     let selected = match settings.get("_customPlanFile") {
-        None => "default",
+        None => "24hr",
         Some(value) => value
             .as_str()
             .ok_or("_customPlanFile must be a string; files were not modified")?,
@@ -915,6 +979,13 @@ fn validate_plan_blood_overrides(plan: &Value) -> Result<(), String> {
 
 fn validate_plan_durations(plan: &Value) -> Result<(), String> {
     require_object(plan, "Plan")?;
+    if plan.get("Version").is_some() {
+        require_current_plan_version(plan)?;
+    }
+    normalize_fight_schedules(&mut plan.clone())?;
+    if let Some(value) = plan.get("RebirthPrepStartSeconds") {
+        loadout_number(value, "RebirthPrepStartSeconds", 0, i32::MAX as u32, true)?;
+    }
     if let Some(value) = plan.get("StageDurationSeconds") {
         value
             .as_u64()
@@ -934,6 +1005,13 @@ fn validate_plan_durations(plan: &Value) -> Result<(), String> {
     for (index, stage) in stages.iter().enumerate() {
         let label = format!("Stage {}", index + 1);
         require_object(stage, &label)?;
+        if let Some(value) = stage.get("UseWandoosWhenTimeMachineLocked") {
+            if !value.is_boolean() {
+                return Err(format!(
+                    "{label} UseWandoosWhenTimeMachineLocked must be boolean"
+                ));
+            }
+        }
         if let Some(value) = stage.get("AdventureDynamicWeight") {
             if !value
                 .as_f64()
@@ -1016,6 +1094,22 @@ fn connected_plan_json(response: &Value) -> Result<String, String> {
         .ok_or("readPlan succeeded but result.data.plan is missing")?;
     require_object(plan, "readPlan result.data.plan")?;
     require_current_plan_version(plan)?;
+    if plan["Version"] != 18
+        || plan
+            .get("Stages")
+            .and_then(Value::as_array)
+            .is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row.get("FightSchedule").is_none() || row.get("FightOnEntry").is_some()
+                })
+            })
+    {
+        return Err(
+            "readPlan requires canonical version 18 FightSchedule fields; update the injector"
+                .into(),
+        );
+    }
+    normalize_fight_schedules(&mut plan.clone())?;
     validate_plan_blood_overrides(plan)?;
     validate_revision(
         plan.get(REVISION_FIELD)
@@ -1122,9 +1216,14 @@ fn command_result_name(response: &Value, field: &str) -> Result<String, String> 
 
 fn validate_plan_deletion(name: &str, settings: &Value, count: usize) -> Result<bool, String> {
     validate_file_name(name)?;
-    if ["default", "24hr", "1h-3m-rebirth", "infinite"]
-        .iter()
-        .any(|builtin| name.eq_ignore_ascii_case(builtin))
+    if [
+        "24hr",
+        "15m-NUMBER-increase",
+        "30m-NUMBER-increase",
+        "1h-1m-NUMBER-increase",
+    ]
+    .iter()
+    .any(|builtin| name.eq_ignore_ascii_case(builtin))
     {
         return Err("Built-in plans cannot be deleted; copy one to make a removable plan".into());
     }
@@ -1165,28 +1264,21 @@ fn delete_plan_offline(dir: &Path, name: &str) -> Result<String, String> {
         return Err(format!("Plan does not exist: {name}"));
     }
     let fallback = if selected {
-        "default"
+        "24hr"
     } else {
         settings
             .get("_customPlanFile")
             .and_then(Value::as_str)
-            .unwrap_or("default")
+            .unwrap_or("24hr")
     }
     .to_string();
     validate_file_name(&fallback)?;
     if selected {
         require_durable_global_ngu_weights(dir, &settings, None)?;
         let fallback_path = plan_path(dir, &fallback)?;
-        if fallback_path.try_exists().map_err(|err| err.to_string())? {
-            read_json_object(&fallback_path, MAX_JSON_BYTES, false)?;
-        } else {
-            write_json_atomic(
-                &fallback_path,
-                &prepare_plan_copy(default_plan(), &fallback)?,
-                false,
-            )?;
-            clear_created_plan_progress(dir, &fallback)?;
-        }
+        read_json_object(&fallback_path, MAX_JSON_BYTES, false).map_err(|err| {
+            format!("Cannot select fallback plan {fallback}: {err}; plan was not deleted")
+        })?;
         settings["_customPlanFile"] = json!(fallback);
         // Persist selection first: a settings write failure must leave the plan intact.
         write_json_atomic(&settings_path, &settings, true)?;
@@ -2254,14 +2346,14 @@ fn check_resource_lane_execution(
 ) -> Result<(), String> {
     let require_capability = |row: &Value| -> Result<(), String> {
         if row["ResourcePrioritiesReviewed"].as_bool() == Some(true) {
-            if runtime["resourceLanePrioritiesVersion"].as_u64() != Some(1) {
-                return Err("Reviewed lane order requires runtime.resourceLanePrioritiesVersion == 1; command was not queued".into());
+            if runtime["resourceLanePrioritiesVersion"].as_u64() != Some(2) {
+                return Err("Reviewed resource priorities require runtime.resourceLanePrioritiesVersion == 2; command was not queued".into());
             }
             if !runtime["startedAt"]
                 .as_str()
                 .is_some_and(|session| !session.trim().is_empty())
             {
-                return Err("Reviewed lane order requires a fresh identified injector session; command was not queued".into());
+                return Err("Reviewed resource priorities require a fresh identified injector session; command was not queued".into());
             }
             if runtime["globalPresetsVersion"].as_u64() != Some(2)
                 && !matches!(command, "previewLoadoutPreset" | "applyLoadoutPreset")
@@ -2286,7 +2378,7 @@ fn check_resource_lane_execution(
                 if row["ResourcePrioritiesReviewed"].as_bool() == Some(true)
                     && args["libraryRevision"].as_str() != Some(revision.as_str())
                 {
-                    return Err("Preset library revision changed; reload before using reviewed lane order. Command was not queued".into());
+                    return Err("Preset library revision changed; reload before using reviewed resource priorities. Command was not queued".into());
                 }
                 require_capability(row)?;
             }
@@ -2464,16 +2556,19 @@ fn queue_command(dir: &Path, command: &str, mut args: Value) -> Result<String, S
                 .into(),
         );
     }
-    let timing_write = matches!(command, "savePlan" | "createPlan" | "setPlanStage")
-        || command == "applySettingsPatch"
-            && (args["patch"].get("_customPlanFile").is_some()
-                || args["patch"]["_useCustomRebirthPlan"].as_bool() == Some(true)
-                || args["patch"]["_autoRebirth"].as_bool() == Some(true));
+    let timing_write = matches!(
+        command,
+        "readPlan" | "savePlan" | "createPlan" | "setPlanStage"
+    ) || command == "applySettingsPatch"
+        && (args["patch"].get("_customPlanFile").is_some()
+            || args["patch"]["_useCustomRebirthPlan"].as_bool() == Some(true)
+            || args["patch"]["_autoRebirth"].as_bool() == Some(true));
     if timing_write
         && (runtime["stageTimingVersion"].as_u64() != Some(1)
-            || runtime["planVersion"].as_u64().unwrap_or(0) < 17)
+            || runtime["fightScheduleVersion"].as_u64() != Some(1)
+            || runtime["planVersion"].as_u64().unwrap_or(0) < 18)
     {
-        return Err("Connected injector requires runtime.stageTimingVersion == 1 AND runtime.planVersion >= 17 before saving, copying, creating, selecting, running, overriding stages, or enabling auto rebirth; command was not queued".into());
+        return Err("Connected injector requires runtime.stageTimingVersion == 1 AND runtime.fightScheduleVersion == 1 AND runtime.planVersion >= 18 before reading, saving, copying, creating, selecting, running, overriding stages, or enabling auto rebirth; command was not queued".into());
     }
     if (timing_write
         || matches!(
@@ -2515,10 +2610,12 @@ fn queue_command(dir: &Path, command: &str, mut args: Value) -> Result<String, S
         }
     }
     match command {
-        "savePlan" => strip_plan_ngu_weights(&mut args["plan"]),
+        "savePlan" => {
+            args["plan"] = normalize_offline_plan(args["plan"].clone())?;
+        }
         "createPlan" => {
             if let Some(source) = args.get_mut("source") {
-                strip_plan_ngu_weights(source);
+                *source = normalize_offline_plan(source.clone())?;
             }
         }
         "previewLoadoutPreset" | "applyLoadoutPreset" => strip_ngu_weights(&mut args["preset"]),
@@ -2823,7 +2920,7 @@ fn default_plan() -> Value {
     .map(|(name, percent, energy, magic, gear)| {
         json!({
             "Name": name, "Percent": percent, "EnergyFocus": energy, "MagicFocus": magic,
-            "DurationSeconds": 0, "DurationUnit": "%",
+            "DurationSeconds": 0, "DurationUnit": "%", "FightSchedule": null,
             "GearGoal": gear, "CompletionMode": 0, "BlackBarLookaheadSeconds": 5,
             "EnergyPriorities": [], "MagicPriorities": [],
             "TargetAdvancedTrainingPower": "0", "TargetAdvancedTrainingToughness": "0"
@@ -2831,7 +2928,7 @@ fn default_plan() -> Value {
     })
     .collect();
     json!({
-        "Version": 17, "Name": "new-plan", "AutoRebirthEnabled": true,
+        "Version": 18, "Name": "new-plan", "AutoRebirthEnabled": true,
         "AutoIronPillEnabled": true,
         "TimeTriggerEnabled": true, "TimeTriggerSeconds": 3600,
         "NumberTriggerEnabled": false, "NumberMultiplierTarget": 100.0,
@@ -3215,8 +3312,8 @@ mod loadout_preset_tests {
     }
 
     #[test]
-    fn normalization_preserves_library_unknowns_and_legacy_gear_without_version_bump() {
-        let source = json!({"Version": 17, "AutoIronPillEnabled": true, "LoadoutPresets": [preset()], "GoalPresets": [{"Name": "Legacy", "GearGoal": 2}], "GearGoal": 2, "ActiveGoalPresetIndex": 0});
+    fn normalization_preserves_library_unknowns_and_legacy_gear_at_current_version() {
+        let source = json!({"Version": 18, "AutoIronPillEnabled": true, "LoadoutPresets": [preset()], "GoalPresets": [{"Name": "Legacy", "GearGoal": 2}], "GearGoal": 2, "ActiveGoalPresetIndex": 0});
         let normalized = normalize_offline_plan(source.clone()).unwrap();
         assert_eq!(normalized, source);
         validate_loadout_presets(None).unwrap();
@@ -3257,7 +3354,7 @@ mod loadout_preset_tests {
         let path = plan_path(dir.path(), "presets").unwrap();
         let read: Value = serde_json::from_str(&read_plan_json(&path).unwrap()).unwrap();
         assert_eq!(read["LoadoutPresets"], source["LoadoutPresets"]);
-        assert_eq!(read["Version"], 17);
+        assert_eq!(read["Version"], 18);
         let patch = json!({"Version": 17, "TimeTriggerSeconds": 7200});
         let mut patch = patch;
         patch[REVISION_FIELD] = read[REVISION_FIELD].clone();
@@ -3286,7 +3383,7 @@ mod loadout_preset_tests {
         let saved: Value = serde_json::from_str(&read_plan_json(&path).unwrap()).unwrap();
         assert_eq!(saved["LoadoutPresets"], source["LoadoutPresets"]);
         assert_eq!(saved["GoalPresets"], source["GoalPresets"]);
-        assert_eq!(saved["Version"], 17);
+        assert_eq!(saved["Version"], 18);
         let bytes = fs::read_to_string(path).unwrap();
         assert!(bytes.contains("9007199254740993"));
         assert!(bytes.contains("12345678901234567890.123456789"));
@@ -3393,7 +3490,7 @@ mod loadout_preset_tests {
             serde_json::from_str(&read_plan_json(&plan_path(dir.path(), &name).unwrap()).unwrap())
                 .unwrap();
         assert_eq!(copied["LoadoutPresets"], source["LoadoutPresets"]);
-        assert_eq!(copied["Version"], 17);
+        assert_eq!(copied["Version"], 18);
     }
 
     #[test]
@@ -3544,7 +3641,7 @@ mod stage_override_transport_tests {
 
     fn runtime() -> Value {
         json!({"externalUiEnabled": true, "status": "running", "updatedAt": Utc::now().to_rfc3339(),
-            "protocolVersion": 3, "planVersion": 17, "stageTimingVersion": 1, "stageOverridesV1": true, "globalNguWeightsVersion": 1,
+            "protocolVersion": 3, "planVersion": 18, "fightScheduleVersion": 1, "stageTimingVersion": 1, "stageOverridesV1": true, "globalNguWeightsVersion": 1,
             "settingsCasVersion": 1, "supportedCommands": ["setPlanStage", "applySettingsPatch", "status", "quickSave", "unload", "stopFocus"]})
     }
 
@@ -3555,7 +3652,8 @@ mod stage_override_transport_tests {
         assert_eq!(contract["transport"], "enqueue_command");
         assert_eq!(contract["connectedOnly"], true);
         assert_eq!(contract["requiredRuntimeFields"]["stageTimingVersion"], 1);
-        assert_eq!(contract["requiredRuntimeFields"]["planVersion"], ">= 17");
+        assert_eq!(contract["requiredRuntimeFields"]["planVersion"], ">= 18");
+        assert_eq!(contract["requiredRuntimeFields"]["fightScheduleVersion"], 1);
         assert_eq!(contract["requiredRuntimeFields"]["stageOverridesV1"], true);
         for action in ["skip", "set", "restart"] {
             for index in [0, 1, i32::MAX] {
@@ -3681,7 +3779,7 @@ mod stage_override_transport_tests {
                     write_json_atomic(&path, &state, true).unwrap();
                     let supported = state["stageOverridesV1"].as_bool() == Some(true)
                         && state["stageTimingVersion"].as_u64() == Some(1)
-                        && state["planVersion"].as_u64().unwrap_or(0) >= 17;
+                        && state["planVersion"].as_u64().unwrap_or(0) >= 18;
                     let result = queue_command(dir.path(), "setPlanStage", args());
                     if supported {
                         let id = result.unwrap();
@@ -3830,7 +3928,12 @@ mod stage_override_transport_tests {
     fn absent_override_capability_never_blocks_disable_unload_or_quicksave() {
         let dir = tempfile::tempdir().unwrap();
         let mut state = runtime();
-        for field in ["stageOverridesV1", "stageTimingVersion", "planVersion"] {
+        for field in [
+            "stageOverridesV1",
+            "stageTimingVersion",
+            "fightScheduleVersion",
+            "planVersion",
+        ] {
             state.as_object_mut().unwrap().remove(field);
         }
         write_json_atomic(&dir.path().join("runtime.json"), &state, false).unwrap();
@@ -3874,8 +3977,11 @@ mod stage_timing_tests {
             for plan in [copy, merged] {
                 assert!(plan.get("ProtectedStageTiming").is_none());
                 assert_eq!(plan["Future"], source["Future"]);
-                assert_eq!(plan["Stages"], source["Stages"]);
-                assert_eq!(plan["Version"], 17);
+                assert_eq!(
+                    plan["Stages"],
+                    normalize_offline_plan(source.clone()).unwrap()["Stages"]
+                );
+                assert_eq!(plan["Version"], 18);
             }
         }
     }
@@ -3945,8 +4051,11 @@ mod stage_timing_tests {
                     let saved = read_json_object(&path, MAX_JSON_BYTES, false).unwrap();
                     assert_eq!(saved["StageDurationSeconds"], 0);
                     assert!(saved.get("ProtectedStageTiming").is_none());
-                    assert_eq!(saved["Version"], 17);
-                    assert_eq!(saved["Stages"], plan["Stages"]);
+                    assert_eq!(saved["Version"], 18);
+                    assert_eq!(
+                        saved["Stages"],
+                        normalize_offline_plan(plan.clone()).unwrap()["Stages"]
+                    );
                     assert_eq!(saved["Future"], plan["Future"]);
                     for legacy in [
                         json!({"StageDurationSeconds": 0}),
@@ -3986,7 +4095,7 @@ mod stage_timing_tests {
             false,
         )
         .unwrap();
-        assert_eq!(plan["Version"], 17);
+        assert_eq!(plan["Version"], 18);
         assert!(plan.get("ProtectedStageTiming").is_none());
         assert_eq!(protocol_info()["stageTimingVersion"], 1);
         for flag in [None, Some(false), Some(true)] {
@@ -4011,10 +4120,13 @@ mod stage_timing_tests {
             .unwrap();
             let saved = read_json_object(&path, MAX_JSON_BYTES, false).unwrap();
             assert!(saved.get("ProtectedStageTiming").is_none());
-            assert_eq!(saved["Version"], 17);
+            assert_eq!(saved["Version"], 18);
             assert_eq!(saved["StageDurationSeconds"], 100);
             assert_eq!(saved["Future"].to_string(), "1.2300e+42");
-            assert_eq!(saved["Stages"], source["Stages"]);
+            assert_eq!(
+                saved["Stages"],
+                normalize_offline_plan(source.clone()).unwrap()["Stages"]
+            );
         }
         let bad = json!({"Version": 14, "StageDurationSeconds": -1});
         assert!(tauri::async_runtime::block_on(create_plan(
@@ -4197,12 +4309,19 @@ mod stage_timing_tests {
         .unwrap();
         let fallback_checkpoint = dir
             .path()
-            .join(format!("stage-progress-{}.json", file_revision(b"default")));
+            .join(format!("stage-progress-{}.json", file_revision(b"24hr")));
         write_atomic(&fallback_checkpoint, completed, false).unwrap();
+        write_json_atomic(
+            &plan_path(dir.path(), "24hr").unwrap(),
+            &json!({"Version": 17, "Name": "24hr", "TimeTriggerSeconds": 86400,
+                "Stages": [{"Name": "NGU", "Percent": 1}]}),
+            false,
+        )
+        .unwrap();
         delete_plan_offline(dir.path(), name).unwrap();
         assert!(!checkpoint.exists());
-        assert!(!fallback_checkpoint.exists());
-        assert!(plan_path(dir.path(), "default").unwrap().exists());
+        assert_eq!(fs::read(&fallback_checkpoint).unwrap(), completed);
+        assert!(plan_path(dir.path(), "24hr").unwrap().exists());
         assert_eq!(fs::read(&source_checkpoint).unwrap(), completed);
     }
 
@@ -4361,7 +4480,7 @@ mod stage_timing_tests {
         )
         .unwrap();
         let mut runtime = json!({"externalUiEnabled": true, "status": "running", "protocolVersion": 3,
-            "planVersion": 17, "globalNguWeightsVersion": 1, "settingsCasVersion": 1, "updatedAt": Utc::now().to_rfc3339(), "supportedCommands": ["applySettingsPatch"]});
+            "planVersion": 18, "fightScheduleVersion": 1, "globalNguWeightsVersion": 1, "settingsCasVersion": 1, "updatedAt": Utc::now().to_rfc3339(), "supportedCommands": ["applySettingsPatch"]});
         for runtime_settings in [
             json!({}),
             json!({"customPlanFile": "protected", "useCustomRebirthPlan": true}),
@@ -4435,7 +4554,7 @@ mod stage_timing_tests {
         .unwrap();
         let settings_before = fs::read(&settings_path).unwrap();
         let mut runtime = json!({"externalUiEnabled": true, "status": "running", "protocolVersion": 3,
-            "planVersion": 17, "globalNguWeightsVersion": 1, "settings": {"customPlanFile": "protected"},
+            "planVersion": 18, "fightScheduleVersion": 1, "globalNguWeightsVersion": 1, "settings": {"customPlanFile": "protected"},
             "settingsCasVersion": 1, "supportedCommands": ["readPlan", "savePlan", "createPlan", "applySettingsPatch", "status", "quickSave", "unload"]});
         for runtime_version in [Value::Null, json!(16), json!("17"), json!(17), json!(18)] {
             runtime["planVersion"] = runtime_version;
@@ -4457,6 +4576,7 @@ mod stage_timing_tests {
                 runtime["updatedAt"] = json!(Utc::now().to_rfc3339());
                 write_json_atomic(&runtime_path, &runtime, true).unwrap();
                 for (command, args) in [
+                    ("readPlan", json!({"name": "protected"})),
                     (
                         "savePlan",
                         json!({"name": "new", "plan": protected, "expectedRevision": ""}),
@@ -4481,7 +4601,7 @@ mod stage_timing_tests {
                 ] {
                     let result = queue_command(dir.path(), command, args);
                     if runtime["stageTimingVersion"].as_u64() == Some(1)
-                        && runtime["planVersion"].as_u64().unwrap_or(0) >= 17
+                        && runtime["planVersion"].as_u64().unwrap_or(0) >= 18
                     {
                         let id = result.unwrap();
                         remove_if_present(&dir.path().join("commands").join(format!("{id}.json")))
@@ -4496,10 +4616,11 @@ mod stage_timing_tests {
                 }
             }
         }
-        runtime["planVersion"] = json!(17);
+        runtime["planVersion"] = json!(18);
         runtime["stageTimingVersion"] = json!(0);
         write_json_atomic(&runtime_path, &runtime, true).unwrap();
         for (command, args) in [
+            ("readPlan", json!({"name": "protected"})),
             ("savePlan", json!({"name": "new", "plan": {"Version": 14}})),
             (
                 "createPlan",
@@ -4517,9 +4638,11 @@ mod stage_timing_tests {
             assert!(queue_command(dir.path(), command, args)
                 .unwrap_err()
                 .contains("runtime.stageTimingVersion == 1"));
+            assert!(list_json_stems(&dir.path().join("commands"))
+                .unwrap()
+                .is_empty());
         }
         for (command, args) in [
-            ("readPlan", json!({"name": "protected"})),
             ("status", json!({})),
             ("quickSave", json!({})),
             ("unload", json!({})),
@@ -4649,12 +4772,13 @@ mod tests {
 
     #[test]
     fn plan_merge_preserves_history_unknown_fields_and_forces_name() {
-        let existing = json!({"Version": 14, "Name": "old", "Future": {"keep": 9}, "RebirthHistory": [{"id": 123}], "Stages": [1]});
-        let incoming = json!({"Name": "untrusted", "RebirthHistory": [], "Stages": [2]});
+        let existing = json!({"Version": 14, "Name": "old", "Future": {"keep": 9}, "RebirthHistory": [{"id": 123}], "Stages": [{"Future": 1}]});
+        let incoming =
+            json!({"Name": "untrusted", "RebirthHistory": [], "Stages": [{"Future": 2}]});
         assert_eq!(
             merge_plan(existing, &incoming, "safe-name").unwrap(),
             json!({
-                "Version": 17, "Name": "safe-name", "Future": {"keep": 9}, "RebirthHistory": [{"id": 123}], "Stages": [2],
+                "Version": 18, "Name": "safe-name", "Future": {"keep": 9}, "RebirthHistory": [{"id": 123}], "Stages": [{"Future": 2, "FightSchedule": null}],
                 "AutoIronPillEnabled": true,
             })
         );
@@ -5265,13 +5389,13 @@ mod tests {
         .unwrap();
         assert_eq!(
             copy,
-            json!({"Version": 17, "Name": "copy", "RebirthHistory": [], "Future": 42,
+            json!({"Version": 18, "Name": "copy", "RebirthHistory": [], "Future": 42,
             "AutoIronPillEnabled": true,
             })
         );
         assert!(prepare_plan_copy(json!([]), "copy").is_err());
         let mut plan = default_plan();
-        assert_eq!(plan["Version"], 17);
+        assert_eq!(plan["Version"], 18);
         validate_plan_durations(&plan).unwrap();
         plan["AutoRebirthEnabled"] = json!(true);
         assert_eq!(plan["StageSchedulerEnabled"], true);
@@ -5325,9 +5449,228 @@ mod tests {
     }
 
     #[test]
+    fn missing_plan_selection_checks_daily_plan_before_retiring_legacy_ngu_weights() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json_atomic(
+            &plan_path(dir.path(), "24hr").unwrap(),
+            &json!({"Version": 15, "EnergyNguWeights": vec![1; 9]}),
+            false,
+        )
+        .unwrap();
+        let error = require_durable_global_ngu_weights(dir.path(), &json!({}), None).unwrap_err();
+        assert!(
+            error.contains("durably migrate the selected legacy plan"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn optional_plan_prep_fields_roundtrip_without_changing_unknown_tokens() {
+        for seconds in [None, Some(json!(0)), Some(json!(i32::MAX))] {
+            for wandoos in [None, Some(json!(false)), Some(json!(true))] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut plan = json!({"Version": 17, "Future": 9007199254740993_u64,
+                    "Stages": [{"Name": "Time Machine", "Future": 9223372036854775807_u64}]});
+                if let Some(seconds) = &seconds {
+                    plan["RebirthPrepStartSeconds"] = seconds.clone();
+                }
+                if let Some(wandoos) = &wandoos {
+                    plan["Stages"][0]["UseWandoosWhenTimeMachineLocked"] = wandoos.clone();
+                }
+                let before = plan.to_string();
+                validate_plan_durations(&plan).unwrap();
+                validate_command("savePlan", &json!({"name": "copy", "plan": plan})).unwrap();
+                validate_command(
+                    "createPlan",
+                    &json!({"requestedName": "copy", "source": plan}),
+                )
+                .unwrap();
+                assert_eq!(plan.to_string(), before);
+                save_plan_offline(dir.path(), "copy", &plan, None).unwrap();
+                let readback: Value = serde_json::from_str(
+                    &read_plan_json(&plan_path(dir.path(), "copy").unwrap()).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(readback.get("RebirthPrepStartSeconds"), seconds.as_ref());
+                assert_eq!(
+                    readback["Stages"],
+                    normalize_offline_plan(plan.clone()).unwrap()["Stages"]
+                );
+                assert_eq!(readback["Future"].to_string(), "9007199254740993");
+            }
+        }
+    }
+
+    #[test]
+    fn rebirth_prep_start_seconds_accepts_exact_whole_tokens_without_rewriting() {
+        for token in [
+            "0",
+            "900",
+            "2147483647",
+            "900.0",
+            "9e2",
+            "9000e-1",
+            "-0.0",
+            "0e-400",
+            "2147483647.0",
+            "214748364700e-2",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let text = format!(
+                r#"{{"Version":17,"RebirthPrepStartSeconds":{token},"Stages":[{{"DurationSeconds":300}}],"Future":{{"large":900719925474099312345.123456789,"tiny":1e-400}}}}"#
+            );
+            let plan = parse_json_object(text.as_bytes(), "Plan").unwrap();
+            let before = plan.to_string();
+            let exact = plan["RebirthPrepStartSeconds"].to_string();
+            validate_plan_durations(&plan).unwrap_or_else(|error| panic!("{token}: {error}"));
+            validate_command("savePlan", &json!({"name": "copy", "plan": plan})).unwrap();
+            validate_command(
+                "createPlan",
+                &json!({"requestedName": "copy", "source": plan}),
+            )
+            .unwrap();
+            let copy = prepare_plan_copy(plan.clone(), "copy").unwrap();
+            assert_eq!(copy["RebirthPrepStartSeconds"].to_string(), exact);
+            assert_eq!(copy["Future"], plan["Future"]);
+            assert_eq!(plan.to_string(), before);
+
+            save_plan_offline(dir.path(), "copy", &plan, None).unwrap();
+            let path = plan_path(dir.path(), "copy").unwrap();
+            let stored = read_json_object(&path, MAX_JSON_BYTES, false).unwrap();
+            let readback: Value = serde_json::from_str(&read_plan_json(&path).unwrap()).unwrap();
+            for saved in [&stored, &readback] {
+                assert_eq!(saved["RebirthPrepStartSeconds"].to_string(), exact);
+                assert_eq!(saved["Future"], plan["Future"]);
+            }
+        }
+    }
+
+    #[test]
+    fn rebirth_prep_start_seconds_rejects_inexact_or_out_of_range_tokens_without_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = json!({"Version": 17, "RebirthPrepStartSeconds": 900,
+            "Stages": [{"DurationSeconds": 300}], "Future": 9007199254740993_u64});
+        save_plan_offline(dir.path(), "copy", &plan, None).unwrap();
+        let path = plan_path(dir.path(), "copy").unwrap();
+        let before = fs::read(&path).unwrap();
+        let revision = file_revision(&before);
+        for token in [
+            "1e-400",
+            "-1e-400",
+            "1.0000000000000001",
+            "2147483647.0000000001",
+            "2147483648",
+            "2.147483648e9",
+            "1e400",
+            "1e-9223372036854775809",
+            "-1",
+            "null",
+            "\"900\"",
+            "false",
+            "{}",
+            "[]",
+        ] {
+            let mut bad = plan.clone();
+            bad["RebirthPrepStartSeconds"] = serde_json::from_str(token).unwrap();
+            let error = validate_plan_durations(&bad).unwrap_err();
+            assert!(
+                error.contains("RebirthPrepStartSeconds"),
+                "{token}: {error}"
+            );
+            for (command, args) in [
+                ("savePlan", json!({"name": "copy", "plan": bad})),
+                (
+                    "createPlan",
+                    json!({"requestedName": "invalid", "source": bad}),
+                ),
+            ] {
+                assert_eq!(validate_command(command, &args).unwrap_err(), error);
+            }
+            assert_eq!(
+                save_plan_offline(dir.path(), "copy", &bad, Some(&revision)).unwrap_err(),
+                error
+            );
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn malformed_optional_plan_prep_fields_reject_writes_without_changing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = json!({"Version": 17, "Stages": [{"DurationSeconds": 300}]});
+        save_plan_offline(dir.path(), "copy", &plan, None).unwrap();
+        let path = plan_path(dir.path(), "copy").unwrap();
+        let before = fs::read(&path).unwrap();
+        let revision = file_revision(&before);
+        for (field, invalid_values) in [
+            (
+                "RebirthPrepStartSeconds",
+                vec![
+                    json!(null),
+                    json!(-1),
+                    json!(1.5),
+                    json!(2147483648_u64),
+                    json!("900"),
+                    json!(true),
+                    json!({}),
+                    json!([]),
+                ],
+            ),
+            (
+                "UseWandoosWhenTimeMachineLocked",
+                vec![
+                    json!(null),
+                    json!(0),
+                    json!(1),
+                    json!("true"),
+                    json!({}),
+                    json!([]),
+                ],
+            ),
+        ] {
+            for invalid in invalid_values {
+                let mut bad = plan.clone();
+                if field == "RebirthPrepStartSeconds" {
+                    bad[field] = invalid;
+                } else {
+                    bad["Stages"][0][field] = invalid;
+                }
+                let error = validate_plan_durations(&bad).unwrap_err();
+                assert!(error.contains(field), "{error}");
+                for (command, args) in [
+                    ("savePlan", json!({"name": "copy", "plan": bad})),
+                    (
+                        "createPlan",
+                        json!({"requestedName": "copy", "source": bad}),
+                    ),
+                ] {
+                    assert_eq!(validate_command(command, &args).unwrap_err(), error);
+                }
+                assert_eq!(
+                    save_plan_offline(dir.path(), "copy", &bad, Some(&revision)).unwrap_err(),
+                    error
+                );
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+        }
+    }
+
+    #[test]
     fn deletion_guards_builtins_last_plan_and_case_insensitive_running_selection() {
-        for name in ["default", "DEFAULT", "24hr", "1h-3m-rebirth", "Infinite"] {
-            assert!(validate_plan_deletion(name, &json!({}), 5).is_err());
+        for name in [
+            "24hr",
+            "15m-NUMBER-increase",
+            "30m-NUMBER-increase",
+            "1h-1m-NUMBER-increase",
+        ] {
+            for variant in [name.to_string(), name.to_uppercase(), name.to_lowercase()] {
+                assert!(validate_plan_deletion(&variant, &json!({}), 5)
+                    .unwrap_err()
+                    .contains("Built-in plans cannot be deleted"));
+            }
+        }
+        for name in ["default", "DEFAULT", "1h-3m-rebirth", "Infinite"] {
+            assert_eq!(validate_plan_deletion(name, &json!({}), 5).unwrap(), false);
         }
         assert!(validate_plan_deletion("copy", &json!({}), 1).is_err());
         assert!(validate_plan_deletion(
@@ -5371,26 +5714,90 @@ mod tests {
             )
             .unwrap();
         }
+        let fallback_path = plan_path(dir.path(), "24hr").unwrap();
+        let fallback = json!({"Version": 17, "Name": "24hr", "TimeTriggerSeconds": 86400,
+            "StageDurationSeconds": 86400, "Stages": [{"Name": "NGU", "Percent": 1}],
+            "RebirthHistory": [{"Future": 42}], "Future": 9007199254740993_u64});
+        write_json_atomic(&fallback_path, &fallback, false).unwrap();
+        let fallback_bytes = fs::read(&fallback_path).unwrap();
         let settings_path = dir.path().join("settings.json");
         let settings = json!({"_customPlanFile": "copy", "_useCustomRebirthPlan": false, "Future": {"keep": 42}});
         write_json_atomic(&settings_path, &settings, true).unwrap();
-        assert_eq!(delete_plan_offline(dir.path(), "copy").unwrap(), "default");
+        assert_eq!(delete_plan_offline(dir.path(), "copy").unwrap(), "24hr");
         assert!(!plan_path(dir.path(), "copy").unwrap().exists());
         assert!(plan_path(dir.path(), "other").unwrap().exists());
         let saved = read_json_object(&settings_path, MAX_JSON_BYTES, false).unwrap();
-        assert_eq!(saved["_customPlanFile"], "default");
+        assert_eq!(saved["_customPlanFile"], "24hr");
         assert_eq!(saved["_useCustomRebirthPlan"], false);
         assert_eq!(saved["Future"], settings["Future"]);
-        let fallback = read_json_object(
-            &plan_path(dir.path(), "default").unwrap(),
-            MAX_JSON_BYTES,
+        assert_eq!(fs::read(&fallback_path).unwrap(), fallback_bytes);
+        assert!(!plan_path(dir.path(), "default").unwrap().exists());
+        assert!(delete_plan_offline(dir.path(), "24hr").is_err());
+    }
+
+    #[test]
+    fn missing_daily_fallback_leaves_selected_plan_settings_and_progress_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let _lock = lock_offline_writer(dir.path()).unwrap();
+        for name in ["copy", "other"] {
+            write_json_atomic(
+                &plan_path(dir.path(), name).unwrap(),
+                &prepare_plan_copy(default_plan(), name).unwrap(),
+                false,
+            )
+            .unwrap();
+        }
+        let path = plan_path(dir.path(), "copy").unwrap();
+        let plan_bytes = fs::read(&path).unwrap();
+        let checkpoint = dir
+            .path()
+            .join(format!("stage-progress-{}.json", file_revision(b"copy")));
+        write_atomic(&checkpoint, b"progress", false).unwrap();
+        let settings_path = dir.path().join("settings.json");
+        write_json_atomic(
+            &settings_path,
+            &json!({"_customPlanFile": "copy", "_useCustomRebirthPlan": false, "Future": 42}),
             false,
         )
         .unwrap();
-        assert_eq!(fallback["Name"], "default");
-        assert_eq!(fallback["RebirthHistory"], json!([]));
-        assert!(!fallback["Stages"].as_array().unwrap().is_empty());
-        assert!(delete_plan_offline(dir.path(), "default").is_err());
+        let settings_bytes = fs::read(&settings_path).unwrap();
+        let error = delete_plan_offline(dir.path(), "copy").unwrap_err();
+        assert!(
+            error.contains("Cannot select fallback plan 24hr"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), plan_bytes);
+        assert_eq!(fs::read(&settings_path).unwrap(), settings_bytes);
+        assert_eq!(fs::read(&checkpoint).unwrap(), b"progress");
+        assert!(!plan_path(dir.path(), "24hr").unwrap().exists());
+        assert!(!plan_path(dir.path(), "default").unwrap().exists());
+    }
+
+    #[test]
+    fn offline_deletion_allows_retired_builtins_without_changing_another_selection() {
+        for name in ["default", "1h-3m-rebirth", "infinite"] {
+            let dir = tempfile::tempdir().unwrap();
+            for plan_name in [name, "other"] {
+                write_json_atomic(
+                    &plan_path(dir.path(), plan_name).unwrap(),
+                    &prepare_plan_copy(default_plan(), plan_name).unwrap(),
+                    false,
+                )
+                .unwrap();
+            }
+            let settings_path = dir.path().join("settings.json");
+            write_json_atomic(
+                &settings_path,
+                &json!({"_customPlanFile": "other", "_useCustomRebirthPlan": true}),
+                false,
+            )
+            .unwrap();
+            let settings_bytes = fs::read(&settings_path).unwrap();
+            assert_eq!(delete_plan_offline(dir.path(), name).unwrap(), "other");
+            assert!(!plan_path(dir.path(), name).unwrap().exists());
+            assert_eq!(fs::read(&settings_path).unwrap(), settings_bytes);
+            assert!(!plan_path(dir.path(), "24hr").unwrap().exists());
+        }
     }
 
     #[test]
@@ -5398,7 +5805,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _lock = lock_offline_writer(dir.path()).unwrap();
         let copy_path = plan_path(dir.path(), "copy").unwrap();
-        let fallback_path = plan_path(dir.path(), "default").unwrap();
+        let fallback_path = plan_path(dir.path(), "24hr").unwrap();
         write_json_atomic(&copy_path, &json!({"Name": "copy"}), false).unwrap();
         write_atomic(&fallback_path, b"{broken", false).unwrap();
         let settings_path = dir.path().join("settings.json");
@@ -5423,12 +5830,12 @@ mod tests {
     #[test]
     fn connected_plan_management_clears_copy_history_and_exposes_names() {
         let dir = tempfile::tempdir().unwrap();
-        let runtime = json!({"externalUiEnabled": true, "updatedAt": Utc::now().to_rfc3339(), "status": "running", "protocolVersion": 3, "planVersion": 17, "stageTimingVersion": 1, "globalNguWeightsVersion": 1, "supportedCommands": ["createPlan", "deletePlan"]});
+        let runtime = json!({"externalUiEnabled": true, "updatedAt": Utc::now().to_rfc3339(), "status": "running", "protocolVersion": 3, "planVersion": 18, "fightScheduleVersion": 1, "stageTimingVersion": 1, "globalNguWeightsVersion": 1, "supportedCommands": ["createPlan", "deletePlan"]});
         write_json_atomic(&dir.path().join("runtime.json"), &runtime, false).unwrap();
         let id = queue_command(
             dir.path(),
             "createPlan",
-            json!({"requestedName": "copy", "source": {"RebirthHistory": [1], "Future": 42}}),
+            json!({"requestedName": "copy", "source": {"Version": 18, "RebirthHistory": [1], "Future": 42}}),
         )
         .unwrap();
         let payload = read_json_object(
@@ -5437,6 +5844,7 @@ mod tests {
             false,
         )
         .unwrap();
+        assert_eq!(payload["args"]["source"]["Version"], 18);
         assert_eq!(payload["args"]["source"]["RebirthHistory"], json!([]));
         assert_eq!(payload["args"]["source"]["Future"], 42);
         for (id, command, data, field, name) in [
@@ -5450,9 +5858,9 @@ mod tests {
             (
                 queue_command(dir.path(), "deletePlan", json!({"name": "copy"})).unwrap(),
                 "deletePlan",
-                json!({"name": "copy", "selectedPlan": "default"}),
+                json!({"name": "copy", "selectedPlan": "24hr"}),
                 "selectedPlan",
-                "default",
+                "24hr",
             ),
         ] {
             let result = json!({"id": id, "command": command, "success": true, "message": "ok", "completedAt": Utc::now().to_rfc3339(), "data": data});
@@ -5592,14 +6000,14 @@ mod stage_adventure_weight_tests {
                 Some(json!(0.125)),
                 Some(json!(1000000)),
             ] {
-                let mut stage = json!({"DurationSeconds": 300, "Future": 9007199254740993_u64});
+                let mut stage = json!({"DurationSeconds": 300, "FightSchedule": null, "Future": 9007199254740993_u64});
                 if let Some(mode) = mode {
                     stage["ExecutionMode"] = json!(mode);
                 }
                 if let Some(weight) = weight {
                     stage["AdventureDynamicWeight"] = weight;
                 }
-                let plan = json!({"Version": 17, "Stages": [stage]});
+                let plan = json!({"Version": 18, "Stages": [stage]});
                 let before = serde_json::to_string(&plan).unwrap();
                 validate_plan_durations(&plan).unwrap();
                 validate_command("savePlan", &json!({"name": "weight", "plan": plan})).unwrap();
@@ -5688,7 +6096,10 @@ mod stage_adventure_weight_tests {
             plan["Stages"][0]["ExecutionMode"] = json!(mode);
             save_plan_offline(dir.path(), "weight", &plan, Some(&revision)).unwrap();
             let readback: Value = serde_json::from_str(&read_plan_json(&path).unwrap()).unwrap();
-            assert_eq!(readback["Stages"], plan["Stages"]);
+            assert_eq!(
+                readback["Stages"],
+                normalize_offline_plan(plan.clone()).unwrap()["Stages"]
+            );
             assert_eq!(
                 readback["Stages"][0]["AdventureDynamicWeight"],
                 json!(0.125)
@@ -5803,7 +6214,10 @@ mod duration_tests {
                 json!({"Version": 15, "Stages": [{"CompletionMode": 1, "Percent": 0}]}),
                 "Percent",
             ),
-            (json!({"Version": 15, "Stages": [null]}), "JSON object"),
+            (
+                json!({"Version": 15, "Stages": [null]}),
+                "Stage 1 must be an object",
+            ),
             (
                 json!({"Version": 15, "Stages": [{"DurationSeconds": i32::MAX}, {"DurationSeconds": 1}]}),
                 "Total fixed",
@@ -5830,7 +6244,7 @@ mod duration_tests {
     #[test]
     fn connected_write_validation_accepts_mixed_scales_and_at_sequences_losslessly() {
         let dir = tempfile::tempdir().unwrap();
-        let runtime = json!({"externalUiEnabled": true, "updatedAt": Utc::now().to_rfc3339(), "status": "running", "protocolVersion": 3, "planVersion": 17, "stageTimingVersion": 1, "globalNguWeightsVersion": 1, "supportedCommands": ["readPlan", "savePlan", "createPlan"]});
+        let runtime = json!({"externalUiEnabled": true, "updatedAt": Utc::now().to_rfc3339(), "status": "running", "protocolVersion": 3, "planVersion": 18, "fightScheduleVersion": 1, "stageTimingVersion": 1, "globalNguWeightsVersion": 1, "supportedCommands": ["readPlan", "savePlan", "createPlan"]});
         write_json_atomic(&dir.path().join("runtime.json"), &runtime, false).unwrap();
         let mut plans = vec![
             json!({"Version": 15, "StageDurationSeconds": 60, "Stages": [{"DurationSeconds": 20, "DurationUnit": "min", "Percent": 7}, {"Percent": 1}, {"Percent": 3}]}),
@@ -5858,7 +6272,7 @@ mod duration_tests {
                 let id = queue_command(dir.path(), command, args).unwrap();
                 let path = dir.path().join("commands").join(format!("{id}.json"));
                 let payload = read_json_object(&path, MAX_COMMAND_BYTES, false).unwrap();
-                let mut expected = plan.clone();
+                let mut expected = normalize_offline_plan(plan.clone()).unwrap();
                 if command == "createPlan" {
                     expected["RebirthHistory"] = json!([]);
                 }
@@ -6018,7 +6432,10 @@ mod duration_tests {
         .unwrap();
         let path = plan_path(dir.path(), &name).unwrap();
         let mut stored = read_json_object(&path, MAX_JSON_BYTES, false).unwrap();
-        assert_eq!(stored["Stages"], source["Stages"]);
+        assert_eq!(
+            stored["Stages"],
+            normalize_offline_plan(source.clone()).unwrap()["Stages"]
+        );
         assert_eq!(stored["Future"].to_string(), "1.2300e+42");
         assert_eq!(stored["RebirthHistory"], json!([]));
         assert!(stored.get(REVISION_FIELD).is_none());
@@ -6064,15 +6481,15 @@ mod duration_tests {
             false,
         )
         .unwrap();
-        assert_eq!(default["Version"], 17);
+        assert_eq!(default["Version"], 18);
         assert_eq!(default["Stages"], default_plan()["Stages"]);
     }
 
     #[test]
-    fn all_timed_writes_require_runtime_v17_but_read_commands_do_not() {
+    fn all_plan_reads_and_writes_require_runtime_v18() {
         let dir = tempfile::tempdir().unwrap();
         let runtime_path = dir.path().join("runtime.json");
-        let mut runtime = json!({"externalUiEnabled": true, "updatedAt": Utc::now().to_rfc3339(), "status": "running", "protocolVersion": 3, "stageTimingVersion": 1, "globalNguWeightsVersion": 1, "supportedCommands": ["readPlan", "savePlan", "createPlan"]});
+        let mut runtime = json!({"externalUiEnabled": true, "updatedAt": Utc::now().to_rfc3339(), "status": "running", "protocolVersion": 3, "stageTimingVersion": 1, "fightScheduleVersion": 1, "globalNguWeightsVersion": 1, "supportedCommands": ["readPlan", "savePlan", "createPlan"]});
         let fixed = json!({"Version": 15, "StageDurationSeconds": 100, "Stages": [
             {"DurationSeconds": 40, "DurationUnit": "h", "Percent": 1, "Future": {"keep": true}},
             {"DurationSeconds": 0, "DurationUnit": "%", "Percent": 3}
@@ -6092,15 +6509,15 @@ mod duration_tests {
             ] {
                 args[field] = fixed.clone();
                 let outcome = queue_command(dir.path(), command, args);
-                if version.unwrap_or(0) < 17 {
+                if version.unwrap_or(0) < 18 {
                     let err = outcome.unwrap_err();
-                    assert!(err.contains("runtime.planVersion >= 17"));
+                    assert!(err.contains("runtime.planVersion >= 18"));
                     assert!(!dir.path().join("commands").exists());
                 } else {
                     let id = outcome.unwrap();
                     let path = dir.path().join("commands").join(format!("{id}.json"));
                     let payload = read_json_object(&path, MAX_COMMAND_BYTES, false).unwrap();
-                    let mut expected = fixed.clone();
+                    let mut expected = normalize_offline_plan(fixed.clone()).unwrap();
                     if command == "createPlan" {
                         expected["RebirthHistory"] = json!([]);
                     }
@@ -6128,22 +6545,22 @@ mod duration_tests {
         ] {
             assert!(queue_command(dir.path(), command, args)
                 .unwrap_err()
-                .contains("runtime.planVersion >= 17"));
+                .contains("runtime.planVersion >= 18"));
         }
-        queue_command(dir.path(), "readPlan", json!({"name": "copy"})).unwrap();
+        assert!(queue_command(dir.path(), "readPlan", json!({"name": "copy"})).is_err());
         assert_eq!(
             fs::read_dir(dir.path().join("commands")).unwrap().count(),
-            1
+            0
         );
-        assert_eq!(protocol_info()["planVersion"], 17);
+        assert_eq!(protocol_info()["planVersion"], 18);
     }
 
     #[test]
-    fn connected_plan_v15_and_runtime_result_data_are_not_filtered() {
+    fn connected_canonical_plan_and_runtime_result_data_are_not_filtered() {
         let dir = tempfile::tempdir().unwrap();
         let id = Uuid::new_v4().to_string();
         let mut plan = default_plan();
-        plan["Version"] = json!(15);
+        plan["Version"] = json!(18);
         plan["Stages"][0]["DurationSeconds"] = json!(61);
         plan["Stages"][0]["DurationUnit"] = json!("min");
         plan[REVISION_FIELD] = json!(file_revision(b"original"));
@@ -6435,7 +6852,7 @@ mod protocol_tests {
     #[test]
     fn connected_revision_payload_and_plan_result_remain_lossless_and_bounded() {
         let dir = tempfile::tempdir().unwrap();
-        let runtime = json!({"externalUiEnabled": true, "updatedAt": Utc::now().to_rfc3339(), "status": "running", "protocolVersion": 3, "planVersion": 17, "stageTimingVersion": 1, "globalNguWeightsVersion": 1, "supportedCommands": ["readPlan", "savePlan", "createPlan"]});
+        let runtime = json!({"externalUiEnabled": true, "updatedAt": Utc::now().to_rfc3339(), "status": "running", "protocolVersion": 3, "planVersion": 18, "fightScheduleVersion": 1, "stageTimingVersion": 1, "globalNguWeightsVersion": 1, "supportedCommands": ["readPlan", "savePlan", "createPlan"]});
         write_json_atomic(&dir.path().join("runtime.json"), &runtime, false).unwrap();
         let new_id = queue_command(
             dir.path(),
@@ -6520,6 +6937,7 @@ mod protocol_tests {
             "18446744073709551616123456789"
         );
         let id = queue_command(dir.path(), "readPlan", json!({"name": "precise"})).unwrap();
+        plan = normalize_offline_plan(plan).unwrap();
         plan["FutureBlob"] = json!("x".repeat(ACTION_RESULT_MAX_BYTES as usize));
         let mut result = json!({"id": id, "command": "readPlan", "success": true, "message": "ok", "completedAt": Utc::now().to_rfc3339(), "data": {"plan": plan}});
         let result_path = dir

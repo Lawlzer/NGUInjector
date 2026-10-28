@@ -55,8 +55,9 @@ Previously saved fixed farming goals remain visible and editable, including comb
 Dynamic adventure is an ordinary weighted goal in the goal table, not a separate
 add-preset action. It can be combined with non-adventure goals without creating a new
 preset or rewriting existing farming definitions.
-AT ratios appear beside goals only while the Advanced Training weight is positive;
-disabling AT preserves its ratios. If an invalid ratio draft remains while AT is disabled,
+AT ratios appear beside goals while the Advanced Training weight is positive or
+reviewed Energy priorities include AT; allocation-only AT does not add a gear goal.
+Disabling AT preserves its ratios. If an invalid ratio draft remains while AT is disabled,
 a Reset AT ratios action offers recovery without enabling AT or silently discarding edits.
 Beards and diggers share a responsive two-column layout that stacks on smaller screens.
 Keep the Quick takeover warning and actionable
@@ -67,6 +68,14 @@ remain visible in a reset-only Saved overrides row; Reset to automatic explicitl
 the shared defaults (auto zone, auto blood split, five-second forecast setup cost).
 Unrelated edits do not silently rewrite existing overrides or change acquired policies.
 
+Gear goals and resource priorities are separate editors. Energy priorities and Magic
+priorities offer every supported activity independently of goal weights. Editing an
+order never adds, removes or reweights a gear goal. Reviewed orders fund #1 to its
+useful cap and pass only leftovers to #2 and later priorities. At the top of the selected
+preset, a conditional notice identifies resources that start with NGU but have no
+resource-production gear goal, explaining that Misc settings govern those NGUs.
+Empty orders and orders that start with another activity do not claim NGU-first behavior.
+
 ## Native Contracts
 
 - `read_preset_library({runtimeDir})` returns a JSON string containing
@@ -76,7 +85,10 @@ Unrelated edits do not silently rewrite existing overrides or change acquired po
 - `previewGlobalPreset` and `equipGlobalPreset` accept only
   `{presetId, libraryRevision}`. Apply additionally requires `{previewId, candidateKey}`.
 - Actions require a fresh same-folder injector session advertising
-  `globalPresetsVersion:2`, `globalNguWeightsVersion:1` and the relevant command. No action saves other drafts.
+   `globalPresetsVersion:2`, `globalNguWeightsVersion:1` and the relevant command. No action saves other drafts.
+- Reviewed resource priorities additionally require `resourceLanePrioritiesVersion:2`
+  in both the frontend and native queue, including when activating a plan. Version 1
+  cannot execute allocation-only priorities independently of gear/support goals.
 - Global weights have fourteen positions: energy NGU, magic NGU, blood, PP, boosts, zone,
   Time Machine, augments, Wandoos, advanced training, adventure power, adventure toughness,
   energy cap and magic cap. Legacy six-, ten- and twelve-entry weights pad

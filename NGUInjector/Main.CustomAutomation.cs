@@ -15,7 +15,6 @@ namespace NGUInjector
         private bool _customEquipmentApplicationInvalidated;
         private string _customStageEquipmentKey;
         private string _customStageFightKey;
-        private Func<bool> _customStageFightPreparationCurrent;
         private CustomPlan _customRuntimePlanCache;
         private string _customRuntimePlanCacheName;
         private DateTime _customRuntimePlanCacheLoadedAt = DateTime.MinValue;
@@ -126,6 +125,7 @@ namespace NGUInjector
                     && _protectedScheduler.Matches(plan) && ProtectedEpochMatches() ? _protectedScheduler : null;
                 root["stageEntry"] = history == null ? string.Empty
                     : _protectedGeneration + ":" + history.Entry.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                root["fightSchedule"] = history == null ? (JSONNode)JSONNull.CreateOrGet() : GetStageFightScheduleRuntime();
                 root["lastStageOverride"] = history?.LastOverride ?? string.Empty;
                 root["lastStageOverrideAt"] = history?.LastOverrideAt ?? 0;
                 var applied = history?.AppliedSeconds;
@@ -242,7 +242,9 @@ namespace NGUInjector
             {
                 var root = new JSONObject();
                 root["available"] = false;
+                root["status"] = "error";
                 root["reason"] = e.Message;
+                LogError("NGU allocation observation", e);
                 return root;
             }
         }
@@ -317,6 +319,13 @@ namespace NGUInjector
                 return;
 
             var runtime = CustomStageAllocator.GetActiveStage(plan);
+            if (!RetireObsoleteFightPreparation())
+            {
+                SuspendProtectedStageProgress();
+                SetCustomAutomationStatus(runtime == null ? "Previous fight preparation retirement is pending."
+                    : $"{runtime.Message}; previous fight preparation retirement is pending.");
+                return;
+            }
             if (runtime == null)
             {
                 if (CombatPrepCleanupRecoveryRequired || _protectedScheduler != null && !_protectedCheckpointDurable
@@ -373,7 +382,7 @@ namespace NGUInjector
                     return;
                 }
             }
-            if (TryRunCustomStageEntryFight(plan, runtime)) return;
+            if (ServiceStageFightSchedule(plan)) return;
 
             if (!string.IsNullOrEmpty(runtime.Stage.PresetId))
             {
@@ -422,65 +431,6 @@ namespace NGUInjector
             SetCustomAutomationStatus(BuildRuntimeStatus(plan, runtime, allocation));
         }
 
-        private bool TryRunCustomStageEntryFight(CustomPlan plan, CustomStageRuntime runtime)
-        {
-            if (!runtime.Stage.FightOnEntry) return false;
-            if (!Settings.UseCustomRebirthPlan || _protectedScheduler == null || _protectedScheduler.Finished
-                || _protectedPlanFile != Settings.CustomPlanFile || !_protectedScheduler.Matches(plan) || !ProtectedEpochMatches()
-                || runtime.StageIndex != _protectedScheduler.StageIndex
-                || runtime.EntryIdentity != _protectedGeneration + ":" + _protectedScheduler.Entry.ToString(System.Globalization.CultureInfo.InvariantCulture))
-                return false;
-            // Deadline edits do not create another entry; retain the existing persisted receipt key.
-            var fightKey = $"{Settings.CustomPlanFile}:{CustomStageRuntimeKey(plan, runtime)}";
-            var retry = _customStageFightKey == fightKey;
-            if (retry && _customStageFightPreparationCurrent?.Invoke() != true) return false;
-            if (ManualAdventureOwnsEquipment)
-            {
-                SuspendProtectedStageProgress();
-                SetCustomAutomationStatus($"{runtime.Message}; fight on entry waiting for manual adventure equipment ownership.");
-                return true;
-            }
-            if (!retry && ExecutionOwnsDomain(ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route
-                | ExecutionDomain.FiniteAction | ExecutionDomain.Inventory))
-            {
-                SuspendProtectedStageProgress();
-                SetCustomAutomationStatus($"{runtime.Message}; fight on entry waiting for preparation ownership.");
-                return true;
-            }
-            var previousFightKey = _customStageFightKey;
-            _customStageFightKey = fightKey;
-            SuspendProtectedStageProgress();
-            var receiptSaved = SaveProtectedStageProgress(true);
-            if (!receiptSaved)
-            {
-                _customStageFightKey = previousFightKey;
-                SetCustomAutomationStatus($"{runtime.Message}; fight on entry waiting for a durable entry receipt");
-                return true;
-            }
-            InvalidateInlineStageApplication();
-            var epoch = new LoadoutManager.SnapshotEpoch();
-            var scheduler = _protectedScheduler; var entry = ExecutionPersistenceEntry; var file = Settings.CustomPlanFile;
-            var requested = ActionIdentity("fight-preparation", "fight-preparation", fightKey);
-            try { SetCustomAutomationStatus(RunFightPrep(plan, false, false, $"{runtime.Message}; fight on entry", opportunity: fightKey)); }
-            finally
-            {
-                if (!retry)
-                {
-                    // The durable receipt prevents replay after reload. Only this
-                    // live, unstarted record may resume its original setup attempt.
-                    var preparation = _fightPreparationRecord;
-                    _customStageFightPreparationCurrent = () => epoch.Matches() && ReferenceEquals(scheduler, _protectedScheduler)
-                        && entry == ExecutionPersistenceEntry && Settings.UseCustomRebirthPlan && Settings.CustomPlanFile == file
-                        && ReferenceEquals(preparation, _fightPreparationRecord) && preparation?.Identity.Key == requested.Key
-                        && preparation.State == FiniteActionState.Prepared && !_fightPreparationStarted
-                        && (preparation.After == "acquired" || preparation.After == "selected" || preparation.After == "setup-ready");
-                }
-                if (runtime.Stage.ExecutionMode == (int) CustomStageExecutionMode.AutoAugmentsWandoos)
-                    SaveProtectedStageProgress(true); // Include synchronous/failed setup time, even with a stalled game clock.
-            }
-            return true;
-        }
-
         private void RunQuickCustomResourceRefresh(CustomPlan plan)
         {
             ReconcileCustomResources(plan);
@@ -519,8 +469,7 @@ namespace NGUInjector
             if (_customStageKey != stageKey)
                 return false;
 
-            if (_customEquipmentApplicationInvalidated || runtime.Stage.FightOnEntry
-                && _customStageFightKey != $"{Settings.CustomPlanFile}:{stageKey}")
+            if (_customEquipmentApplicationInvalidated)
                 return false;
 
             return !string.IsNullOrEmpty(runtime.Stage.PresetId)

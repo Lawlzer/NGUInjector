@@ -25,7 +25,9 @@ namespace NGUInjector.Managers
             root["capBasis"] = "last-allocation-pass";
             root["reason"] = "Misc global NGU weights are authoritative. Positive weights share up to buffered caps; zero excludes targets even from explicit NGU-n priorities. Outer priorities remain ordered.";
             root["globalNguWeightsVersion"] = 1;
-            root["available"] = Main.Character?.NGU != null;
+            var available = Main.Settings != null && Main.Character?.NGU != null;
+            root["available"] = available;
+            if (!available) return root;
             foreach (var energy in new[] {true, false})
             {
                 var weights = energy ? Main.Settings.EnergyNguWeights : Main.Settings.MagicNguWeights;
@@ -63,6 +65,13 @@ namespace NGUInjector.Managers
         {
             ExcessIdleEnergy = -1;
             ExcessIdleMagic = -1;
+        }
+
+        internal static void ResetAfterVerifiedSaveTestLoad()
+        {
+            NguBufferedCaps.Clear();
+            AppliedEnergyNguWeights = AppliedMagicNguWeights = null;
+            ResetExcessIdle();
         }
 
         internal static void ClearNguAppliedWeights(bool energy)

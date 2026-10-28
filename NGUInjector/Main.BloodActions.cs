@@ -80,12 +80,18 @@ namespace NGUInjector
             }
         }
 
-        private string BloodActionWindow(int cooldown) => ActionNumber((long)Math.Floor(Character.totalPlaytime.totalseconds / Math.Max(1, cooldown)));
+        private object _macguffinAttemptModel;
+        private string _macguffinAlphaAttempt, _macguffinBetaAttempt;
 
         internal void RequestThresholdBloodSpells(bool rebirth)
         {
             if (!Settings.CastBloodSpells || IronPillBloodReserved) return;
             var blood = Character.bloodMagic.bloodPoints;
+            if (!ReferenceEquals(_macguffinAttemptModel, Character.bloodMagic))
+            {
+                _macguffinAttemptModel = Character.bloodMagic;
+                _macguffinAlphaAttempt = _macguffinBetaAttempt = null;
+            }
             for (var beta = 1; beta >= 0; beta--)
             {
                 var isBeta = beta == 1;
@@ -96,13 +102,20 @@ namespace NGUInjector
                     : (int)((Math.Log(blood / minimum, 10d) + 1d) * Character.wishesController.totalBloodGuffbonus());
                 if (levels < threshold) continue;
                 var id = ActionIdentity(isBeta ? "blood-macguffin-b" : "blood-macguffin-a", "blood-spells",
-                    BloodActionWindow(isBeta ? Character.bloodSpells.macguffin2Cooldown : Character.bloodSpells.macguffin1Cooldown));
+                    ActionNumber((long)Math.Round(Character.totalPlaytime.totalseconds
+                        - (isBeta ? Character.bloodMagic.macguffin2Time.totalseconds : Character.bloodMagic.macguffin1Time.totalseconds))));
+                if ((isBeta ? _macguffinBetaAttempt : _macguffinAlphaAttempt) == id.Key) continue;
                 var action = new MacguffinBloodAction { Identity = id, Beta = isBeta, Blood = blood, Levels = levels,
                     BeforeLevels = Character.inventory.macguffins.Select(x => (long)x.level).ToArray(),
                     Footprint = ExecutionDomain.FiniteAction | ExecutionDomain.Magic | ExecutionDomain.Inventory };
                 var result = RunFiniteAction(action, ResolveExecutionGrant(id.Owner, id.Acquisition, action.Footprint,
                     () => Settings.CastBloodSpells && !IronPillBloodReserved));
-                if (result.Committed || result.Disposition == MutationDisposition.UnknownOutcome) return;
+                if (result.Invoked)
+                {
+                    if (isBeta) _macguffinBetaAttempt = id.Key;
+                    else _macguffinAlphaAttempt = id.Key;
+                    return;
+                }
             }
         }
     }

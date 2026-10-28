@@ -53,7 +53,7 @@ fn missing_and_null_overrides_inherit_without_read_migration_writes() {
                     "{field}, v{version}, null={explicit_null}"
                 );
             }
-            assert_eq!(normalized["Version"], 17);
+            assert_eq!(normalized["Version"], 18);
             assert_eq!(normalized["AutoIronPillEnabled"], true);
             assert_eq!(fs::read(&path).unwrap(), before);
             assert_eq!(normalized[REVISION_FIELD], file_revision(&before));

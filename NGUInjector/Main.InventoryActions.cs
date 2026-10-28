@@ -9,6 +9,12 @@ namespace NGUInjector
     internal partial class Main
     {
         internal enum ItemActionKind { Merge, Boost, Cube, Consume }
+        internal enum InventoryLeafOutcome { NoWork, Applied, RescanRequired }
+
+        internal sealed class InventoryRescanRequiredException : Exception
+        {
+            internal InventoryRescanRequiredException() : base("Inventory changed without verification; scan again on the next pass.") { }
+        }
 
         internal bool IsRetainedActionEquipment(Equipment item)
         {
@@ -40,6 +46,8 @@ namespace NGUInjector
             internal ItemActionKind Kind;
             internal ih Target;
             internal ih[] Donors;
+            internal Equipment[] BeforeInventory;
+            internal string[] BeforeInventoryMaterial;
             internal string BeforeMaterial;
             internal float CubePower, CubeToughness;
             internal string ExpectedObservation;
@@ -47,12 +55,19 @@ namespace NGUInjector
             internal float ExpectedCubePower, ExpectedCubeToughness;
             internal ExecutionGrant Grant;
             private ih[] Inventory() => Character.inventory.GetConvertedInventory().ToArray();
+            private bool InventoryMatches(bool after)
+            {
+                var current = Character.inventory.inventory;
+                return current.Count == BeforeInventory.Length && !BeforeInventory.Where((item, i) =>
+                    !(after && (i == Target?.slot || Donors.Any(x => x.slot == i)))
+                    && (!ReferenceEquals(current[i], item) || LoadoutPresetPrimitiveKey(current[i]) != BeforeInventoryMaterial[i])).Any();
+            }
             private ih FindTarget() => Character.inventory.GetConvertedEquips().Concat(Inventory())
                 .Concat(Character.inventory.macguffins.Select((x, i) => x.GetInventoryHelper(Controller.globalMacguffinID(i))))
                 .FirstOrDefault(x => x.slot == Target.slot);
             internal override bool Prerequisites()
             {
-                if (Controller.midDrag || Observe() != ExpectedObservation) return false;
+                if (Controller.midDrag || Observe() != ExpectedObservation || !InventoryMatches(false)) return false;
                 if (Kind != ItemActionKind.Cube && !ReferenceEquals(FindTarget()?.equipment, Target.equipment)) return false;
                 if (Kind == ItemActionKind.Consume && reference.IsRetainedActionEquipment(Target.equipment)) return false;
                 return Donors.All(x => !reference.IsRetainedActionEquipment(x.equipment));
@@ -114,28 +129,31 @@ namespace NGUInjector
                         && Character.inventory.cubeToughness == ExpectedCubeToughness
                     : consumed == 1 && ReferenceEquals(target?.equipment, Target.equipment)
                         && LoadoutPresetPrimitiveKey(Target.equipment) == ExpectedTargetMaterial;
-                if (committed) return error == null ? MutationDisposition.AppliedVerified : MutationDisposition.ModelAppliedRenderFailed;
+                if (committed && InventoryMatches(true))
+                    return error == null ? MutationDisposition.AppliedVerified : MutationDisposition.ModelAppliedRenderFailed;
                 return before == after && error == null ? MutationDisposition.RejectedUnchanged : MutationDisposition.UnknownOutcome;
             }
         }
 
-        internal bool RunInventoryLeaf(ItemActionKind kind, ih requested)
+        internal InventoryLeafOutcome RunInventoryLeaf(ItemActionKind kind, ih requested)
         {
-            if (Controller.midDrag) return false;
+            if (Controller.midDrag) return InventoryLeafOutcome.RescanRequired;
+            if (_focusSetupSelection?.PersistencePending == true
+                || RetainedExecutionPresetPolicies().Any(x => x.MaterialPersistencePending)) return InventoryLeafOutcome.RescanRequired;
             var inventory = Character.inventory.GetConvertedInventory().ToArray();
             var target = kind == ItemActionKind.Cube ? null : Character.inventory.GetConvertedEquips().Concat(inventory)
                 .Concat(Character.inventory.macguffins.Select((x, i) => x.GetInventoryHelper(Controller.globalMacguffinID(i))))
                 .FirstOrDefault(x => x.slot == requested.slot && ReferenceEquals(x.equipment, requested.equipment));
-            if (kind != ItemActionKind.Cube && target == null) return false;
-            if (target != null && target.slot >= Controller.curSpaces() && target.slot < 10000) return false;
+            if (kind != ItemActionKind.Cube && target == null) return InventoryLeafOutcome.RescanRequired;
+            if (target != null && target.slot >= Controller.curSpaces() && target.slot < 10000) return InventoryLeafOutcome.NoWork;
             var donors = inventory.Where(x => x.id > 0 && x.equipment.removable
                 && (kind == ItemActionKind.Merge ? x.id == target.id && !ReferenceEquals(x.equipment, target.equipment)
                     && (target.equipment.isMacGuffin() || x.level < 100 && target.level < 100)
                     && (!x.equipment.isBoost() || x.level + target.level <= 100 && !Character.inventory.itemList.itemMaxxed[x.id])
                 : kind == ItemActionKind.Boost ? x.equipment.isBoost() && !ReferenceEquals(x.equipment, target.equipment)
                 : kind == ItemActionKind.Cube ? x.equipment.isBoost() && x.slot < Controller.curSpaces() : false)).ToArray();
-            if (donors.Any(x => IsRetainedActionEquipment(x.equipment)) || kind == ItemActionKind.Consume && IsRetainedActionEquipment(target.equipment)) return false;
-            if (kind != ItemActionKind.Consume && donors.Length == 0) return false;
+            if (donors.Any(x => IsRetainedActionEquipment(x.equipment)) || kind == ItemActionKind.Consume && IsRetainedActionEquipment(target.equipment)) return InventoryLeafOutcome.NoWork;
+            if (kind != ItemActionKind.Consume && donors.Length == 0) return InventoryLeafOutcome.NoWork;
             var source = donors.FirstOrDefault();
             var expected = target == null ? null : (Equipment)typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(target.equipment, null);
             if (kind == ItemActionKind.Merge) expected.mergeItem(source.equipment);
@@ -145,13 +163,15 @@ namespace NGUInjector
                     var copy = (Equipment)typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(target.equipment, null);
                     return copy.boostEquip(item.equipment, Character.allItemList.boostBonus());
                 });
-                if (source == null) return false;
+                if (source == null) return InventoryLeafOutcome.NoWork;
                 expected.boostEquip(source.equipment, Character.allItemList.boostBonus());
             }
             if (kind == ItemActionKind.Merge && IsRetainedActionEquipment(target.equipment)
-                && Controller.checkItemTransform(expected) > 0) return false;
+                && Controller.checkItemTransform(expected) > 0) return InventoryLeafOutcome.NoWork;
             donors = source == null ? new ih[0] : new[] { source };
             var action = new InventoryLeafAction { Kind = kind, Target = target, Donors = donors,
+                BeforeInventory = Character.inventory.inventory.ToArray(),
+                BeforeInventoryMaterial = Character.inventory.inventory.Select(LoadoutPresetPrimitiveKey).ToArray(),
                 ChangesEquipmentMaterial = kind == ItemActionKind.Merge || kind == ItemActionKind.Boost,
                 ExpectedTargetMaterial = expected == null ? null : LoadoutPresetPrimitiveKey(expected),
                 Footprint = ExecutionDomain.FiniteAction | ExecutionDomain.Inventory | ExecutionDomain.Gear
@@ -164,43 +184,55 @@ namespace NGUInjector
             if (kind == ItemActionKind.Consume)
             {
                 var boundary = ResolveExecutionGrant("inventory", "inventory-page", ExecutionDomain.NativeSettings | ExecutionDomain.Inventory, () => !Controller.midDrag);
-                if (!ValidateExecutionGrant(boundary, boundary.Domains)) return false;
+                if (!ValidateExecutionGrant(boundary, boundary.Domains)) return InventoryLeafOutcome.RescanRequired;
                 Controller.changePage(target.slot / 60);
-                if (!ValidateExecutionGrant(boundary, boundary.Domains)) return false;
+                if (!ValidateExecutionGrant(boundary, boundary.Domains)) return InventoryLeafOutcome.RescanRequired;
             }
             action.ExpectedObservation = action.Observe();
             var id = ActionIdentity("item-" + kind + ":" + (target?.id ?? 0), "inventory", JsonFiles.ComputeRevision(System.Text.Encoding.UTF8.GetBytes(action.ExpectedObservation)));
             action.Identity = id;
             var reviseInline = CaptureInlineMaterialRevision(); var reviseFocus = CaptureFocusMaterialRevision(); var reviseCombat = CaptureCombatPrepMaterialRevision();
+            var applied = false;
             try
             {
                 action.Grant = ResolveExecutionGrant(id.Owner, id.Acquisition, action.Footprint, () => !Controller.midDrag);
                 var result = RunFiniteAction(action, action.Grant);
+                applied = result.Verified;
                 if (result.Verified)
                 {
                     reviseInline?.Invoke(); reviseFocus?.Invoke(); reviseCombat?.Invoke();
                     foreach (var policy in RetainedExecutionPresetPolicies().Where(x => x.Items != null && x.Material != null))
                     {
                         // Only this leaf's exact surviving target can revise acquired material.
-                        var changed = false;
+                        var revised = (string[])policy.Material.Clone(); var changed = false;
                         for (var i = 0; i < policy.Items.Length; i++)
                             if (target != null && ReferenceEquals(policy.Items[i], target.equipment) && policy.Material[i] == action.BeforeMaterial)
-                            { policy.Material[i] = action.ExpectedTargetMaterial; changed = true; }
-                        if (changed) ApproveExecutionPolicyMaterialRevision(policy);
+                            { revised[i] = action.ExpectedTargetMaterial; changed |= revised[i] != policy.Material[i]; }
+                        if (changed)
+                        {
+                            policy.Material = revised;
+                            ApproveExecutionPolicyMaterialRevision(policy);
+                        }
                     }
+                    if (_focusSetupSelection?.PersistencePending == true
+                        || RetainedExecutionPresetPolicies().Any(x => x.MaterialPersistencePending)) return InventoryLeafOutcome.RescanRequired;
                 }
-                return result.Verified;
+                // Even an unchanged native rejection ends this snapshot. Ineligible work
+                // returned NoWork above, before any native invocation was attempted.
+                return result.Verified ? InventoryLeafOutcome.Applied : InventoryLeafOutcome.RescanRequired;
             }
             finally
             {
-                if (kind == ItemActionKind.Consume && Controller.inventory[0].id / 60 == target.slot / 60)
+                if (kind == ItemActionKind.Consume && applied && Controller.inventory[0].id / 60 == target.slot / 60)
                 {
                     var boundary = ResolveExecutionGrant("inventory", "inventory-page-return", ExecutionDomain.NativeSettings | ExecutionDomain.Inventory, () => !Controller.midDrag);
-                    if (ValidateExecutionGrant(boundary, boundary.Domains))
-                    {
-                        Controller.changePage(page);
-                        ValidateExecutionGrant(boundary, boundary.Domains);
-                    }
+                    var nativeBoundary = CaptureFiniteActionBoundary(action);
+                    if (!ValidateExecutionGrant(boundary, boundary.Domains) || !FiniteActionBoundaryCurrent(nativeBoundary, false))
+                        throw new InventoryRescanRequiredException();
+                    Controller.changePage(page);
+                    if (!FiniteActionBoundaryCurrent(nativeBoundary, false) || !ValidateExecutionGrant(boundary, boundary.Domains)
+                        || action.Classify(action.ExpectedObservation, action.Observe(), null) != MutationDisposition.AppliedVerified)
+                        throw new InventoryRescanRequiredException();
                 }
             }
         }

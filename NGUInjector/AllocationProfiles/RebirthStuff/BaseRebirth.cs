@@ -271,10 +271,11 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
 
         internal bool DoRebirth()
         {
+            if (Main.reference == null || Main.reference.RebirthAttemptedThisPass
+                || CharObj.bossController.isFighting || CharObj.bossController.nukeBoss) return false;
             if (PreRebirth())
                 return false;
 
-            if (Main.reference == null) return false;
             try
             {
                 if (!Main.reference.PrepareFinalRebirthAction() || !Main.reference.RefreshFinalRebirthMultipliers()) return false;
@@ -309,10 +310,8 @@ namespace NGUInjector.AllocationProfiles.RebirthStuff
             }
 
             YggdrasilManager.CleanupOwnedHarvest();
-            Main.reference?.PurchaseActionDiggers();
-
             CastBloodSpells(true);
-            return Main.reference == null || !Main.reference.RebirthFinitePrerequisitesResolved;
+            return Main.reference == null;
         }
 
         protected void CastBloodSpells(bool rebirth)

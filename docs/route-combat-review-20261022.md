@@ -224,6 +224,20 @@ ran BEFORE production edits, PASS37 on
   restored capacity cannot invent refill. The scoped limit retires after actual
   native depletion; actual native generation under genuine later cap growth becomes
   fundable. No general unchanged-current-pool semantics were removed.
+- An actual verified owned gear swap in `ApplySelectedSetupCore` arms the existing
+  capacity-funding scope for its authorized Energy/Magic recall footprint, before
+  support callbacks and subsequent funding. Budget admission remains epoch/flag
+  scoped: stable, no-op, and gearless paths do not acquire native cap getters or
+  clip grown pools. This adds no recall authority or negative-accounting repair.
+  Mandatory manual-titan release limits remain unchanged. The focused
+  `PresetIntegration --ordinary-capacity-funding` fixture covers inline swaps,
+  immediate/delayed native clamps, native TM-only debt recovery, genuine capacity
+  growth, unmanaged lanes/basic training/R3, original scheduler commitments, and
+  full grown-pool funding after scope expiry or without any gear acquisition.
+  The earlier unconditional managed-lane cap admission failed the parent full gate
+  on grown-pool assertions and sparse native getters; it is not retained. The
+  revised scope and shared-runner manifest wiring await parent-owned verification;
+  no builds/tests or live changes were performed while revising this source.
 - `BeginExecutionCapacityPresetTransition` supplies selected-actuator VERIFIED
   progress evidence for the current receipt/owner/acquisition while a declared
   capacity claim is releasing. It does not publish a receipt or weaken the core

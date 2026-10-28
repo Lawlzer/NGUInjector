@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const plan = {
-  Name: 'test', Version: 17, __externalUiRevision: 'a'.repeat(64),
+  Name: 'test', Version: 18, __externalUiRevision: 'a'.repeat(64),
   GearGoal: 2, ActiveGoalPresetIndex: 1,
   GoalPresets: [{ Name: 'Fight', GearGoal: 9 }, { Name: 'NGU', GearGoal: 2 }, { Name: 'Time Machine', GearGoal: 5 }],
   Stages: [{ Name: 'Training', Percent: 100, CompletionMode: 1, TargetAdvancedTrainingPower: '9223372036854775806', TargetAdvancedTrainingToughness: '6000', FutureStageField: 'keep' }],

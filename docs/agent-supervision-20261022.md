@@ -1,5 +1,13 @@
 # Agent Supervision
 
+> Historical, non-operative supervision record. Do not resume the named agents,
+> nested loops, ownership assignments, waits or live orders below. Old commands
+> and results remain evidence for their original sources/artifacts only.
+> [Current WIP](../../wip.md), [agent workflow](agent-workflow.md) and the newer
+> [action/session contract](action-state-simplification-20261023.md) override stale
+> implementation/status/durability instructions. Use [Testing And Save Safety](testing.md)
+> for public commands; no deployment, live mutation or new acceptance is authorized here.
+
 ## User Direction
 
 Resume stopped or unfinished agents and require substantive implementations with

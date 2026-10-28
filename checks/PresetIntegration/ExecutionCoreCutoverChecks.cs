@@ -327,21 +327,14 @@ public static partial class PresetIntegrationChecks
 
     private static void CheckExecutionApprovedMaterialStorageRetry()
     {
-        var plan = SetupResourceCoordination(true, false, "none");
+        var plan = SetupResourceCoordination(true, false, "none", nativeBoost: true);
         Set(MainInstance, "_invManager", Activator.CreateInstance(Plugin.GetType("NGUInjector.Managers.InventoryManager", true), true));
         var receipt = Get(MainInstance, "_globalPresetReceipt"); var policy = Get(receipt, "Policy");
         var acquisition = Get(policy, "Acquisition"); var entry = Property(Get(MainInstance, "_protectedScheduler"), "Entry");
         var directory = Get(MainType, "_dir"); var file = System.IO.Path.Combine((string)Get(typeof(Program), "Temp"), "core-material-storage-parent-file");
         System.IO.File.WriteAllText(file, "not a directory");
         var effects = AutoBoostCalls; var head = Get(Get(Character, "inventory"), "head");
-        AutoBoostAction = () => {
-            Set(head, "curAttack", (float)Get(head, "curAttack") + 1f); Invoke(typeof(Program), "RefreshBonuses");
-            // The identified inventory leaf can approve its exact target before the
-            // outer observer returns; that must not hide the durable-write obligation.
-            var items = (Array)Get(policy, "Items"); var material = (string[])Get(policy, "Material");
-            for (var i = 0; i < items.Length; i++)
-                if (ReferenceEquals(items.GetValue(i), head)) material[i] = (string)CallMain("LoadoutPresetPrimitiveKey", head);
-        };
+        AutoBoostAction = () => ApplyPresetNativeBoost(head, expectedOutcome: "RescanRequired");
         try
         {
             Set(MainType, "_dir", file);
@@ -429,8 +422,8 @@ public static partial class PresetIntegrationChecks
         Equal(definition, Get(original, "Definition"), "paused resume preserves original definition");
         Equal(entry, Property(scheduler, "Entry"), "paused resume cannot create a new entry or budget");
         Equal(searches, PresetSearches, "paused AutoUpdate-false resume performs no replacement search");
-        var saved = JsonParse(System.IO.File.ReadAllText((string)Property(MainInstance, "StandaloneSelectionPath")));
-        Equal("false", Json(saved, "active").ToString(), "normal plan resume durably retires superseded dashboard intent");
+        Equal(null, Get(MainInstance, "_standaloneSelectedPolicy"), "normal plan resume retires superseded session-only dashboard intent");
+        Equal(false, System.IO.File.Exists(System.IO.Path.Combine((string)Get(MainType, "_dir"), "execution-selection.json")), "dashboard takeover and resume never create retired restart intent");
     }
 
     private static void CheckExecutionPresetUncontrolledLanes()

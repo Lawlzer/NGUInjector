@@ -20,6 +20,31 @@ namespace NGUInjector
         private FixtureQuestOwner _questManager;
         private bool _resourceReconciliationPending;
         private bool _resourceReconciliationRunning;
+        private int? _ordinaryRouteZone;
+        private int _ordinaryRouteStart, _ordinaryRouteEnd;
+        private bool _ordinaryRouteActuated, _ordinaryRouteIdle, _ordinaryRouteBeast;
+        private LoadoutManager.SnapshotEpoch _ordinaryRouteEpoch;
+        private object[] _ordinaryRouteObjects;
+        private FixtureInlineStageSelection _inlineStageSelection;
+        private sealed class FixtureInlineStageSelection { internal string Owner, Acquisition; }
+        // This harness acquires focus setups only; inline/native route witnesses must not be invented.
+        private bool InlineStageSelectionCurrent(FixtureInlineStageSelection selection) => selection == null ? false
+            : throw new NotSupportedException("Inline route authority is tested in the native fixture.");
+        private bool InlineStageRetirementObservationMatches(FixtureInlineStageSelection selection) => selection == null ? false
+            : throw new NotSupportedException("Inline route retirement is tested in the native fixture.");
+        private string ExecutionRebindPermissions() => throw new NotSupportedException("Route rebind authority is tested in the native fixture.");
+        private string RoutePermissionKey(string owner) => throw new NotSupportedException("Route permissions are tested in the native fixture.");
+        private string ExecutionPersistenceEntry => _checkScheduler?.Entry.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        private static object[] CombatPrepAdventureRouteObjects() => throw new NotSupportedException("Native route observations are tested in the native fixture.");
+        private bool ExecutionScopeNeedsReview(ExecutionDomain domains)
+        {
+            if ((_resourceSetupExecutor.Application.BlockedLanes & (int)domains & 7) != 0) return true;
+            return SelectedSetupConflicts.TryGetValue(Character, out var conflict) && conflict.Rebirth == Character.stats.rebirthNumber
+                && ((domains & ExecutionDomain.Gear) != 0 && conflict.Gear != null
+                    || (domains & ExecutionDomain.Support) != 0 && conflict.Support != null
+                    || (domains & ExecutionDomain.Route) != 0 && conflict.Route != null
+                    || (domains & ExecutionDomain.NativeSettings) != 0 && conflict.NativeSettings != null);
+        }
         private string _resourceDemandIdentity, _globalPresetManualId, _globalPresetNativeTargetConflict;
         private SelectedSetupRequirements _manualAdventureBaseline;
         private static double LoadoutPresetClock => System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
@@ -35,6 +60,8 @@ namespace NGUInjector
             internal ih[] TransitionGear;
             internal string[] TransitionMaterial;
             internal string TransitionSupport;
+            internal object[] RetirementResourceObjects, RetirementRouteObjects, RetirementSupportObjects;
+            internal bool RetirementLazyPurchased, RetirementLazyEnabled, RetirementAttack, RetirementBeast;
         }
         private sealed class FixturePresetRoute { internal int Zone, Floor; }
         private sealed class FixturePresetPolicy
@@ -49,6 +76,7 @@ namespace NGUInjector
         private sealed class FixturePresetDefinition { internal double[] Weights; }
         private static bool GlobalPresetEpochMatches(FixturePresetPolicy policy) => throw new NotSupportedException("Preset route authority is tested in the native fixture.");
         private bool GlobalPresetNativeTargetsMatch(CustomPlanStage stage, string owner) => throw new NotSupportedException("Preset native targets are tested in the native fixture.");
+        private bool GlobalPresetRetirementAllocationsMatch(FixturePresetReceipt receipt) => throw new NotSupportedException("Preset retirement allocations are tested in the native fixture.");
         private static string GlobalPresetSupportState() => CaptureSupportState().StableKey;
         private static string GlobalPresetAllocationState() => ResourceWriter.AllocatedResourceKey();
         private static string DelegatedManualRouteSettingsKey() => throw new NotSupportedException("Preset route authority is tested in the native fixture.");

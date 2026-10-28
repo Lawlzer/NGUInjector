@@ -58,6 +58,11 @@ namespace NGUInjector
             return result;
         }
 
+        private static bool SamePreset(JSONNode actual, JSONNode expected)
+        {
+            return actual.Count == expected.Count && expected.Linq.All(field => actual[field.Key].ToString() == field.Value.ToString());
+        }
+
         private static JSONObject LibraryRoot(int count)
         {
             var root = new JSONObject(); root["Version"] = 1; root["Presets"] = new JSONArray();
@@ -83,7 +88,7 @@ namespace NGUInjector
             var library = new PresetLibraryStore(runtime, plans);
             Assert(!File.Exists(Path.Combine(runtime, "presets.json")), "library construction is lazy");
             var rows = library.List();
-            Assert(rows.Length == 18, "seed contains eleven fixed specialists, adventure-dynamic and six composites");
+            Assert(rows.Length == 17, "seed contains eleven fixed specialists, adventure-dynamic and five composites");
             foreach (var i in new[] {0, 1, 2, 6, 7, 8, 9, 10, 11, 12, 13})
             {
                 var row = library.Get("builtin_" + PresetDefinitions.ObjectiveKeys[i]);
@@ -93,7 +98,7 @@ namespace NGUInjector
             Assert(adventure.Name == "adventure-dynamic" && adventure.AdventureDynamicWeight == 1 && adventure.Weights.SequenceEqual(new double[14]), "dynamic seed round trips through the library");
             Assert(library.Get("builtin_adventurePower").Weights[10] == 1 && library.Get("builtin_adventureToughness").Weights[11] == 1, "adventure specialist IDs use appended objective indices");
             Assert(library.Get("builtin_adventureStats").Weights.SequenceEqual(new double[] {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0}), "Adventure Stats weights only power and toughness");
-            Assert(library.Get("builtin_balanced").Weights.SequenceEqual(Enumerable.Repeat(1d, 12).Concat(new double[2])), "Balanced includes the old twelve objectives but leaves caps opt-in");
+            Assert(library.Get("builtin_balanced") == null, "fresh libraries no longer seed Balanced");
             Assert(library.Get("builtin_atAdventure").AdvancedTrainingWeights.SequenceEqual(new[] {1, 1, 0, 0, 0}), "AT Adventure targets adventure pair");
             Assert(library.Get("builtin_atWandoos").AdvancedTrainingWeights.SequenceEqual(new[] {0, 0, 0, 1, 1}), "AT Wandoos targets Wandoos pair");
             Assert(rows.All(row => row.AutoUpdate && !row.ToJson().Linq.Any(field => field.Key == "EnergyNguWeights" || field.Key == "MagicNguWeights")), "seed uses ratio-free schema defaults");
@@ -156,9 +161,10 @@ namespace NGUInjector
                 var root = LibraryRoot(1); root["MigrationReceipts"] = JsonFiles.ParseObject("{\"historical\":{\"PresetId\":\"deleted\",\"future\":9007199254740993}}");
                 root["futureRoot"] = JsonFiles.ParseObject("{\"value\":1.2300e+004}")["value"];
                 var seeds = PresetDefinitions.SeedRows();
-                foreach (var seed in seeds.Children.Take(16 + existingCaps))
+                foreach (var seed in seeds.Children.Take(15 + existingCaps))
                 {
                     var row = JsonFiles.ParseObject(seed.ToString());
+                    foreach (var field in new[] {"ResourcePrioritiesReviewed", "EnergyPriorities", "MagicPriorities"}) row.Remove(field);
                     if (row["Weights"].Children.Skip(12).All(weight => weight.AsDouble == 0))
                     {
                         var weights = new JSONArray(); foreach (var weight in row["Weights"].Children.Take(12)) weights.Add(weight);
@@ -173,30 +179,30 @@ namespace NGUInjector
                 var receipts = root["MigrationReceipts"].ToString();
                 var path = Path.Combine(runtime, "presets.json"); File.WriteAllText(path, root.ToString(4));
                 var library = new PresetLibraryStore(runtime, plans); var rows = library.List(); var read = library.ReadExternalLibrary();
-                Assert(rows.Length == 19 && rows.Select(row => row.Id).Distinct().Count() == rows.Length, "cap addition appends only missing IDs: " + existingCaps);
-                Assert(expected.All(row => read["Presets"].Children.Single(saved => saved["Id"].Value == row["Id"].Value).ToString() == row.ToString()),
+                Assert(rows.Length == 18 && rows.Select(row => row.Id).Distinct().Count() == rows.Length, "cap addition appends only missing IDs: " + existingCaps);
+                Assert(expected.All(row => SamePreset(read["Presets"].Children.Single(saved => saved["Id"].Value == row["Id"].Value), row)),
                     "cap addition preserves every existing row, ID, edit and unknown token: " + existingCaps);
                 Assert(read["CapPresetsAdded"].AsBool && read["MigrationReceipts"].ToString() == receipts && read["futureRoot"].Value == "1.2300e+004",
                     "addition preserves receipts and root extensions and records durable application");
-                foreach (var seed in seeds.Children.Skip(16 + existingCaps))
-                    Assert(read["Presets"].Children.Single(row => row["Id"].Value == seed["Id"].Value).ToString() == CustomLoadoutPreset.Parse(seed).ToJson().ToString(),
+                foreach (var seed in seeds.Children.Skip(15 + existingCaps))
+                    Assert(SamePreset(read["Presets"].Children.Single(row => row["Id"].Value == seed["Id"].Value), CustomLoadoutPreset.Parse(seed).ToJson()),
                         "missing cap receives the shared current-support auto-update definition");
                 var bytes = File.ReadAllBytes(path);
-                Assert(new PresetLibraryStore(runtime, plans).List().Length == 19 && bytes.SequenceEqual(File.ReadAllBytes(path)), "upgrade restart performs no write");
+                Assert(new PresetLibraryStore(runtime, plans).List().Length == 18 && bytes.SequenceEqual(File.ReadAllBytes(path)), "upgrade restart performs no write");
 
                 read["Presets"] = Without(read["Presets"], "builtin_magicCap"); read.Remove("CapPresetsAdded"); read.Remove("MigrationReceipts");
                 var energy = read["Presets"].Children.Single(row => row["Id"].Value == "builtin_energyCap");
                 energy["Name"] = "My energy cap"; energy["Weights"][12] = 7; energy["AutoUpdate"] = false; energy["SupportMode"] = "planned";
                 library.SaveExternalLibrary(read, Revision(read)); bytes = File.ReadAllBytes(path);
                 library = new PresetLibraryStore(runtime, plans); read = library.ReadExternalLibrary();
-                Assert(library.Get("builtin_magicCap") == null && library.Get("builtin_energyCap").ToJson().ToString() == energy.ToString()
+                Assert(library.Get("builtin_magicCap") == null && SamePreset(library.Get("builtin_energyCap").ToJson(), energy)
                     && bytes.SequenceEqual(File.ReadAllBytes(path)), "cap edits and deletion survive read and restart without rewriting");
                 Assert(read["CapPresetsAdded"].AsBool && read["MigrationReceipts"].ToString() == receipts, "external omission cannot remove injector-owned migration state");
 
                 read["Presets"] = Without(read["Presets"], "builtin_energyCap"); read["CapPresetsAdded"] = false;
                 library.SaveExternalLibrary(read, Revision(read)); bytes = File.ReadAllBytes(path);
                 library = new PresetLibraryStore(runtime, plans);
-                Assert(library.List().Length == 17 && library.Get("builtin_energyCap") == null && library.Get("builtin_magicCap") == null
+                Assert(library.List().Length == 16 && library.Get("builtin_energyCap") == null && library.Get("builtin_magicCap") == null
                     && bytes.SequenceEqual(File.ReadAllBytes(path)), "deleting both caps while old built-ins remain never re-adds them");
                 read = library.ReadExternalLibrary(); read["Presets"] = new JSONArray(); read["CapPresetsAdded"] = new JSONObject();
                 library.SaveExternalLibrary(read, Revision(read)); bytes = File.ReadAllBytes(path);
@@ -215,6 +221,181 @@ namespace NGUInjector
                 read["CapPresetsAdded"] = true; library.SaveExternalLibrary(read, Revision(read));
                 Assert(!library.ReadExternalLibrary().Linq.Any(field => field.Key == "CapPresetsAdded"), "external saves cannot forge a catalog-addition marker");
             }
+        }
+
+        private static void ResourcePriorityCatalogUpgrade()
+        {
+            var priorityFields = new[] {"ResourcePrioritiesReviewed", "EnergyPriorities", "MagicPriorities"};
+            foreach (var full in new[] {false, true})
+            foreach (var explicitBeards in new[] {false, true})
+            foreach (var width in new[] {6, 10, 12, 14})
+            {
+                var runtime = DirectoryFor("priority-upgrade-" + full + "-" + explicitBeards + "-" + width);
+                var plans = Path.Combine(runtime, "plans"); Directory.CreateDirectory(plans);
+                var root = LibraryRoot(0); root["CapPresetsAdded"] = true;
+                root["MigrationReceipts"] = JsonFiles.ParseObject("{\"historical-hash\":{\"PresetId\":\"deleted_import\",\"Source\":\"legacy\",\"Kind\":\"loadout:old\",\"future\":9007199254740993}}");
+                root["futureRoot"] = JsonFiles.ParseObject("{\"decimal\":1.234567890123456789,\"exponent\":1.2300e+004}");
+                foreach (var row in PresetDefinitionChecks.BeforeResourcePriorityRows(full, explicitBeards).Children)
+                {
+                    if (row["Weights"].Children.Skip(width).Any(weight => weight.AsDouble > 0)) continue;
+                    var weights = new JSONArray(); foreach (var weight in row["Weights"].Children.Take(width)) weights.Add(weight);
+                    while (weights.Count < width) weights.Add(0);
+                    row["Weights"] = weights; root["Presets"].Add(row);
+                }
+                var expected = root["Presets"].Children.Select(row => CustomLoadoutPreset.Parse(row).ToJson()).ToArray();
+                var path = Path.Combine(runtime, "presets.json"); File.WriteAllText(path, root.ToString(4));
+                var library = new PresetLibraryStore(runtime, plans); var read = library.ReadExternalLibrary();
+                Assert(read["Presets"].Children.Select(row => row["Id"].Value).SequenceEqual(expected.Select(row => row["Id"].Value)),
+                    "priority upgrade iterates saved rows only, preserving order and deleted IDs");
+                foreach (var prior in expected)
+                {
+                    var row = read["Presets"].Children.Single(saved => saved["Id"].Value == prior["Id"].Value);
+                    var current = PresetDefinitions.SeedRows().Children.Single(seed => seed["Id"].Value == prior["Id"].Value);
+                    Assert(row.Count == prior.Count + 3 && priorityFields.All(field => row[field].ToString() == current[field].ToString()),
+                        "eligible old definition gains exactly three reviewed priority fields: " + prior["Id"].Value);
+                    Assert(prior.Linq.All(field => row[field.Key].ToString() == field.Value.ToString()),
+                        "priority upgrade retains every normalized prior setup field: " + prior["Id"].Value);
+                }
+                var persisted = JsonFiles.ParseObject(File.ReadAllText(path));
+                Assert(persisted.Count == root.Count && persisted["MigrationReceipts"].ToString() == root["MigrationReceipts"].ToString()
+                    && persisted["futureRoot"].ToString() == root["futureRoot"].ToString(), "priority upgrade preserves receipt identities and root tokens without a new marker");
+                var bytes = File.ReadAllBytes(path);
+                Assert(new PresetLibraryStore(runtime, plans).List().Length == expected.Length && bytes.SequenceEqual(File.ReadAllBytes(path)),
+                    "reviewed priority upgrade is idempotent and restart does not write");
+                library.SaveExternalLibrary(read, Revision(read)); bytes = File.ReadAllBytes(path);
+                read = new PresetLibraryStore(runtime, plans).ReadExternalLibrary();
+                Assert(read["MigrationReceipts"].ToString() == root["MigrationReceipts"].ToString() && bytes.SequenceEqual(File.ReadAllBytes(path)),
+                    "priority upgrade save and restart leave historical receipts unchanged");
+            }
+        }
+
+        private static void ResourcePriorityEditsPreserved()
+        {
+            void CheckUnchanged(JSONArray rows, string label)
+            {
+                var runtime = DirectoryFor("priority-preserve-" + Guid.NewGuid().ToString("N"));
+                var plans = Path.Combine(runtime, "plans"); Directory.CreateDirectory(plans);
+                var root = LibraryRoot(0); root["CapPresetsAdded"] = true; root["Presets"] = rows;
+                root["MigrationReceipts"] = JsonFiles.ParseObject("{\"old\":{\"PresetId\":\"deleted\",\"exact\":1.2300e+004}}");
+                var expected = rows.Children.Select(row => CustomLoadoutPreset.Parse(row).ToJson()).ToArray();
+                var path = Path.Combine(runtime, "presets.json"); File.WriteAllText(path, root.ToString(4)); var bytes = File.ReadAllBytes(path);
+                var library = new PresetLibraryStore(runtime, plans); var read = library.ReadExternalLibrary();
+                Assert(read["Presets"].Count == expected.Length && read["Presets"].Children.Zip(expected, SamePreset).All(equal => equal),
+                    "migration preserves every normalized row for " + label);
+                Assert(read["MigrationReceipts"].ToString() == root["MigrationReceipts"].ToString() && bytes.SequenceEqual(File.ReadAllBytes(path)),
+                    "nonmatching or explicit priorities cause no write: " + label);
+                Assert(new PresetLibraryStore(runtime, plans).List().Length == expected.Length && bytes.SequenceEqual(File.ReadAllBytes(path)),
+                    "nonmatching or explicit priorities remain unchanged after restart: " + label);
+            }
+
+            foreach (var full in new[] {false, true})
+            foreach (var explicitBeards in new[] {false, true})
+            foreach (var field in new[] {"Id", "Name", "Weights", "AdventureDynamicWeight", "AutoUpdate", "AdvancedTrainingWeights", "MagicBloodPercent", "SupportMode",
+                "DiggerBudgetPercent", "Zone", "MinimumPower", "MinimumToughness", "SwapSeconds", "BeardPriority", "BeardRotation", "DiggerWeights", "Unknown", "UnknownNull", "energyPriorities"})
+            {
+                var rows = PresetDefinitionChecks.BeforeResourcePriorityRows(full, explicitBeards);
+                foreach (var row in rows.Children)
+                    switch (field)
+                    {
+                        case "Id": row[field] = "copy_" + row[field].Value; break;
+                        case "Name": row[field] = "Edited " + row[field].Value; break;
+                        case "Weights": row[field][0] = row[field][0].AsDouble + 2; break;
+                        case "AdventureDynamicWeight": row[field] = 2.5; break;
+                        case "AutoUpdate": row[field] = false; break;
+                        case "AdvancedTrainingWeights": row[field] = JSON.Parse("[1,2,3,4,5]"); break;
+                        case "MagicBloodPercent": row[field] = 50; break;
+                        case "SupportMode": row[field] = row["Id"].Value.EndsWith("Cap") ? "planned" : "current"; break;
+                        case "DiggerBudgetPercent": row[field] = 80; break;
+                        case "Zone": row[field] = 7; break;
+                        case "MinimumPower": case "MinimumToughness": row[field] = 123.5; break;
+                        case "SwapSeconds": row[field] = 6; break;
+                        case "BeardPriority": row[field] = JSON.Parse(explicitBeards ? "[3,5,6]" : "[1]"); break;
+                        case "BeardRotation": row[field] = JSON.Parse(explicitBeards ? "[0,2]" : "[]"); break;
+                        case "DiggerWeights": row[field] = JSON.Parse("[1,0,0,0,0,0,0,0,0,0,0,0]"); break;
+                        case "Unknown": row[field] = JsonFiles.ParseObject("{\"integer\":9223372036854775807,\"decimal\":1.234567890123456789,\"exponent\":1.2300e+004}"); break;
+                        case "UnknownNull": row[field] = JSONNull.CreateOrGet(); break;
+                        case "energyPriorities": row[field] = JSON.Parse("[\"NGU\"]"); break;
+                    }
+                CheckUnchanged(rows, field + "/full=" + full + "/explicitBeards=" + explicitBeards);
+            }
+            foreach (var field in new[] {"Weights", "AdvancedTrainingWeights"})
+            for (var lane = 0; lane < (field == "Weights" ? 14 : 5); lane++)
+            {
+                var rows = PresetDefinitionChecks.BeforeResourcePriorityRows(true, true);
+                foreach (var row in rows.Children) row[field][lane] = row[field][lane].AsDouble + 1;
+                CheckUnchanged(rows, field + " lane " + lane);
+            }
+            foreach (var fields in new[] {
+                "{\"ResourcePrioritiesReviewed\":false}",
+                "{\"EnergyPriorities\":[],\"MagicPriorities\":[]}",
+                "{\"EnergyPriorities\":[],\"MagicPriorities\":[],\"ResourcePrioritiesReviewed\":false}",
+                "{\"EnergyPriorities\":[],\"MagicPriorities\":[],\"ResourcePrioritiesReviewed\":true}",
+                "{\"EnergyPriorities\":[\"TM\",\"NGU\"],\"MagicPriorities\":[\"RIT\"]}",
+                "{\"EnergyPriorities\":[\"TM\",\"NGU\"],\"MagicPriorities\":[\"RIT\"],\"ResourcePrioritiesReviewed\":false}",
+                "{\"EnergyPriorities\":[\"TM\",\"NGU\"],\"MagicPriorities\":[\"RIT\"],\"ResourcePrioritiesReviewed\":true}"})
+            foreach (var explicitBeards in new[] {false, true})
+            {
+                var rows = PresetDefinitionChecks.BeforeResourcePriorityRows(true, explicitBeards);
+                foreach (var row in rows.Children)
+                    foreach (var field in JsonFiles.ParseObject(fields)) row[field.Key] = field.Value;
+                CheckUnchanged(rows, "explicit priorities " + fields);
+            }
+            foreach (var reviewed in new[] {"absent", "false", "true"})
+            {
+                var rows = PresetDefinitions.SeedRows();
+                foreach (var row in rows.Children)
+                    if (reviewed == "absent") row.Remove("ResourcePrioritiesReviewed");
+                    else row["ResourcePrioritiesReviewed"] = reviewed == "true";
+                CheckUnchanged(rows, "explicit catalog-matching arrays with review=" + reviewed);
+            }
+            var custom = PresetDefinitionChecks.BeforeResourcePriorityRows(true, true);
+            foreach (var row in custom.Children) row["Id"] = "builtin_unknown_" + row["Id"].Value;
+            CheckUnchanged(custom, "unknown builtin-prefixed IDs");
+            custom = PresetDefinitionChecks.BeforeResourcePriorityRows(true, true);
+            foreach (var row in custom.Children) row.Remove("BeardRotation");
+            CheckUnchanged(custom, "core beards without explicit rotation are not a historical variant");
+            foreach (var field in new[] {"BeardPriority", "BeardRotation"})
+            {
+                custom = PresetDefinitionChecks.BeforeResourcePriorityRows(true, true);
+                foreach (var row in custom.Children) row[field] = JSON.Parse(field == "BeardPriority" ? "[3,1,5,6]" : "[4,2,0]");
+                CheckUnchanged(custom, "reordered " + field + " is a custom beard choice");
+            }
+
+            var runtime = DirectoryFor("priority-deletions"); var plans = Path.Combine(runtime, "plans"); Directory.CreateDirectory(plans);
+            var root = LibraryRoot(0); root["CapPresetsAdded"] = true;
+            root["Presets"].Add(PresetDefinitionChecks.BeforeResourcePriorityRows(false, false)[0]);
+            root["MigrationReceipts"] = JsonFiles.ParseObject("{\"old\":{\"PresetId\":\"builtin_allNgu\"},\"balanced\":{\"PresetId\":\"builtin_balanced\"}}");
+            var path = Path.Combine(runtime, "presets.json"); File.WriteAllText(path, root.ToString(4));
+            var library = new PresetLibraryStore(runtime, plans); var read = library.ReadExternalLibrary();
+            Assert(library.List().Length == 1 && library.Get("builtin_allNgu") == null && library.Get("builtin_balanced") == null,
+                "priority upgrade never resurrects deleted catalog rows, including Balanced");
+            read["Presets"] = new JSONArray(); library.SaveExternalLibrary(read, Revision(read)); var bytes = File.ReadAllBytes(path);
+            read = new PresetLibraryStore(runtime, plans).ReadExternalLibrary();
+            Assert(read["Presets"].Count == 0 && read["MigrationReceipts"].ToString() == root["MigrationReceipts"].ToString() && bytes.SequenceEqual(File.ReadAllBytes(path)),
+                "deleting all upgraded rows preserves deletion and receipt identities without a migration marker");
+        }
+
+        private static void SavedBalancedAncestry()
+        {
+            var runtime = DirectoryFor("saved-balanced"); var plans = Path.Combine(runtime, "plans"); Directory.CreateDirectory(plans);
+            var root = LibraryRoot(0);
+            var balanced = JsonFiles.ParseObject("{\"Id\":\"builtin_balanced\",\"Name\":\"Balanced\",\"Weights\":[1,1,1,1,1,1,1,1,1,1,1,1]}");
+            root["Presets"].Add(balanced); root["MigrationReceipts"] = JsonFiles.ParseObject("{\"old\":{\"PresetId\":\"deleted\",\"future\":9007199254740993}}");
+            var path = Path.Combine(runtime, "presets.json"); File.WriteAllText(path, root.ToString(4));
+            var raw = Legacy(99); raw["ActivePresetId"] = "builtin_balanced"; raw["Stages"][0]["PresetId"] = "@active"; raw["LoadoutPresets"] = new JSONArray();
+            var planPath = Path.Combine(plans, "balanced.json"); File.WriteAllText(planPath, raw.ToString(4)); var planBytes = File.ReadAllBytes(planPath);
+            var library = new PresetLibraryStore(runtime, plans); var read = library.ReadExternalLibrary();
+            Assert(library.List().Select(row => row.Id).SequenceEqual(new[] {"builtin_balanced", "builtin_energyCap", "builtin_magicCap"}) && read["CapPresetsAdded"].AsBool,
+                "Balanced-only libraries retain historical cap-add ancestry without reseeding the catalog");
+            Assert(library.Get("builtin_balanced").ToJson().ToString() == CustomLoadoutPreset.Parse(balanced).ToJson().ToString()
+                && read["MigrationReceipts"].ToString() == root["MigrationReceipts"].ToString(), "saved Balanced remains unchanged, including old goals and no new priority policy");
+            var plan = CustomPlanStore.ReadForPresetMigration(raw.ToString(), "balanced"); library.MigratePlan(plan, "balanced"); library.ValidateReferences(plan);
+            Assert(plan.ActivePresetId == "builtin_balanced" && plan.Stages[0].PresetId == "@active" && planBytes.SequenceEqual(File.ReadAllBytes(planPath)),
+                "saved active and inherited Balanced references stay valid without rewriting the plan");
+            read["Presets"] = Without(read["Presets"], "builtin_balanced");
+            Reject<InvalidOperationException>(() => library.SaveExternalLibrary(read, Revision(read)), "referenced saved Balanced cannot be deleted");
+            var bytes = File.ReadAllBytes(path);
+            Assert(new PresetLibraryStore(runtime, plans).List().Length == 3 && bytes.SequenceEqual(File.ReadAllBytes(path)), "saved Balanced and cap ancestry upgrade are idempotent");
         }
 
         private static void CapAdditionBounds()
@@ -311,7 +492,7 @@ namespace NGUInjector
             Assert(bytes.SequenceEqual(File.ReadAllBytes(path)), "load and external projection never rewrite user plan");
             Assert(plan.ActivePresetId.StartsWith("import_") && plan.Stages[0].PresetId == "", "only the active goal gains a reference; persisted stages remain inline");
             Assert(plan.PresetMigrationIssues.Any(issue => issue.StartsWith("Stages[0].PresetId:") && issue.Contains("explicit conversion required")), "standard legacy stage reports required explicit conversion");
-            Assert(external["Version"].AsInt == 17 && external["ActivePresetId"].Value == plan.ActivePresetId, "migration is additive at version 17");
+            Assert(external["Version"].AsInt == 18 && external["ActivePresetId"].Value == plan.ActivePresetId, "migration is additive at version 18");
             var library = store.PresetLibrary.ReadExternalLibrary();
             var imported = library["Presets"].Children.Single(row => row["Id"].Value == ImportedStageId(library, "legacy"));
             Assert(!imported.Linq.Any(field => field.Key == "EnergyNguWeights" || field.Key == "MagicNguWeights"), "stage definition has no NGU ratio owner storage");
@@ -594,9 +775,20 @@ namespace NGUInjector
             var path = Path.Combine(runtime, "plans", "custom.json"); File.WriteAllText(path, raw.ToString());
             var plan = store.Load("custom");
             Assert(plan.ActivePresetId == "" && plan.Stages.All(stage => stage.PresetId == ""), "unsupported semantics do not receive fallback presets");
-            Assert(plan.GearGoal == 99 && plan.Stages[5].GearGoal == 999 && plan.Stages[1].GearGoal == 0 && plan.Stages[2].FightOnEntry, "unknown, cap and fight gear goals remain inline unchanged");
+            Assert(plan.GearGoal == 99 && plan.Stages[5].GearGoal == 999 && plan.Stages[1].GearGoal == 0 && plan.Stages[2].FightSchedule.Id == "legacy-entry-v1-2", "unknown, cap and migrated fight gear goals remain inline unchanged");
             Assert(plan.Stages[0].EnergyPriorities.SequenceEqual(new[] {"NGU-4", "TM"}) && plan.Stages[3].BlackBarLookaheadSeconds == 30, "custom priorities and cap horizon remain intact");
             Assert(plan.PresetMigrationIssues.Length == 7 && plan.PresetMigrationIssues.Any(issue => issue.StartsWith("ActivePresetId:")), "every unrepresentable setting has an explicit migration issue");
+            var scheduled = new CustomPlan {Stages = new[] {
+                new CustomPlanStage {EnergyFocus = 5, MagicFocus = 6, GearGoal = 2, FightSchedule = new CustomFightSchedule {Id = "scheduled", Anchor = 1, DelaySeconds = 10, IntervalSeconds = 20}},
+                new CustomPlanStage {EnergyFocus = 5, MagicFocus = 6, GearGoal = 2}
+            }};
+            store.Save("scheduled-semantics", scheduled);
+            var reloaded = store.Load("scheduled-semantics");
+            Assert(reloaded.Stages[0].PresetId == "" && reloaded.Stages[1].PresetId != "",
+                "schedule excludes otherwise representable stages from automatic preset conversion");
+            Assert(reloaded.Stages[0].FightSchedule.Id == "scheduled" && reloaded.Stages[0].FightSchedule.Anchor == 1
+                && reloaded.Stages[0].FightSchedule.DelaySeconds == 10 && reloaded.Stages[0].FightSchedule.IntervalSeconds == 20,
+                "preset migration preserves the complete schedule");
         }
 
         private static void ActivityTemplates()
@@ -994,7 +1186,7 @@ namespace NGUInjector
             {
                 GlobalNguSettingsChecks.Run(Assert, DirectoryFor);
                 Console.WriteLine("PASS GlobalNguSettingsChecks");
-                foreach (var test in new Action[] {SharedDefinitions, SeedOnce, CapCatalogAddition, CapAdditionBounds, AdventureDynamicPersistence, LosslessCas, SchemaPersistence, MigrationReadOnly, StableCollisionIdentity, PersistedReceiptUpgrade, ExplicitSupportReceiptIsolation, RatioFreeTwelveReceiptIdentity, PreviousSchemaIdentityIsolation, PreserveLegacySemantics, ActivityTemplates, ReferenceProtection, ActiveInheritance, TwelveObjectiveBindings, BuiltInRepairSafety, AtomicLibraryFirst, ConcurrentCas, CountBounds, ByteBounds, MigrationBounds})
+                foreach (var test in new Action[] {SharedDefinitions, SeedOnce, CapCatalogAddition, ResourcePriorityCatalogUpgrade, ResourcePriorityEditsPreserved, SavedBalancedAncestry, CapAdditionBounds, AdventureDynamicPersistence, LosslessCas, SchemaPersistence, MigrationReadOnly, StableCollisionIdentity, PersistedReceiptUpgrade, ExplicitSupportReceiptIsolation, RatioFreeTwelveReceiptIdentity, PreviousSchemaIdentityIsolation, PreserveLegacySemantics, ActivityTemplates, ReferenceProtection, ActiveInheritance, TwelveObjectiveBindings, BuiltInRepairSafety, AtomicLibraryFirst, ConcurrentCas, CountBounds, ByteBounds, MigrationBounds})
                 {
                     test(); Console.WriteLine("PASS " + test.Method.Name);
                 }

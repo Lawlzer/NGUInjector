@@ -21,6 +21,7 @@
     <Compile Include="GoldRecoveryChecks.cs" />
     <Compile Include="MoneyPitChecks.cs" />
     <Compile Include="MoneyPitRecoveryChecks.cs" />
+    <Compile Include="InventoryRescanChecks.cs" />
     <Compile Include="YggdrasilChecks.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

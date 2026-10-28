@@ -12,12 +12,13 @@ namespace NGUInjector
 
         internal bool PrepareHarvestAction()
         {
+            if (CustomBossFightActive()) return false;
             if (_harvestActionClaim != null)
                 return FiniteActionSetupVerified(_harvestActionClaim, _harvestActionSetup);
             var id = ActionIdentity("harvest-setup", "ygg-harvest", "harvest");
             var claim = BeginExecutionClaim(id.Owner, id.Acquisition,
                 ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route | ExecutionDomain.Inventory | ExecutionDomain.FiniteAction,
-                () => true);
+                () => !CustomBossFightActive());
             _harvestActionClaim = claim;
             try
             {
@@ -65,14 +66,19 @@ namespace NGUInjector
         internal bool HarvestFruitAction(int fruitId, bool requireMaxed, bool forceEat = false,
             ExecutionClaim setupClaim = null, SelectedSetupRequirements selectedSetup = null)
         {
-            return RunFruitHarvestAction(fruitId, requireMaxed, forceEat, setupClaim, selectedSetup, null, null);
+            return RunFruitHarvestAction(fruitId, requireMaxed, forceEat, setupClaim, selectedSetup, null, null).Verified;
         }
 
-        private bool RunFruitHarvestAction(int fruitId, bool requireMaxed, bool forceEat, ExecutionClaim setupClaim,
+        private FiniteActionResult RunFruitHarvestAction(int fruitId, bool requireMaxed, bool forceEat, ExecutionClaim setupClaim,
             SelectedSetupRequirements selectedSetup, string opportunity, int? originalHarvests)
         {
-            if (Character?.yggdrasil?.fruits == null || fruitId < 0 || fruitId >= Character.yggdrasil.fruits.Count) return false;
+            if (Character?.yggdrasil?.fruits == null || fruitId < 0 || fruitId >= Character.yggdrasil.fruits.Count)
+                return new FiniteActionResult { Disposition = MutationDisposition.RejectedUnchanged, Reason = "Fruit state is unavailable." };
             var fruit = Character.yggdrasil.fruits[fruitId];
+            var preparation = _fightPreparationAttempt;
+            // Final rebirth's ordinary harvest must not retry an ambiguous prep invocation.
+            if (preparation?.UnverifiedFruit == fruitId && UnverifiedPreparationFruitCurrent(preparation))
+                return new FiniteActionResult { Disposition = MutationDisposition.RejectedUnchanged, Reason = "Preparation fruit outcome is unverified." };
             var claim = setupClaim ?? _harvestActionClaim;
             var identity = ActionIdentity("fruit-harvest:" + fruitId, claim?.Owner ?? "ygg-harvest", opportunity ?? ActionNumber(fruit.harvests));
             var gear = LoadoutManager.CaptureExactLoadout(); var support = CaptureSupportState().StableKey;
@@ -84,11 +90,17 @@ namespace NGUInjector
                     : LoadoutManager.ExactLoadoutMatches(gear) && CaptureSupportState().StableKey == support };
             var grant = ResolveExecutionGrant(identity.Owner, identity.Acquisition, footprint,
                 () => ReferenceEquals(Character.yggdrasil.fruits[fruitId], fruit), claim);
-            var result = RunFiniteAction(action, grant);
-            // This is only completion of the SAME preparation step, never a fresh
-            // native receipt. Boss entry still needs current exact setup/authority.
-            return result.Verified || opportunity != null && result.PreviouslyCommitted && result.Committed && result.Durable && setupClaim != null
-                && selectedSetup != null && FiniteActionSetupVerified(setupClaim, selectedSetup);
+            return RunFiniteAction(action, grant);
+        }
+
+        private bool UnverifiedPreparationFruitCurrent(FightPreparationAttempt preparation)
+        {
+            if (preparation == null || preparation.UnverifiedFruit < 0 || !preparation.Epoch.Matches()) return false;
+            var fruitId = preparation.UnverifiedFruit;
+            var fruits = Character.yggdrasil?.fruits;
+            // Unavailable state is not evidence that the ambiguous native opportunity disappeared.
+            return fruits == null || fruitId >= fruits.Count || fruits[fruitId] == null
+                || ReferenceEquals(preparation.Fruits[fruitId], fruits[fruitId]) && preparation.FruitHarvests[fruitId] == fruits[fruitId].harvests;
         }
 
         private sealed class FruitActivationAction : FiniteAction
@@ -117,11 +129,13 @@ namespace NGUInjector
 
         internal bool ActivateFruitAction(int fruitId)
         {
+            if (_fruitCapActionReady != null && !_fruitCapActionReady()) return false;
             var fruit = Character.yggdrasil.fruits[fruitId];
             var energy = Character.yggdrasilController.usesEnergy[fruitId];
             if (energy ? !Settings.ManageEnergy : !Settings.ManageMagic) return false;
             var id = ActionIdentity("fruit-activate:" + fruitId, "fruit-activation", ActionNumber(fruit.harvests));
             var footprint = ExecutionDomain.FiniteAction | (energy ? ExecutionDomain.Energy : ExecutionDomain.Magic);
+            if (ExecutionOwnsDomain(footprint)) return false;
             ExecutionClaim claim = null;
             try
             {

@@ -39,39 +39,14 @@ namespace NGUInjector
 
         private bool TryRouteManualTitan()
         {
+            if (!ReferenceEquals(reference, this) || _unloaded) return false;
             if (Character == null) { CancelManualTitan("character unavailable"); return _manualTitanActive; }
-            if (!Settings.ManualTitanEnabled && !_manualTitanActive && _manualTitanEpoch == null) return false;
-            if (_manualTitanSpawns == null) _manualTitanSpawns = new Dictionary<int, ManualTitanSpawn>();
-            if (_manualTitanEpoch != null && !_manualTitanEpoch.Matches()) ResetManualTitanRuntime();
-            if (_manualTitanEpoch == null) _manualTitanEpoch = new LoadoutManager.SnapshotEpoch();
+            ObserveManualTitanOpportunities();
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return _manualTitanActive;
             if (_manualTitanRecovering)
             {
                 CancelManualTitan(_manualTitanCleanupReason);
                 return _manualTitanActive;
-            }
-
-            // Observe all attempted targets even when disabled or another target is selected.
-            // A config edit or off/on toggle is not a new native spawn.
-            foreach (var pair in _manualTitanSpawns)
-            {
-                var elapsed = ZoneHelpers.TitanSpawnElapsedSeconds(pair.Key);
-                var remaining = ZoneHelpers.TitanSpawnSecondsRemaining(pair.Key);
-                var spawn = pair.Value;
-                if (!double.IsNaN(elapsed) && !double.IsNaN(remaining))
-                {
-                    if (!double.IsNaN(spawn.Elapsed) && elapsed < spawn.Elapsed && remaining > 0)
-                        spawn.ResetSeen = true;
-                    spawn.Elapsed = elapsed;
-                    if (spawn.ResetSeen && remaining <= 0 && (!_manualTitanActive || pair.Key != _manualTitanIndex))
-                    {
-                        spawn.Started = spawn.Disarmed = spawn.ResetSeen = false;
-                        spawn.Deaths = 0;
-                        spawn.OwnedSeconds = 0;
-                        spawn.Outcome = null;
-                        spawn.Gear = null; spawn.Material = null; spawn.Support = null;
-                        spawn.Acquisition = null; spawn.ResourceRecall = GearRecallFootprint.None; spawn.CapacityTransition = false;
-                    }
-                }
             }
 
             if (_manualTitanActive)
@@ -266,13 +241,45 @@ namespace NGUInjector
                     current.OwnedSeconds += Math.Max(0, (DateTime.UtcNow - _manualTitanLastTick).TotalSeconds);
                     _manualTitanLastTick = DateTime.UtcNow;
                     if (current.OwnedSeconds < 600)
-                    { _manualTitanStatus = "Retained setup waiting: " + error.Message; PersistRouteExecutionCommitments(); return true; }
+                    { _manualTitanStatus = "Retained setup waiting: " + error.Message; return true; }
                 }
                 current.Disarmed = true;
                 current.Outcome = "setup/combat failed: " + error.Message;
                 CancelManualTitan(current.Outcome);
                 LogError("Manual titan", error);
                 return _manualTitanActive;
+            }
+        }
+
+        private void ObserveManualTitanOpportunities()
+        {
+            if (_manualTitanEpoch != null && !_manualTitanEpoch.Matches()) ResetManualTitanRuntime();
+            if (_manualTitanEpoch == null) _manualTitanEpoch = new LoadoutManager.SnapshotEpoch();
+            if (_manualTitanSpawns == null) _manualTitanSpawns = new Dictionary<int, ManualTitanSpawn>();
+            for (var index = 0; index < ZoneHelpers.TitanZones.Length; index++)
+            {
+                if (!_manualTitanSpawns.TryGetValue(index, out var spawn))
+                    _manualTitanSpawns.Add(index, spawn = new ManualTitanSpawn());
+                var elapsed = ZoneHelpers.TitanSpawnElapsedSeconds(index);
+                var remaining = ZoneHelpers.TitanSpawnSecondsRemaining(index);
+                if (double.IsNaN(elapsed) || double.IsNaN(remaining)) continue;
+                // A first-observed due spawn may belong to an interrupted old session.
+                // Only an observed native reset and later due transition supplies a budget.
+                if (double.IsNaN(spawn.Elapsed) && remaining <= 0)
+                {
+                    spawn.Disarmed = true;
+                    spawn.Outcome = "Waiting for next observed spawn after session start";
+                }
+                if (!double.IsNaN(spawn.Elapsed) && elapsed < spawn.Elapsed && remaining > 0)
+                    spawn.ResetSeen = true;
+                spawn.Elapsed = elapsed;
+                if (!spawn.ResetSeen || remaining > 0 || _manualTitanActive && index == _manualTitanIndex) continue;
+                spawn.Started = spawn.Disarmed = spawn.ResetSeen = false;
+                spawn.Deaths = 0;
+                spawn.OwnedSeconds = 0;
+                spawn.Outcome = null;
+                spawn.Gear = null; spawn.Material = null; spawn.Support = null;
+                spawn.Acquisition = null; spawn.ResourceRecall = GearRecallFootprint.None; spawn.CapacityTransition = false;
             }
         }
 
@@ -346,7 +353,6 @@ namespace NGUInjector
             if (_manualTitanActive && _manualTitanCombatOwned && deaths > 0)
             {
                 _manualTitanSpawns[_manualTitanIndex].Deaths += deaths;
-                PersistRouteExecutionCommitments();
                 if (Character.adventure.zone == -1 && _manualTitanProcess != null
                     && _manualTitanProcess.Zone == ZoneHelpers.TitanZones[_manualTitanIndex]
                     && ExecutionClaimSetupOwned(_manualTitanProcess.Claim)) _manualTitanProcess.Zone = -1;
@@ -387,6 +393,7 @@ namespace NGUInjector
 
         private void CancelManualTitan(string reason)
         {
+            if (!ReferenceEquals(reference, this) || _unloaded) return;
             var active = _manualTitanActive;
             var currentEpoch = _manualTitanProcess?.Claim.Epoch.Matches() ?? _manualTitanEpoch?.Matches() ?? true;
             var capacityRelease = currentEpoch && _manualTitanProcess?.CapacityTransition == true && _manualTitanProcess.ResourceRecall != GearRecallFootprint.None;
@@ -415,7 +422,6 @@ namespace NGUInjector
             if (active) InvalidateInlineStageApplication();
             _manualTitanIndex = -1;
             _manualTitanStatus = reason;
-            if (active && currentEpoch) PersistRouteExecutionCommitments();
             if (active && capacityRelease && _executionLifecycle == ExecutionLifecycle.Running && !_routeHandoffPending)
             {
                 // The common gear/hold handoff finished first. Ordinary funding

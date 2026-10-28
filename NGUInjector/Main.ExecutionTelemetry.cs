@@ -19,15 +19,6 @@ namespace NGUInjector
                 row["domains"] = claim.Domains.ToString(); claims.Add(row);
             }
             result["claims"] = claims;
-            var actions = new JSONArray();
-            foreach (var action in (_finiteActionLedger?.Records ?? new FiniteActionRecord[0])
-                .Where(x => x.Dirty || x.State == FiniteActionState.Prepared || x.State == FiniteActionState.Invocation || x.State == FiniteActionState.Unknown).Take(8))
-            {
-                var row = new JSONObject(); row["kind"] = action.Identity.Kind; row["owner"] = action.Identity.Owner;
-                row["entry"] = action.Identity.Entry; row["state"] = action.State.ToString(); row["durable"] = !action.Dirty;
-                actions.Add(row);
-            }
-            result["pendingActions"] = actions; result["actionHistoryObserved"] = _finiteActionLedger != null;
             if (Character?.inventory == null || Settings == null) return result;
             try
             {
@@ -99,7 +90,12 @@ namespace NGUInjector
                 result["domains"] = domains;
                 result["waitingReason"] = _resourceExecutionReason ?? "";
             }
-            catch (Exception error) { result["waitingReason"] = error.Message; }
+            catch (Exception error)
+            {
+                result["available"] = false; result["status"] = "error";
+                result["waitingReason"] = error.Message;
+                LogError("Execution observation", error);
+            }
             return result;
         }
     }

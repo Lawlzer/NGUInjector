@@ -11,6 +11,21 @@ public static partial class PresetIntegrationChecks
     {
         var before = Assertions;
         SetupInlineStagePlan();
+        var errors = Plugin.GetType("NGUInjector.AutomationErrorLog", true);
+        Invoke(errors, "Clear");
+        try
+        {
+            CallMain("LogError", "Native telemetry regression", new InvalidOperationException("native projection failure"));
+            CallMain("LogError", "Native telemetry regression", new InvalidOperationException("native projection failure"));
+            var runtime = CallMain("BuildExternalUiRuntimeState");
+            var reported = ((IEnumerable)GetChildren(Json(runtime, "automationErrors"))).Cast<object>()
+                .Single(x => Property(Json(x, "context"), "Value").Equals("Native telemetry regression"));
+            Equal(2, Property(Json(reported, "count"), "AsInt"), "actual production logger publishes repeated failures through runtime telemetry");
+            Equal("native projection failure", Property(Json(reported, "message"), "Value"), "actual runtime retains the exception reason");
+            Check(Property(Json(reported, "details"), "Value").ToString().Contains("InvalidOperationException"), "actual runtime retains diagnostic exception details");
+            Check(Json(runtime, "resourceAllocation") != null && Json(runtime, "planProgress") != null, "error publication leaves unrelated status projections present");
+        }
+        finally { Invoke(errors, "Clear"); }
         Func<bool> current = () => true;
         var energy = Domain("Energy"); var magic = Domain("Magic");
         var uncontrolled = CallMain("ResolveExecutionGrant", "observe", "entry", Domain("None"), current, null, null);

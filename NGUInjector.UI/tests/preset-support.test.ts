@@ -7,11 +7,23 @@ import { beardNames, defaultPresetBeards, newPreset, normalizePreset, normalizeP
 describe('shared preset support', () => {
   it('creates presets from shared defaults and the activity beard policy', () => {
     const preset = newPreset();
-    expect(preset).toEqual({ AdventureDynamicWeight: 0, EnergyPriorities: null, MagicPriorities: null, ResourcePrioritiesReviewed: false, ...definitions.defaults, ...definitions.newPreset, Weights: [1, 1, ...Array(12).fill(0)], BeardPriority: activityPolicies.coreBeards, BeardRotation: activityPolicies.optionalBeards, Id: preset.Id });
+    expect(preset).toEqual({ AdventureDynamicWeight: 0, ...definitions.defaults, ...definitions.newPreset, Weights: [1, 1, ...Array(12).fill(0)], BeardPriority: activityPolicies.coreBeards, BeardRotation: activityPolicies.optionalBeards, Id: preset.Id });
     (preset.BeardPriority as number[]).reverse();
     (preset.Weights as number[])[0] = 9;
     expect(newPreset().BeardPriority).toEqual(activityPolicies.coreBeards);
     expect(newPreset().Weights).toEqual(definitions.defaults.Weights);
+  });
+
+  it('uses reviewed resource priorities from the shared new-preset definition without sharing arrays', () => {
+    const preset = newPreset();
+    expect(preset).toMatchObject({ ResourcePrioritiesReviewed: true, EnergyPriorities: (definitions.newPreset as JsonObject).EnergyPriorities, MagicPriorities: (definitions.newPreset as JsonObject).MagicPriorities });
+    expect(Array.isArray(preset.EnergyPriorities)).toBe(true);
+    expect(Array.isArray(preset.MagicPriorities)).toBe(true);
+    expect(validatePreset(preset)).toBeUndefined();
+    (preset.EnergyPriorities as JsonValue[]).push('AT');
+    (preset.MagicPriorities as JsonValue[]).length = 0;
+    expect(newPreset().EnergyPriorities).toEqual((definitions.newPreset as JsonObject).EnergyPriorities);
+    expect(newPreset().MagicPriorities).toEqual((definitions.newPreset as JsonObject).MagicPriorities);
   });
 
   it('normalizes sparse saved definitions without opting into rotation', () => {
@@ -20,6 +32,7 @@ describe('shared preset support', () => {
     const library = normalizePresetLibrary({ Version: 1, Presets: [row], __externalUiRevision: 'a'.repeat(64) });
     const saved = (library.Presets as JsonObject[])[0];
     expect(saved).toEqual({ AdventureDynamicWeight: 0, EnergyPriorities: null, MagicPriorities: null, ResourcePrioritiesReviewed: false, ...definitions.defaults, ...row });
+    expect(saved).toMatchObject({ EnergyPriorities: null, MagicPriorities: null, ResourcePrioritiesReviewed: false });
     expect(newPreset(saved)).not.toHaveProperty('BeardRotation');
     expect(stringifyJson(row)).toBe(before);
   });

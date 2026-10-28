@@ -17,6 +17,14 @@ internal static class ProtectedTimingIntegrationChecks
     private const BindingFlags All = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
     private static int _assertions;
 
+    private static void EnableEntryFight(object stage, string id)
+    {
+        var field = stage.GetType().GetField("FightSchedule", All);
+        var schedule = Activator.CreateInstance(field.FieldType);
+        Set(schedule, "Id", id);
+        field.SetValue(stage, schedule);
+    }
+
     internal static Assembly LoadInjector(string path)
     {
         using (var assembly = AssemblyDefinition.ReadAssembly(path))
@@ -119,7 +127,11 @@ internal static class ProtectedTimingIntegrationChecks
             f.Override("skip", 0);
             Equal(true, f.Call("RunCustomRebirthAutomation", f.Plan), "actual ready rebirth starts preparation before engagement");
             Equal(true, f.Get("_customPreRebirthPrepRunning"), "actual prep acquires its running state");
+            var originalAttempt = f.Get("_fightPreparationAttempt");
+            var fruitSteps = Get(originalAttempt, "FruitStepsDone");
+            var bossStarts = f.BossPushStarts;
             var core = f.Core;
+            var retirementTrace = "admitted: " + f.PreparationRetirementState();
             if (change == "permission") Set(f.Plan, "AutoRebirthEnabled", false);
             else if (change == "trigger") Set(f.Plan, "TimeTriggerSeconds", 10000);
             else
@@ -128,15 +140,58 @@ internal static class ProtectedTimingIntegrationChecks
                 Set(f.Stage(0), "TargetAdvancedTrainingPower", 10L);
             }
             f.Save();
+            retirementTrace += "\nsaved: " + f.PreparationRetirementState();
             f.Call("StopBossPush");
+            retirementTrace += "\nstopped: " + f.PreparationRetirementState();
             f.Call("AutomationRoutine");
+            retirementTrace += "\nordinary: " + f.PreparationRetirementState();
             Equal(false, f.Get("_customPreRebirthPrepRunning"), "withdrawn readiness retires automatic prep rather than permanently blocking the plan");
-            Equal(false, f.Get("_customPreRebirthPrepCompleted"), "withdrawn readiness cannot retain a completed preparation receipt");
+            Equal(change != "permission", f.Get("_customPreRebirthPrepCompleted"), change == "permission"
+                ? "permission loss suspends unfinished prep without granting completion"
+                : "bounded stop retains genuinely completed prep while edited readiness remains pending");
             Equal(false, f.Get("_manualRebirthPending"), "automatic prep retirement never invents a manual request");
             Equal(7L, Get(Get(f.Character, "stats"), "rebirthNumber"), "retiring prep never engages rebirth");
-            Equal(true, f.Call("InlineStageSetupVerified", f.Load()), "actual ordinary callback resumes verified stage setup");
-            Equal(true, f.ApplicationSucceeded, "actual ordinary callback resumes resource application");
+            var attempt = f.Get("_fightPreparationAttempt");
+            var diagnostics = "; status=" + f.Call("GetCustomAutomationStatus")
+                + "; inlineError=" + f.Get("_inlineStageSetupError")
+                + "; resourceReason=" + f.Get("_resourceExecutionReason")
+                + "; prepClaim=" + f.Get("_fightPreparationClaim")
+                + "; bossProcess=" + f.Get("_bossPushProcess")
+                + "; prepRunning=" + f.Get("_customPreRebirthPrepRunning")
+                + "; prepCompleted=" + f.Get("_customPreRebirthPrepCompleted")
+                + "; permissionPaused=" + (attempt == null ? null : Get(attempt, "PermissionPaused"))
+                + "; cancelled=" + (attempt == null ? null : Get(attempt, "Cancelled"))
+                + "; attemptCompleted=" + (attempt == null ? null : Get(attempt, "Completed"))
+                + "; retirementTrace=" + retirementTrace
+                + "; productionLog=" + f.LogText;
+            Equal(true, f.Call("InlineStageSetupVerified", f.Load()), "actual ordinary callback resumes verified stage setup" + diagnostics);
+            Equal(true, f.ApplicationSucceeded, "actual ordinary callback resumes resource application" + diagnostics);
             Equal(true, ReferenceEquals(core, f.Core) || core == null, "retirement does not replace scheduler state on its own");
+            Equal(true, ReferenceEquals(originalAttempt, attempt), "readiness edits retain the original preparation attempt");
+            Equal(true, ReferenceEquals(fruitSteps, Get(attempt, "FruitStepsDone")), "readiness edits retain the acquired fruit-step evidence");
+            Equal(change != "permission", Get(attempt, "Completed"), "attempt completion distinguishes a permitted stop from permission suspension");
+            Equal(false, Get(attempt, "Cancelled"), "edited final readiness does not cancel completed or permission-paused preparation");
+            Equal(null, f.Get("_fightPreparationClaim"), "ordinary work resumes only after preparation ownership retires");
+            var currentPlan = f.Load();
+            if (change == "trigger")
+            {
+                Equal(10000, Get(currentPlan, "TimeTriggerSeconds"), "the edited future trigger remains current");
+                Equal(true, f.Elapsed < 10000d, "completed prep has not reached the edited trigger");
+                Equal(false, f.Rebirth("PeekTriggersAvailable"), "completed prep cannot satisfy the edited time trigger");
+            }
+            else if (change == "structure")
+            {
+                Equal(10L, Get(f.Stage(0), "TargetAdvancedTrainingPower"), "the new mandatory AT obligation remains current");
+                Equal(true, ((long[])Get(Get(f.Character, "advancedTraining"), "level"))[1] < 10L, "native power AT remains unfinished");
+                Equal(true, f.Rebirth("PeekTriggersAvailable"), "the original time trigger is already open independently of AT");
+                Equal(false, f.Gate(), "completed prep cannot discharge the new mandatory AT obligation");
+                Equal(false, Property(f.Core, "Finished"), "the new mandatory stage remains active");
+            }
+            Equal(false, f.Call("ObserveCustomRebirthReadiness", currentPlan), "current permission, trigger, or protected work still withholds final readiness");
+            Equal(false, f.Call("RunCustomRebirthAutomation", currentPlan), "retained prep is not permission for premature final rebirth");
+            Equal(false, f.Call("get_RebirthAttemptedThisPass"), "withheld readiness invokes no native rebirth attempt");
+            Equal(7L, Get(Get(f.Character, "stats"), "rebirthNumber"), "current readiness gates preserve the native rebirth counter");
+            Equal(bossStarts, f.BossPushStarts, "readiness rechecks never replay the acquired boss preparation");
         }
     }
 
@@ -335,8 +390,8 @@ internal static class ProtectedTimingIntegrationChecks
         var main = assembly.GetType("NGUInjector.Main", true);
         if (main.GetMethod("GetProtectedStage", All) == null || assembly.GetType("NGUInjector.Managers.ProtectedStageScheduler") == null)
             throw new InvalidOperationException("Production protected timing build is not ready. Wait for the parent build; do not rebuild production from these checks.");
-        if ((int) Get(Activator.CreateInstance(assembly.GetType("NGUInjector.CustomPlans.CustomPlan", true)), "Version") != 17)
-            throw new InvalidOperationException("Production schema-17 build is not ready. Wait for the parent build; do not rebuild production from these checks.");
+        if ((int) Get(Activator.CreateInstance(assembly.GetType("NGUInjector.CustomPlans.CustomPlan", true)), "Version") != 18)
+            throw new InvalidOperationException("Production schema-18 build is not ready. Wait for the parent build; do not rebuild production from these checks.");
         if (main.GetMethod("OverrideCustomStage", All) == null
             || assembly.GetType("NGUInjector.Managers.ProtectedStageScheduler", true).GetProperty("Skipped", All) == null)
             throw new InvalidOperationException("Production manual-stage/codec-2 build is not ready. Wait for the parent build; do not rebuild production from these checks.");
@@ -361,7 +416,7 @@ internal static class ProtectedTimingIntegrationChecks
             Check(mismatch + " checkpoint rejection after cloud-load observation", () => CheckRejectedEpoch(assembly, mismatch), failures);
         Check("corrupt same-epoch checkpoint recovery", () => CheckCorruptCheckpoints(assembly), failures);
         Check("pause, invalidation and ownership locks", () => CheckSuspension(assembly), failures);
-        Check("schema-17 universal allocator dispatch", () => CheckUniversalDispatch(assembly), failures);
+        Check("schema-18 universal allocator dispatch", () => CheckUniversalDispatch(assembly), failures);
         Check("universal nominal weights and AT metadata", () => CheckNominalDurations(assembly), failures);
         Check("stored edits preserve the actual applied entry", () => CheckStoredEdits(assembly), failures);
         Check("disk failure fails the rebirth gate closed", () => CheckDiskFailure(assembly), failures);
@@ -722,19 +777,19 @@ internal static class ProtectedTimingIntegrationChecks
     {
         using (var f = new Fixture(assembly, 8))
         {
-            Equal(17, Get(f.Plan, "Version"), "new plans use schema 17");
+            Equal(18, Get(f.Plan, "Version"), "new plans use schema 18");
             Equal(false, f.Plan.GetType().GetFields(All).Any(x => x.Name == "ProtectedStageTiming"), "there is no timing-mode flag in the universal model");
             Equal(null, f.Core, "allocator has not initialized the coordinator before dispatch");
             f.Save();
-            Equal(17, Get(f.Load(), "Version"), "actual store round-trips the current schema");
-            Equal(false, File.ReadAllText(f.PlanPath).Contains("\"ProtectedStageTiming\""), "schema-17 storage does not emit the removed timing-mode flag");
+            Equal(18, Get(f.Load(), "Version"), "actual store round-trips the current schema");
+            Equal(false, File.ReadAllText(f.PlanPath).Contains("\"ProtectedStageTiming\""), "schema-18 storage does not emit the removed timing-mode flag");
             Equal(0, Property(f.Active(), "StageIndex"), "GetActiveStage universally dispatches to the compiled coordinator");
             Equal(true, f.Core != null, "universal dispatch creates the actual engine");
             Equal(0d, f.Earned(0), "late activation never enables a historical-credit bypass");
             Equal(false, f.Gate(), "all fixed work is protected without an opt-in flag");
             var progress = f.Progress();
             Equal("stages", JsonValue(progress, "schedulerMode"), "runtime exposes the sole stages mode");
-            Equal("17", Json(progress, "planVersion").ToString(), "runtime exposes schema 17");
+            Equal("18", Json(progress, "planVersion").ToString(), "runtime exposes schema 18");
             var row = Json(progress, "stages").GetType().GetProperty("Item", new[] {typeof(int)}).GetValue(Json(progress, "stages"), new object[] {0});
             Equal("fixed", JsonValue(row, "timingKind"), "fixed row metadata has the universal kind");
             f.RequireCheckpoint("universal dispatch persists its stage epoch");
@@ -895,7 +950,7 @@ internal static class ProtectedTimingIntegrationChecks
             shorter.SetValue(f.Stage(0), 0);
             Set(f.Plan, "Stages", shorter);
             f.Save();
-            Equal(17, Get(f.Load(), "Version"), "shorter actual Store.Save retains the universal schema");
+            Equal(18, Get(f.Load(), "Version"), "shorter actual Store.Save retains the universal schema");
             Equal(1, ((Array) Get(f.Load(), "Stages")).Length, "actual store persists the shorter structure");
             Equal(true, ReferenceEquals(core, f.Core), "same-mode save leaves the old engine pending structural reconciliation");
             Equal(2, Property(f.Core, "StageIndex"), "pre-update engine index is outside the newly saved stage array");
@@ -1169,14 +1224,14 @@ internal static class ProtectedTimingIntegrationChecks
             f.PrepareApplication();
             f.PrepareFight();
             Set(f.Plan, "StageLoopStartIndex", 0);
-            Set(f.Stage(0), "FightOnEntry", true);
-            Set(f.Stage(1), "FightOnEntry", true);
+            EnableEntryFight(f.Stage(0), "entry-0");
+            EnableEntryFight(f.Stage(1), "entry-1");
             f.Save();
             f.Lock(boundary, true);
             f.Run();
             Equal(0, f.BossPushStarts, "entry fight waits for equipment ownership");
             Equal(null, f.Get("_customStageFightKey"), "deferred fight does not consume its entry receipt");
-            Equal(null, f.Get("_fightPreparationRecord"), "denied entry creates no preparation acquisition");
+            Equal(null, f.Get("_fightPreparationAttempt"), "denied entry creates no session preparation acquisition");
             Equal(0d, f.Earned(0), "denied entry earns no protected credit");
             var entry = Property(f.Core, "Entry");
             var deadline = Property(f.Core, "ExpectedEndSeconds");
@@ -1486,7 +1541,7 @@ internal static class ProtectedTimingIntegrationChecks
         {
             f.PrepareApplication();
             f.PrepareFight();
-            Set(f.Stage(0), "FightOnEntry", true);
+            EnableEntryFight(f.Stage(0), "terminal-entry");
             f.Save();
             f.Run();
             Equal(1, f.BossPushStarts, "flagged last row consumes its original entry fight");
@@ -1877,6 +1932,50 @@ internal static class ProtectedTimingIntegrationChecks
         internal void SetRuntime(string name, object value) { Field(_mainType, name).SetValue(_main, value); }
         internal void SetStatic(string name, object value) { _mainType.GetField(name, All).SetValue(null, value); }
         internal object Call(string name, params object[] args) { return _mainType.GetMethod(name, All).Invoke(_main, args); }
+        internal string PreparationRetirementState()
+        {
+            try
+            {
+                var attempt = Get("_fightPreparationAttempt");
+                var process = attempt == null ? null : ProtectedTimingIntegrationChecks.Get(attempt, "Process");
+                if (process == null) return "no retained preparation process";
+                var claim = ProtectedTimingIntegrationChecks.Get(process, "Claim");
+                var writer = _mainType.Assembly.GetType("NGUInjector.Managers.ResourceWriter", true);
+                var objects = (object[])ProtectedTimingIntegrationChecks.Get(process, "ResourceObjects");
+                var current = ((object[])writer.GetMethod("CaptureResourceContext", All).Invoke(null, new[] { Character }))
+                    .Concat((object[])Call("SupportObjects")).Concat((object[])Call("CombatPrepAdventureRouteObjects")).ToArray();
+                var protectedResources = (IDictionary)ProtectedTimingIntegrationChecks.Get(process, "ProtectedResources");
+                var allocations = (IDictionary)writer.GetMethod("CaptureAllocations", All).Invoke(null, new[] { Character });
+                var changedResources = protectedResources == null ? "not captured" : string.Join(",", protectedResources.Keys.Cast<object>().Where(key => {
+                    var before = protectedResources[key] as long[]; var after = allocations[key] as long[];
+                    return before == null ? after != null : after == null || !before.SequenceEqual(after);
+                }));
+                var grant = Call("RouteProcessGrant", process, true);
+                return string.Join(";", new[] { "Owner", "CapacityTransition", "ResourceRecall", "Applied", "ResourceRetired",
+                    "ResourceApplied", "ResourceAttempted", "ResourceHoldEnded", "ResourceIssue", "Zone", "AutoAttack", "BeastMode" }
+                    .Select(name => name + "=" + ProtectedTimingIntegrationChecks.Get(process, name)))
+                    + "; claim=" + string.Join(",", new[] { "Owner", "Acquisition", "Domains", "Ended", "SetupReleased" }
+                        .Select(name => name + "=" + ProtectedTimingIntegrationChecks.Get(claim, name)))
+                    + "; claimCurrent=" + Call("ExecutionClaimCurrent", claim) + "; setupOwned=" + Call("ExecutionClaimSetupOwned", claim)
+                    + "; routeMatches=" + Call("RouteProcessMatches", process) + "; capacityOwned=" + Call("CapacityRouteOwnership", process)
+                    + "; capacityPermissions=" + Call("CapacityRoutePermissions", process) + "; capacityEmpty=" + Call("CapacityRouteEmpty", process)
+                    + "; resourceContextCurrent=" + ((Func<bool>)ProtectedTimingIntegrationChecks.Get(process, "ResourceContextCurrent"))?.Invoke()
+                    + "; forwardCurrent=" + ((Func<bool>)ProtectedTimingIntegrationChecks.Get(process, "ApplicationCurrent"))?.Invoke()
+                    + "; attemptEpoch=" + ProtectedTimingIntegrationChecks.Get(attempt, "Epoch").GetType().GetMethod("Matches", All)
+                        .Invoke(ProtectedTimingIntegrationChecks.Get(attempt, "Epoch"), null)
+                    + "; sameSettings=" + ReferenceEquals(ProtectedTimingIntegrationChecks.Get(attempt, "Settings"), _mainType.GetField("Settings", All).GetValue(null))
+                    + "; sameBoss=" + ReferenceEquals(ProtectedTimingIntegrationChecks.Get(attempt, "Boss"), ProtectedTimingIntegrationChecks.Get(Character, "bossController"))
+                    + "; contextLengths=" + objects?.Length + "/" + current.Length
+                    + "; changedContext=" + (objects == null ? "not captured" : string.Join(",", Enumerable.Range(0, Math.Min(objects.Length, current.Length))
+                        .Where(i => !ReferenceEquals(objects[i], current[i])).Take(24).Select(i => i + ":" + objects[i]?.GetType().Name + "->" + current[i]?.GetType().Name)))
+                    + "; changedProtectedResources=" + changedResources
+                    + "; retirementGrant=" + (grant == null ? "none" : ProtectedTimingIntegrationChecks.Get(grant, "Domains")
+                        + "/valid=" + Call("ValidateExecutionGrant", grant, ProtectedTimingIntegrationChecks.Get(grant, "Domains")))
+                    + "; generation=" + Get("_protectedGeneration")
+                    + "; scheduler=" + (Core == null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(Core));
+            }
+            catch (Exception error) { return "retirement observation failed: " + error; }
+        }
         internal void PrepareFight() => NativeFightFixture.Prepare(_mainType.Assembly, Character);
         internal string Request(string command, string opportunity) => NativeFightFixture.Request(_main, DirectoryPath, command, opportunity);
         internal object Stage(int index) { return ((Array) ProtectedTimingIntegrationChecks.Get(Plan, "Stages")).GetValue(index); }
@@ -1908,9 +2007,10 @@ internal static class ProtectedTimingIntegrationChecks
             var apply = Parse("{\"token\":" + Json(preview, "token") + ",\"checkpointRevision\":" + Json(preview, "checkpointRevision") + "}");
             Call("ApplyExecutionRebind", apply);
             Equal(null, Get("_protectedOuterCheckpointIssue"), label + " explicit reviewed restart clears rejection");
-            var archives = Directory.GetFiles(DirectoryPath, "stage-recovery-*.json");
-            Equal(1, archives.Length, label + " archives exactly one rejected checkpoint");
-            Equal(bytes, File.ReadAllText(archives[0]), label + " archive retains exact original bytes");
+            var evidence = path + ".recovery.json";
+            Equal(true, File.Exists(evidence), label + " retains the latest rejected checkpoint in its bounded evidence file");
+            Equal(bytes, File.ReadAllText(evidence), label + " recovery evidence retains exact original bytes");
+            Equal(0, Directory.GetFiles(DirectoryPath, "stage-recovery-*.json").Length, label + " accumulates no timestamped recovery archives");
             Equal(0, Property(Core, "StageIndex"), label + " starts only the explicitly selected row");
             Equal(0d, Earned(0), label + " restart grants no protected credit");
             Equal(false, ProtectedTimingIntegrationChecks.Get(Core, "_armed"), label + " new entry awaits native verification");

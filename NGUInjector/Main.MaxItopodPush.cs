@@ -27,9 +27,23 @@ namespace NGUInjector
         private ih[] _maxItopodSelectedGear;
         private string[] _maxItopodSelectedMaterial;
         private SupportSelection _maxItopodSelectedSupport;
+        private bool _maxItopodModeObserved, _maxItopodModeSelected, _maxItopodModeArmed;
 
         private void SynchronizeMaxItopodAdventureMode()
         {
+            if (!ReferenceEquals(reference, this) || _unloaded) return;
+            var selected = Settings.CustomAdventureMode == CustomAdventureModeMaxItopodPush;
+            if (!_maxItopodModeObserved)
+            {
+                _maxItopodModeObserved = true;
+                _maxItopodModeSelected = selected;
+                _maxItopodModeArmed = !selected;
+            }
+            else if (selected != _maxItopodModeSelected)
+            {
+                _maxItopodModeSelected = selected;
+                _maxItopodModeArmed = true;
+            }
             if ((_maxItopodPushFromAdventureMode || _maxItopodPushRouting || _maxItopodProcess != null) && _maxItopodPushRemainingDeaths <= 0)
             {
                 // Retry an interrupted cancellation, never replenish a completed run.
@@ -38,8 +52,9 @@ namespace NGUInjector
             }
 
             if ((Settings.ManualAdventureEnabled || Settings.CustomAdventureEnabled)
-                && Settings.CustomAdventureMode == CustomAdventureModeMaxItopodPush)
+                && selected)
             {
+                if (_maxItopodPushRemainingDeaths <= 0 && !_maxItopodModeArmed) return;
                 // Selecting this mode adopts an existing command-started run without resetting its budget.
                 _maxItopodPushFromAdventureMode = true;
                 if (_maxItopodPushRemainingDeaths > 0)
@@ -59,7 +74,10 @@ namespace NGUInjector
 
         private string StartMaxItopodPush(int deaths)
         {
-            if (_routeCommitmentIssue != null) throw new InvalidOperationException(_routeCommitmentIssue);
+            if (!ReferenceEquals(reference, this) || _unloaded)
+                throw new InvalidOperationException("The route session is no longer current.");
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss)
+                throw new InvalidOperationException("Native boss combat is busy; wait before starting a max ITOPOD push.");
             RequireCombatPrepIdle();
             if (deaths < 1 || deaths > 1000)
                 throw new ArgumentOutOfRangeException(nameof(deaths), "Death limit must be between 1 and 1000.");
@@ -78,7 +96,7 @@ namespace NGUInjector
 
             var floor = Math.Min(controller.maxItopodLevel(), Math.Max(0, Character.adventure.highestItopodLevel - 1));
             var message = $"Max ITOPOD push started for {deaths} deaths; "
-                + (_maxItopodPushFromAdventureMode ? "Adventure mode will switch to Optimal ITOPOD afterward." : "saved adventure settings are unchanged.");
+                + "saved adventure settings are unchanged.";
             Log(message);
             _maxItopodPushLog = entries;
             _maxItopodPushLastDeath = null;
@@ -93,7 +111,7 @@ namespace NGUInjector
             _maxItopodBorrowedArbitrary = Character.arbitrary;
             _maxItopodPushRemainingDeaths = deaths;
             _maxItopodPushFloor = floor;
-            PersistRouteExecutionCommitments();
+            _maxItopodModeArmed = false;
             SetCustomAutomationStatus(message);
             return message;
         }
@@ -128,7 +146,6 @@ namespace NGUInjector
                 return;
 
             _maxItopodPushRemainingDeaths = Math.Max(0, _maxItopodPushRemainingDeaths - deaths);
-            PersistRouteExecutionCommitments();
             if (Character.adventure.zone == -1 && _maxItopodProcess?.Zone == 1000 && MaxItopodSettingsOwned()
                 && ExecutionClaimSetupOwned(_maxItopodProcess.Claim)) _maxItopodProcess.Zone = -1;
             if (_maxItopodPushRemainingDeaths == 0)
@@ -136,7 +153,7 @@ namespace NGUInjector
                 var modeOwned = _maxItopodPushFromAdventureMode;
                 CancelMaxItopodPush();
                 SetCustomAutomationStatus(modeOwned
-                    ? "Max ITOPOD push complete; Adventure mode switched to Optimal ITOPOD."
+                    ? "Max ITOPOD push complete; select a mode or start a new push to continue."
                     : "Max ITOPOD push complete; resuming selected adventure settings.");
             }
             else
@@ -148,6 +165,8 @@ namespace NGUInjector
 
         private bool TryRouteMaxItopodPush()
         {
+            if (!ReferenceEquals(reference, this) || _unloaded) return false;
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
             if (_maxItopodPushRemainingDeaths <= 0)
                 return false;
             if (_maxItopodPushEpoch == null || !_maxItopodPushEpoch.Matches())
@@ -227,13 +246,15 @@ namespace NGUInjector
             {
                 _combManager.IdleZone(1000, false, true, RouteProcessGrant(_maxItopodProcess), () => ObserveRouteProcess(_maxItopodProcess));
             }
-            var next = _maxItopodPushFromAdventureMode ? "switch Adventure mode to Optimal ITOPOD" : "resume selected adventure settings";
+            var next = _maxItopodPushFromAdventureMode ? "wait for a new push request" : "resume selected adventure settings";
             SetCustomAutomationStatus($"Adventure: max ITOPOD push from floor {_maxItopodPushFloor}, {_maxItopodPushRemainingDeaths} deaths remaining; then {next}.");
             return true;
         }
 
         private void PauseMaxItopodPush()
         {
+            if (!ReferenceEquals(reference, this) || _unloaded) return;
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return;
             if (!_maxItopodPushRouting)
             {
                 // Acquisition may fail before the tower/borrowed fields are active.
@@ -286,6 +307,7 @@ namespace NGUInjector
             var controller = Character.adventureController;
             var startText = controller.itopodStartInput.text; var endText = controller.itopodEndInput.text;
             Action require = () => { if (!ValidateExecutionGrant(grant, ExecutionDomain.Route | ExecutionDomain.NativeSettings)
+                || Character.bossController.isFighting || Character.bossController.nukeBoss
                 || !MaxItopodSettingsOwned() || controller.itopodStartInput.text != startText
                 || controller.itopodEndInput.text != endText) throw new InvalidOperationException("Tower settings changed externally; return yielded."); };
             require(); startText = start.ToString(); controller.itopodStartInput.text = startText; require();
@@ -309,21 +331,16 @@ namespace NGUInjector
 
         private string CancelMaxItopodPush()
         {
-            var active = _maxItopodPushRouting || _maxItopodPushRemainingDeaths > 0 || _maxItopodPushFromAdventureMode;
-            _maxItopodPushFromAdventureMode |= Settings.CustomAdventureMode == CustomAdventureModeMaxItopodPush;
+            _maxItopodModeArmed = false;
             _maxItopodPushRemainingDeaths = 0;
             PauseMaxItopodPush();
             if (_maxItopodPushRouting || _maxItopodProcess != null) return "Max ITOPOD push is waiting for owned route retirement.";
-            // Also disarm a mode selection cancelled before its first combat tick.
-            if (Settings.CustomAdventureMode == CustomAdventureModeMaxItopodPush)
-                Settings.CustomAdventureMode = CustomAdventureModeOptimalItopod;
             _maxItopodPushFromAdventureMode = false;
             _maxItopodPushFloor = 0;
             _maxItopodPushLog = null;
             _maxItopodPushLastDeath = null;
             _maxItopodPushEpoch = null;
-            if (active) PersistRouteExecutionCommitments();
-            const string message = "Max ITOPOD push stopped; resuming selected adventure settings.";
+            const string message = "Max ITOPOD push stopped.";
             SetCustomAutomationStatus(message);
             return message;
         }

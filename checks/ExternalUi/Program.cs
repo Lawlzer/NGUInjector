@@ -52,6 +52,8 @@ namespace NGUInjector
                 return 1;
             }
             if (arguments.Contains("--plan-blood")) return RunPlanBloodPersistenceOnly();
+            if (arguments.Contains("--fight-schedules")) return RunFightSchedulesOnly();
+            if (arguments.Contains("--plan-catalog")) return RunPlanCatalogOnly();
             if (arguments.Contains("--adventure-dynamic-weight")) return RunAdventureDynamicWeightOnly();
             if (arguments.Contains("--adventure-rules")) return AdventureRuleSettingsChecks.RunOnly();
             if (arguments.Contains("--native-settings")) return RunNativeSettingsPersistenceOnly(arguments.Last() == "--native-settings" ? null : arguments.Last());
@@ -111,6 +113,7 @@ namespace NGUInjector
                 Assert(NGUInjector.Main.Saves == 0 && Managers.AugmentOptimizer.Allocations == 0 && NGUInjector.Main.StageOverrides == 0, "not-ready commands execute no game boundary actions");
                 Assert(main.PushStartCalls == 0 && main.PushCancelCalls == 0, "not-ready push commands execute no action boundaries");
                 main.SetReady(true);
+                CheckAutomationErrors(main);
                 Assert(JsonFiles.ParseObject(File.ReadAllText(Path.Combine(_dir, "runtime.json")))["status"].Value == "running", "readiness advertises running");
                 main.Process("once", Envelope("once", "quickSave"));
                 Assert(NGUInjector.Main.Saves == 1 && Result("once")["success"].AsBool, "command executes and reports");
@@ -171,7 +174,8 @@ namespace NGUInjector
                     && compactAck["startedAt"].Value == heartbeatBeforePatch["startedAt"].Value, "compact acknowledgement carries the heartbeat's explicit session identity");
                 Assert(compactAck["externalUiEnabled"].IsBoolean && compactAck["externalUiEnabled"].AsBool, "compact acknowledgement explicitly enables external UI heartbeat consumption");
                 Assert(compactAck["protocolVersion"].IsNumber && compactAck["protocolVersion"].AsInt == 3, "compact acknowledgement advertises additive protocol 3");
-                Assert(compactAck["planVersion"].IsNumber && compactAck["planVersion"].AsInt == 17 && compactAck["stageTimingVersion"].AsInt == 1, "compact acknowledgement advertises plan schema 17 and universal timing");
+                Assert(compactAck["planVersion"].IsNumber && compactAck["planVersion"].AsInt == 18 && compactAck["stageTimingVersion"].AsInt == 1
+                    && compactAck["fightScheduleVersion"].AsInt == 1, "compact acknowledgement advertises plan schema 18, universal timing and fight schedules");
                 Assert(compactAck["stageOverridesV1"].IsBoolean && compactAck["stageOverridesV1"].AsBool, "compact acknowledgement advertises manual stage override capability");
                 Assert(compactAck["loadoutPresetsVersion"].AsInt == 2 && compactAck["globalPresetsVersion"].AsInt == 2
                     && compactAck["globalNguWeightsVersion"].AsInt == 1, "compact acknowledgement advertises global-only NGU weights and ratio-free presets");
@@ -237,6 +241,9 @@ namespace NGUInjector
                 _assertions += AdventureRuleSettingsChecks.Run(_dir);
 
                 NGUInjector.Main.CustomPlanStore = new CustomPlanStore(Path.Combine(_dir, "custom-plans"));
+                CheckPlanCatalog();
+                SeedLegacyDefault(NGUInjector.Main.CustomPlanStore);
+                NGUInjector.Main.Settings.CustomPlanFile = "default";
                 CheckRunningRebirthPermission();
                 CheckNguWeights();
                 CheckRetiredGoalPresetRoundtrip(main);
@@ -246,7 +253,7 @@ namespace NGUInjector
                 CheckStageExecutionModes();
                 CheckStageProgressPersistence();
                 CheckStageProgressCreationAndDeletion();
-                CheckFightOnEntry();
+                CheckFightSchedules();
                 CheckAdventureDynamicWeight();
                 CheckAutoIronPillEnabled();
                 CheckPlanBloodPersistence();
@@ -275,7 +282,7 @@ namespace NGUInjector
                 NGUInjector.Main.CustomPlanStore.Save("edited", new CustomPlan { RebirthHistory = new[] { new CustomRebirthHistoryEntry { TimestampLocal = "2026-10-14 12:00:00", Reason = "live", BossId = 42 } } });
                 NGUInjector.Main.Settings.CustomPlanFile = "edited";
                 var invalidations = NGUInjector.Main.Invalidations;
-                main.Process("plan", Envelope("plan", "savePlan", PlanArgs("edited", PlanWithNguWeights("{\"Version\":17,\"TimeTriggerSeconds\":99,\"RebirthHistory\":[{\"Reason\":\"stale\"}]}"))));
+                main.Process("plan", Envelope("plan", "savePlan", PlanArgs("edited", PlanWithNguWeights("{\"Version\":18,\"TimeTriggerSeconds\":99,\"RebirthHistory\":[{\"Reason\":\"stale\"}]}"))));
                 var plan = NGUInjector.Main.CustomPlanStore.Load("edited");
                 Assert(Result("plan")["success"].AsBool && plan.TimeTriggerSeconds == 99 && plan.RebirthHistory[0].Reason == "live" && plan.RebirthHistory[0].BossId == 42, "plan saves preserve live history");
                 Assert(NGUInjector.Main.Invalidations > invalidations, "plan save invalidates runtime cache");
@@ -326,7 +333,7 @@ namespace NGUInjector
                 var legacyBytes = File.ReadAllBytes(legacyPath);
                 main.Process("read-legacy", Envelope("read-legacy", "readPlan", JsonFiles.ParseObject("{\"name\":\"legacy-cas\"}")));
                 var normalized = Result("read-legacy")["data"]["plan"].AsObject;
-                Assert(Result("read-legacy")["success"].AsBool && normalized["Version"].AsInt == 17
+                Assert(Result("read-legacy")["success"].AsBool && normalized["Version"].AsInt == 18
                     && !normalized.Linq.Any(item => item.Key == "EnergyNguWeights" || item.Key == "MagicNguWeights" || item.Key == "NguGoal")
                     && !normalized["NumberClimbEnabled"].AsBool && normalized["AutoActivateFruits"].AsBool, "legacy migrations run without re-enabling the retired trigger");
                 Assert(normalized["__externalUiRevision"].Value == JsonFiles.ComputeRevision(legacyBytes), "normalized read hashes original bytes including UTF8 BOM");
@@ -418,9 +425,9 @@ namespace NGUInjector
                     main.Process("delete-fallback-fails", Envelope("delete-fallback-fails", "deletePlan", JsonFiles.ParseObject("{\"name\":\"rich-copy\"}")));
                 Assert(!Result("delete-fallback-fails")["success"].AsBool && NGUInjector.Main.CustomPlanStore.PlanExists("rich-copy") && NGUInjector.Main.Settings.CustomPlanFile == "rich-copy", "failed fallback persistence prevents selected-plan deletion");
                 main.Process("delete-paused", Envelope("delete-paused", "deletePlan", JsonFiles.ParseObject("{\"name\":\"rich-copy\"}")));
-                Assert(Result("delete-paused")["success"].AsBool && !NGUInjector.Main.CustomPlanStore.PlanExists("rich-copy") && NGUInjector.Main.Settings.CustomPlanFile == "default", "deletePlan moves paused selection to default");
-                Assert(Result("delete-paused")["data"]["selectedPlan"].Value == "default" && JsonFiles.ParseObject(File.ReadAllText(settingsPath))["_customPlanFile"].Value == "default", "deletePlan returns and persists its fallback selection");
-                foreach (var builtin in new[] { "default", "24hr", "1h-3m-rebirth", "infinite" })
+                Assert(Result("delete-paused")["success"].AsBool && !NGUInjector.Main.CustomPlanStore.PlanExists("rich-copy") && NGUInjector.Main.Settings.CustomPlanFile == "24hr", "deletePlan moves paused selection to 24hr");
+                Assert(Result("delete-paused")["data"]["selectedPlan"].Value == "24hr" && JsonFiles.ParseObject(File.ReadAllText(settingsPath))["_customPlanFile"].Value == "24hr", "deletePlan returns and persists its fallback selection");
+                foreach (var builtin in PlanCatalogNames)
                 {
                     var deleteArgs = new JSONObject(); deleteArgs["name"] = builtin;
                     main.Process("delete-" + builtin, Envelope("delete-" + builtin, "deletePlan", deleteArgs));
@@ -459,7 +466,8 @@ namespace NGUInjector
                 Assert(Result("numeric-time")["data"]["runtime"]["updatedAt"].IsString && Result("numeric-time")["data"]["runtime"]["settings"].IsObject, "status returns immediate pull runtime");
                 var statusAck = Result("numeric-time")["data"]["runtime"];
                 Assert(statusAck["startedAt"].Value == compactAck["startedAt"].Value && statusAck["externalUiEnabled"].AsBool
-                    && statusAck["protocolVersion"].AsInt == 3 && statusAck["planVersion"].AsInt == 17 && statusAck["stageTimingVersion"].AsInt == 1, "status compact pull retains session and protocol metadata");
+                    && statusAck["protocolVersion"].AsInt == 3 && statusAck["planVersion"].AsInt == 18 && statusAck["stageTimingVersion"].AsInt == 1
+                    && statusAck["fightScheduleVersion"].AsInt == 1, "status compact pull retains session and protocol metadata");
                 NGUInjector.Main.Settings.CustomAugmentsBloodEstimateSeconds = 450;
                 main.Process("augment-preview", Envelope("augment-preview", "previewAugments"));
                 var augmentData = Result("augment-preview")["data"];
@@ -548,7 +556,8 @@ namespace NGUInjector
                     "startMaxItopodPush", "cancelMaxItopodPush", "previewCombatPrep", "startCombatPrep", "cancelCombatPrep",
                     "previewLoadoutPreset", "applyLoadoutPreset" })
                     Assert(advertisedCommands.Contains(advertised), "advertised command " + advertised);
-                Assert(JsonFiles.ParseObject(runtime)["planVersion"].AsInt == 17 && JsonFiles.ParseObject(runtime)["stageTimingVersion"].AsInt == 1
+                Assert(JsonFiles.ParseObject(runtime)["planVersion"].AsInt == 18 && JsonFiles.ParseObject(runtime)["stageTimingVersion"].AsInt == 1
+                    && JsonFiles.ParseObject(runtime)["fightScheduleVersion"].AsInt == 1
                     && !JsonFiles.ParseObject(runtime).Linq.Any(item => item.Key == "protectedStageTimingV1")
                     && JsonFiles.ParseObject(runtime)["planRevisionField"].Value == "__externalUiRevision" && JsonFiles.ParseObject(runtime)["planRevisionAlgorithm"].Value == "sha256", "runtime advertises revision and universal timing contract without obsolete capability");
 
@@ -863,7 +872,7 @@ namespace NGUInjector
             var store = NGUInjector.Main.CustomPlanStore;
             var missingName = "missing-source";
             var missingPath = Path.Combine(_dir, "custom-plans", missingName + ".json");
-            var defaultPath = Path.Combine(_dir, "custom-plans", "default.json");
+            var defaultPath = Path.Combine(_dir, "custom-plans", "24hr.json");
             var defaultBytes = File.ReadAllBytes(defaultPath);
             store.Save("missing-sentinel", new CustomPlan {
                 SourceJson = JsonFiles.ParseObject("{\"future\":{\"precise\":9223372036854775807}}"),
@@ -893,7 +902,7 @@ namespace NGUInjector
             foreach (var name in new[] {null, "", "   "})
             {
                 var plan = store.Load(name);
-                Assert(plan.Name == "default" && plan.SourceJson != null && plan.RuntimeRevision == JsonFiles.ComputeRevision(defaultBytes), "empty normalized name still loads the existing default");
+                Assert(plan.Name == "24hr" && plan.SourceJson != null && plan.RuntimeRevision == JsonFiles.ComputeRevision(defaultBytes), "empty normalized name loads the existing 24hr fallback");
             }
 
             var settings = NGUInjector.Main.Settings;
@@ -963,13 +972,13 @@ namespace NGUInjector
             CheckGlobalNguSettings();
             var store = NGUInjector.Main.CustomPlanStore;
             var defaults = new CustomPlan();
-            Assert(defaults.Version == 17 && CustomPlanStore.CurrentPlanVersion == 17, "new model and store use version 17");
+            Assert(defaults.Version == 18 && CustomPlanStore.CurrentPlanVersion == 18, "new model and store use version 18");
             Assert(typeof(CustomPlan).GetField("EnergyNguWeights") == null && typeof(CustomPlan).GetField("MagicNguWeights") == null,
                 "plans have no runtime-owned NGU ratio fields");
             Assert(typeof(CustomPlan).GetField("NguGoal") == null && typeof(CustomPlan).Assembly.GetType("NGUInjector.CustomPlans.CustomNguGoal") == null, "legacy goal field and enum are absent from runtime");
             var settingsPath = Path.Combine(_dir, "settings.json");
             var settingsBytes = File.ReadAllBytes(settingsPath);
-            foreach (var name in new[] {"default", "24hr", "infinite", "1h-3m-rebirth"})
+            foreach (var name in PlanCatalogNames)
             {
                 var builtin = store.ReadExternalPlan(name);
                 Assert(!builtin.Linq.Any(item => item.Key == "EnergyNguWeights" || item.Key == "MagicNguWeights"), "built-in leaves NGU ratios global: " + name);
@@ -982,15 +991,15 @@ namespace NGUInjector
                 File.WriteAllText(migrationPath, "{\"Version\":" + version + ",\"NguGoal\":" + goal + "}", new UTF8Encoding(true));
                 var bytes = File.ReadAllBytes(migrationPath);
                 var model = store.Load("ngu-migration");
-                Assert(model.Version == 17, "legacy plan normalizes schema without materializing NGU ratios " + version + "/" + goal);
+                Assert(model.Version == 18, "legacy plan normalizes schema without materializing NGU ratios " + version + "/" + goal);
                 var read = store.ReadExternalPlan("ngu-migration");
                 Assert(!read.Linq.Any(item => item.Key == "NguGoal" || item.Key == "EnergyNguWeights" || item.Key == "MagicNguWeights")
-                    && read["Version"].AsInt == 17, "normalized read strips retired NGU configuration " + version + "/" + goal);
+                    && read["Version"].AsInt == 18, "normalized read strips retired NGU configuration " + version + "/" + goal);
                 Assert(bytes.SequenceEqual(File.ReadAllBytes(migrationPath)) && model.RuntimeRevision == JsonFiles.ComputeRevision(bytes)
                     && read[CustomPlanStore.ExternalUiRevisionField].Value == model.RuntimeRevision, "migration preserves bytes and original-byte CAS " + version + "/" + goal);
                 store.AddRebirthHistory("ngu-migration", new CustomRebirthHistoryEntry {Reason = "migrated history"});
                 var persisted = JsonFiles.ParseObject(File.ReadAllText(migrationPath));
-                Assert(persisted["Version"].AsInt == 17 && persisted["RebirthHistory"][0]["Reason"].Value == "migrated history"
+                Assert(persisted["Version"].AsInt == 18 && persisted["RebirthHistory"][0]["Reason"].Value == "migrated history"
                     && !persisted.Linq.Any(item => item.Key == "NguGoal" || item.Key == "EnergyNguWeights" || item.Key == "MagicNguWeights"),
                     "history RMW removes retired plan NGU configuration " + version + "/" + goal);
             }
@@ -1286,7 +1295,7 @@ namespace NGUInjector
                 main.Process(saveId, Envelope(saveId, "savePlan", PlanArgs(name, projected)));
                 Assert(Result(saveId)["success"].AsBool, "cleaned historical goal rows allow an unrelated connected edit: " + malformed);
                 var saved = JsonFiles.ParseObject(File.ReadAllText(path));
-                Assert(saved["Version"].AsInt == 17 && saved["TimeTriggerSeconds"].AsInt == 456
+                Assert(saved["Version"].AsInt == 18 && saved["TimeTriggerSeconds"].AsInt == 456
                     && new[] {saved, saved["GoalPresets"][0], saved["LoadoutPresets"][0]}.All(row => !row.Linq.Any(field => field.Key == "EnergyNguWeights" || field.Key == "MagicNguWeights")),
                     "connected save strips retired arrays from all historical owners without changing version: " + malformed);
                 Assert(saved["GoalPresets"][0]["future"].ToString() == raw["GoalPresets"][0]["future"].ToString()
@@ -1323,7 +1332,7 @@ namespace NGUInjector
             File.WriteAllText(invalidPath, invalid.ToString(), new UTF8Encoding(true));
             var invalidBytes = File.ReadAllBytes(invalidPath);
             var loaded = store.Load("ngu-invalid");
-            Assert(loaded.Version == 17 && !store.ReadExternalPlan("ngu-invalid").Linq.Any(item => item.Key == "EnergyNguWeights" || item.Key == "MagicNguWeights")
+            Assert(loaded.Version == 18 && !store.ReadExternalPlan("ngu-invalid").Linq.Any(item => item.Key == "EnergyNguWeights" || item.Key == "MagicNguWeights")
                 && invalidBytes.SequenceEqual(File.ReadAllBytes(invalidPath)), "normal reads ignore malformed retired fields without rewriting source " + label);
             store.Save("ngu-invalid", loaded);
             Assert(!JsonFiles.ParseObject(File.ReadAllText(invalidPath)).Linq.Any(item => item.Key == "EnergyNguWeights" || item.Key == "MagicNguWeights"), "native RMW strips malformed retired ratios " + label);
@@ -1379,14 +1388,14 @@ namespace NGUInjector
         private static void CheckStageTiming()
         {
             var store = NGUInjector.Main.CustomPlanStore;
-            Assert(new CustomPlan().Version == 17, "raw models use universal timing schema 17");
+            Assert(new CustomPlan().Version == 18, "raw models use fight schedule schema 18");
             var fresh = store.CreatePlan("timing-new");
-            Assert(store.Load(fresh).Version == 17, "new native plans use schema 17");
+            Assert(store.Load(fresh).Version == 18, "new native plans use schema 18");
             var external = store.CreateExternalPlan("timing-new-external", null);
-            Assert(store.Load(external).Version == 17, "new external plans use schema 17");
-            foreach (var name in new[] {"default", "24hr", "infinite", "1h-3m-rebirth"})
-                Assert(store.Load(name).Version == 17 && !store.ReadExternalPlan(name).Linq.Any(item => item.Key == "ProtectedStageTiming"), "built-in has universal timing without an opt-in: " + name);
-            foreach (var name in new[] {"24hr", "infinite"})
+            Assert(store.Load(external).Version == 18, "new external plans use schema 18");
+            foreach (var name in PlanCatalogNames)
+                Assert(store.Load(name).Version == 18 && !store.ReadExternalPlan(name).Linq.Any(item => item.Key == "ProtectedStageTiming"), "built-in has universal timing without an opt-in: " + name);
+            foreach (var name in new[] {"24hr"})
             {
                 var preset = store.Load(name);
                 Assert(preset.StageDurationSeconds == 86400 && preset.StageLoopStartIndex == 4,
@@ -1401,7 +1410,7 @@ namespace NGUInjector
                 File.WriteAllText(path, "{\"Version\":14,\"ProtectedStageTiming\":" + flag + ",\"StageDurationSeconds\":0,\"future\":9223372036854775807,\"Stages\":[{\"DurationSeconds\":200,\"futureRow\":true},{\"Percent\":3}]}");
                 var original = File.ReadAllBytes(path);
                 var read = store.ReadExternalPlan("timing-old");
-                Assert(read["Version"].AsInt == 17 && read["StageDurationSeconds"].AsInt == 0 && !read.Linq.Any(item => item.Key == "ProtectedStageTiming"), "obsolete flag cannot alter timing or survive normalization: " + flag);
+                Assert(read["Version"].AsInt == 18 && read["StageDurationSeconds"].AsInt == 0 && !read.Linq.Any(item => item.Key == "ProtectedStageTiming"), "obsolete flag cannot alter timing or survive normalization: " + flag);
                 Assert(original.SequenceEqual(File.ReadAllBytes(path)), "normalized read never rewrites source bytes");
                 var model = store.Load("timing-old");
                 store.Save("timing-old", model);
@@ -1414,7 +1423,7 @@ namespace NGUInjector
                 foreach (var name in new[] {"timing-old", copy, nativeCopy})
                 {
                     var saved = store.ReadExternalPlan(name);
-                    Assert(!saved.Linq.Any(item => item.Key == "ProtectedStageTiming") && saved["Version"].AsInt == 17 && saved["StageDurationSeconds"].AsInt == 0
+                    Assert(!saved.Linq.Any(item => item.Key == "ProtectedStageTiming") && saved["Version"].AsInt == 18 && saved["StageDurationSeconds"].AsInt == 0
                         && saved["Stages"][0]["DurationSeconds"].AsInt == 200 && saved["Stages"][1]["Percent"].AsInt == 3,
                         "save/copy preserves universal fixed and zero-flex semantics: " + flag);
                     Assert(saved["future"].Value == "9223372036854775807" && saved["Stages"][0]["futureRow"].AsBool, "obsolete flag cleanup preserves unrelated unknown fields");
@@ -1428,7 +1437,7 @@ namespace NGUInjector
                     + ",\"StageSchedulerEnabled\":false,\"StageLoopStartIndex\":1,\"Stages\":[{\"Name\":\"Time Machine\",\"DurationSeconds\":200},{\"Name\":\"Augments\",\"DurationSeconds\":61},{\"Name\":\"Wandoos\",\"CompletionMode\":1}]}");
                 var name = store.CreateExternalPlan("timing-no-migration", root);
                 var loaded = store.Load(name);
-                Assert(loaded.Version == 17 && loaded.StageDurationSeconds == budget && !loaded.StageSchedulerEnabled && loaded.StageLoopStartIndex == 1
+                Assert(loaded.Version == 18 && loaded.StageDurationSeconds == budget && !loaded.StageSchedulerEnabled && loaded.StageLoopStartIndex == 1
                     && loaded.Stages.Select(stage => stage.DurationSeconds).SequenceEqual(new[] {200, 61, 0}),
                     "old version and false flag never trigger scheduling migration or all-fixed budget rewriting: " + version + "/" + budget);
             }
@@ -1473,7 +1482,7 @@ namespace NGUInjector
                 Assert(zeroLoaded.StageDurationSeconds == 0 && zeroLoaded.Stages[0].DurationSeconds == fixedSeconds
                     && zeroLoaded.Stages[1].Percent == 3, "protected zero CAS preserves fixed work and zero-duration flex weights");
                 var zeroCopy = store.CreateExternalPlan("protected-zero-budget-copy", zeroRead);
-                Assert(store.Load(zeroCopy).Version == 17 && store.Load(zeroCopy).StageDurationSeconds == 0,
+                Assert(store.Load(zeroCopy).Version == 18 && store.Load(zeroCopy).StageDurationSeconds == 0,
                     "copying a protected zero budget never applies new-plan fallback");
             }
             allFixed.StageDurationSeconds = 0;
@@ -1498,7 +1507,7 @@ namespace NGUInjector
                 var existingPath = Path.Combine(preservedDir, name + ".json");
                 var bytes = File.ReadAllBytes(existingPath);
                 var reopened = new CustomPlanStore(preservedDir);
-                Assert(bytes.SequenceEqual(File.ReadAllBytes(existingPath)) && reopened.Load(name).Version == 17
+                Assert(bytes.SequenceEqual(File.ReadAllBytes(existingPath)) && reopened.Load(name).Version == 18
                     && reopened.Load(name).Stages.All(stage => stage.DurationSeconds == 0), "existing built-ins retain their saved rows without timing migration: " + name);
             }
         }
@@ -1522,7 +1531,7 @@ namespace NGUInjector
             store.Save(name, plan);
             Assert(File.ReadAllText(checkpoint) == "old progress", "native cosmetic and timing edits retain stage progress");
             var copy = store.CreatePlan("native-mode-copy", plan);
-            Assert(store.Load(copy).Version == 17 && File.ReadAllText(checkpoint) == "old progress", "native copy does not clear source progress");
+            Assert(store.Load(copy).Version == 18 && File.ReadAllText(checkpoint) == "old progress", "native copy does not clear source progress");
 
             foreach (var obsolete in new[] {false, true})
             {
@@ -1629,8 +1638,8 @@ namespace NGUInjector
         {
             var store = NGUInjector.Main.CustomPlanStore;
             Assert(new CustomPlan().AutoIronPillEnabled, "new plans default automatic Iron Pill to true");
-            foreach (var name in new[] {"default", "24hr", "infinite", "1h-3m-rebirth"})
-                Assert(store.Load(name).AutoIronPillEnabled, "built-in plans retain automatic Iron Pill: " + name);
+            foreach (var name in PlanCatalogNames)
+                Assert(store.Load(name).AutoIronPillEnabled == (name == "24hr"), "only 24hr inherits automatic Iron Pill: " + name);
 
             var path = Path.Combine(_dir, "custom-plans", "iron-pill-optout.json");
             File.WriteAllText(path, "{\"Version\":14,\"Name\":\"iron-pill-optout\",\"future\":42,\"Stages\":[{\"FightOnEntry\":true}]}");
@@ -1652,14 +1661,14 @@ namespace NGUInjector
             Assert(!store.Load("iron-pill-optout").AutoIronPillEnabled, "explicit false survives CAS save/load");
             var copy = store.CreatePlan("iron-pill-optout-copy", store.Load("iron-pill-optout"));
             var copied = store.Load(copy);
-            Assert(!copied.AutoIronPillEnabled && copied.Stages[0].FightOnEntry && copied.SourceJson["future"].AsInt == 42,
-                "native plan clone preserves Iron Pill opt-out, fight on entry, and unknown fields");
+            Assert(!copied.AutoIronPillEnabled && copied.Stages[0].FightSchedule.Id == "legacy-entry-v1-0" && copied.SourceJson["future"].AsInt == 42,
+                "native plan clone preserves Iron Pill opt-out, migrated fight schedule, and unknown fields");
             var externalCopy = store.CreateExternalPlan("iron-pill-optout-external-copy", read);
             Assert(!store.Load(externalCopy).AutoIronPillEnabled, "external plan copy preserves Iron Pill opt-out");
             copied.AutoIronPillEnabled = true;
             store.Save(copy, copied);
             Assert(store.Load(copy).AutoIronPillEnabled, "explicit true overrides retained source false");
-            Assert(store.Load(copy).Version == 17, "Iron Pill flag is preserved in the current schema");
+            Assert(store.Load(copy).Version == 18, "Iron Pill flag is preserved in the current schema");
             foreach (var invalid in new[] {"null", "0", "1", "\"false\"", "{}", "[]"})
             {
                 var bad = store.ReadExternalPlan("iron-pill-optout");
@@ -1673,42 +1682,6 @@ namespace NGUInjector
             }
         }
 
-        private static void CheckFightOnEntry()
-        {
-            var store = NGUInjector.Main.CustomPlanStore;
-            var path = Path.Combine(_dir, "custom-plans", "fight-entry.json");
-            File.WriteAllText(path, "{\"Version\":14,\"Name\":\"fight-entry\",\"Stages\":[{\"Name\":\"old\",\"future\":42},{\"Name\":\"fight\",\"FightOnEntry\":true}]}");
-            var original = File.ReadAllText(path);
-            var read = store.ReadExternalPlan("fight-entry");
-            Assert(read["Stages"][0]["FightOnEntry"].IsBoolean && !read["Stages"][0]["FightOnEntry"].AsBool,
-                "normalized legacy stages explicitly default fight on entry to false");
-            Assert(read["Stages"][1]["FightOnEntry"].AsBool && File.ReadAllText(path) == original,
-                "reading legacy fight opt-in preserves it without rewriting source JSON");
-            store.SaveExternalPlan("fight-entry", read, read[CustomPlanStore.ExternalUiRevisionField].Value);
-            Assert(store.Load("fight-entry").Stages[1].FightOnEntry, "fight opt-in survives normalized CAS save/load");
-            var loaded = store.Load("fight-entry");
-            loaded.Stages = loaded.Stages.Reverse().ToArray();
-            store.Save("fight-entry", loaded);
-            var copy = store.CreatePlan("fight-entry-copy", store.Load("fight-entry"));
-            var copied = store.Load(copy);
-            Assert(copied.Stages[0].FightOnEntry && !copied.Stages[1].FightOnEntry
-                && copied.Stages[1].SourceJson["future"].AsInt == 42, "fight flag follows rows through reorder and clone");
-            copied.Stages[0].FightOnEntry = false;
-            store.Save(copy, copied);
-            Assert(!store.Load(copy).Stages[0].FightOnEntry, "explicit false overrides retained source true");
-            Assert(JsonFiles.ParseObject(File.ReadAllText(Path.Combine(_dir, "custom-plans", copy + ".json")))["Version"].AsInt == 17,
-                "fight field is preserved in the current schema");
-            foreach (var invalid in new[] {"null", "1", "\"true\"", "{}", "[]"})
-            {
-                var bad = store.ReadExternalPlan("fight-entry");
-                bad["Stages"][0]["FightOnEntry"] = JSON.Parse(invalid);
-                var before = File.ReadAllText(path);
-                Reject(() => store.SaveExternalPlan("fight-entry", bad, bad[CustomPlanStore.ExternalUiRevisionField].Value),
-                    "fight on entry rejects non-boolean " + invalid);
-                Assert(File.ReadAllText(path) == before, "invalid fight flag never changes saved plan");
-            }
-        }
-
         private static void CheckStageDurations(NGUInjector.Main main)
         {
             var store = NGUInjector.Main.CustomPlanStore;
@@ -1716,8 +1689,8 @@ namespace NGUInjector
             File.WriteAllText(legacyPath, "{\"Version\":14,\"Name\":\"duration-legacy\",\"NguGoal\":1,\"future\":{\"big\":9223372036854775807},\"Stages\":[{\"Name\":\"weighted\",\"Percent\":0.25,\"futureRow\":\"keep\"}]}");
             var original = File.ReadAllBytes(legacyPath);
             var read = store.ReadExternalPlan("duration-legacy");
-            Assert(read["Version"].AsInt == 17 && !read.Linq.Any(item => item.Key == "EnergyNguWeights" || item.Key == "MagicNguWeights" || item.Key == "NguGoal"),
-                "version 14 read returns 17 without retired plan-owned NGU configuration");
+            Assert(read["Version"].AsInt == 18 && !read.Linq.Any(item => item.Key == "EnergyNguWeights" || item.Key == "MagicNguWeights" || item.Key == "NguGoal"),
+                "version 14 read returns 18 without retired plan-owned NGU configuration");
             Assert(read["Stages"][0]["DurationSeconds"].AsInt == 0 && read["Stages"][0]["DurationUnit"].Value == "%" && read["Stages"][0]["Percent"].AsDouble == .25, "legacy duration defaults retain canonical positive weights");
             Assert(original.SequenceEqual(File.ReadAllBytes(legacyPath)), "duration migration read never writes source");
             read["Stages"][0]["DurationSeconds"] = 61;

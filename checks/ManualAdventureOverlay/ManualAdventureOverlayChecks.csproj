@@ -19,12 +19,21 @@
     <Compile Include="..\PresetIntegration\SupportOverspendChecks.cs" Link="SupportOverspendChecks.cs" />
     <Compile Include="..\PresetIntegration\DesiredMapExecutionChecks.cs" Link="DesiredMapExecutionChecks.cs" />
     <Compile Include="..\PresetIntegration\InlineStageSetupChecks.cs" Link="InlineStageSetupChecks.cs" />
+    <Compile Include="..\PresetIntegration\LockedTimeMachineFallbackChecks.cs" Link="LockedTimeMachineFallbackChecks.cs" />
     <Compile Include="..\PresetIntegration\ExecutionFoundationChecks.cs" Link="ExecutionFoundationChecks.cs" />
     <Compile Include="..\PresetIntegration\ExecutionPersistenceChecks.cs" Link="ExecutionPersistenceChecks.cs" />
     <Compile Include="..\PresetIntegration\ExecutionCoreCutoverChecks.cs" Link="ExecutionCoreCutoverChecks.cs" />
     <Compile Include="..\PresetIntegration\RetainedFarmingRebindChecks.cs" Link="RetainedFarmingRebindChecks.cs" />
     <Compile Include="..\PresetIntegration\RouteExecutorCutoverChecks.cs" Link="RouteExecutorCutoverChecks.cs" />
     <Compile Include="..\PresetIntegration\FiniteActionNativeChecks.cs" Link="FiniteActionNativeChecks.cs" />
+    <Compile Include="..\PresetIntegration\FruitCapacityChecks.cs" Link="FruitCapacityChecks.cs" />
+    <Compile Include="..\PresetIntegration\RebirthFruitBeforeBossChecks.cs" Link="RebirthFruitBeforeBossChecks.cs" />
+    <Compile Include="..\PresetIntegration\RepeatablePurchaseChecks.cs" Link="RepeatablePurchaseChecks.cs" />
+    <Compile Include="..\PresetIntegration\NguStartupObservationChecks.cs" Link="NguStartupObservationChecks.cs" />
+    <Compile Include="..\PresetIntegration\OrdinaryTowerAuthorityChecks.cs" Link="OrdinaryTowerAuthorityChecks.cs" />
+    <Compile Include="..\PresetIntegration\PostRebirthRouteHandoffChecks.cs" Link="PostRebirthRouteHandoffChecks.cs" />
+    <Compile Include="..\PresetIntegration\StageEntryHandoffChecks.cs" Link="StageEntryHandoffChecks.cs" />
+    <Compile Include="..\PresetIntegration\OrdinaryCapacityFundingChecks.cs" Link="OrdinaryCapacityFundingChecks.cs" />
     <Compile Include="..\PresetIntegration\ActionPreparationCommitmentChecks.cs" Link="ActionPreparationCommitmentChecks.cs" />
     <Compile Include="..\PresetIntegration\ActionPillPrecisionChecks.cs" Link="ActionPillPrecisionChecks.cs" />
     <Compile Include="..\CombatPrepIntegration\Program.cs" Link="CombatFixture.cs" />

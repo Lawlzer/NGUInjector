@@ -299,10 +299,22 @@ namespace NGUInjector
             wanted = ResolveExecutionSetup(wanted);
             if (!wanted.ControlsGear) wanted.Gear = LoadoutManager.CaptureExactLoadout();
             var previous = _activeSetupGrant;
-            wanted.Grant = GrantSelectedSetup(wanted);
-            _activeSetupGrant = wanted.Grant;
-            try { ApplySelectedSetupCore(wanted); }
-            finally { _activeSetupGrant = previous; }
+            var route = wanted.RouteRetirementAuthorized;
+            var retirement = CaptureSelectedSetupRouteRetirement(wanted);
+            try
+            {
+                // Keep the producer's application object; uncontrolled gear and
+                // mutation outcomes must be visible to its receipt/verifier.
+                wanted.RouteRetirementAuthorized = retirement;
+                wanted.Grant = GrantSelectedSetup(wanted);
+                _activeSetupGrant = wanted.Grant;
+                ApplySelectedSetupCore(wanted);
+            }
+            finally
+            {
+                if (ReferenceEquals(wanted.RouteRetirementAuthorized, retirement)) wanted.RouteRetirementAuthorized = route;
+                _activeSetupGrant = previous;
+            }
         }
 
         private void ApplySelectedSetupCore(SelectedSetupRequirements wanted)
@@ -431,6 +443,8 @@ namespace NGUInjector
                     Character.adventureController.zoneSelector.changeZone(-1);
                     require();
                     if (Character.adventure.zone != -1) throw new InvalidOperationException("Selected setup could not observe safe route retirement.");
+                    // Publish only the verified zone effect, not new settings or controller ownership.
+                    if (_ordinaryRouteZone.HasValue) _ordinaryRouteZone = -1;
                 }
                 needsSafeRoute = true;
                 wanted.ObserveRouteRetirement?.Invoke();
@@ -450,6 +464,10 @@ namespace NGUInjector
             require();
             if (wanted.GearAppliedValid != null && !wanted.GearAppliedValid())
                 throw new InvalidOperationException("Non-owned energy/R3 pools changed during Magic NGU gear application.");
+            // Only an actual verified owned swap arms the existing delayed-debit
+            // budget. This adds no recall authority and leaves no-op replay alone.
+            if (gearChanged && ((int)wanted.Recall & 3) != 0)
+                LimitExecutionCapacityFunding((int)wanted.Recall & 3);
             expectedGear = LoadoutManager.CaptureExactLoadout();
             gearMaterial = expectedGear.Select(x => LoadoutPresetPrimitiveKey(x.equipment)).ToArray();
             // Pool refill/depletion is reobserved for funding after support. Changes

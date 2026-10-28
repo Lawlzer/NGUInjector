@@ -34,9 +34,9 @@ Coupled lifecycle tests moved to the compiled native route selector and TitanGol
 The old fake snapshot/lease producers and their historical-restore assertions were
 removed, not patched with always-successful grants. See
 `docs/route-combat-review-20261022.md` for the requirement mapping and remaining
-acceptance boundaries. Native commands must use the serialized verifier:
+acceptance boundaries. Native commands use the fail-fast shared-output verifier:
 
 ```powershell
-& A:\misc\NGU-Automation\temp\verify-executor-offline.ps1 -Suite PresetIntegration -Selector --route-executor-cutover
-& checks\TitanGold\VerifyOffline.ps1
+.\verify.ps1 -Scope Native -Suite PresetIntegration -Selector '--route-executor-cutover'
+.\verify.ps1 -Scope Native -Suite TitanGold
 ```

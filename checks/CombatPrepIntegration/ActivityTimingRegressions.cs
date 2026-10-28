@@ -205,7 +205,8 @@ public static partial class Program
             if ((int)Get(run, "ActivityIndex") < 0)
             { CombatPrepClockRead = null; ControlledCombatPrepClock += 30; }
         };
-        ScheduledRefresh(run);
+        Set(run, "LastRefresh", -1d); CallMain("AdvanceCombatPrep");
+        Equal(true, ReferenceEquals(run, Get(MainInstance, "_combatPrepRun")), "failed-run timing is observed before ordinary same-entry continuation creates a new run");
         Equal("failed", Get(run, "Status"), "failed remaining-budget planner terminates explicitly");
         Equal(true, ((string)Get(run, "Reason")).Contains("no executable phases"), "failure occurs after outgoing interval settlement");
         AssertActivityTimes(CallMain("GetCombatPrepRuntime"), new Dictionary<string, double> { { kind, 9 } });
@@ -297,7 +298,8 @@ public static partial class Program
             ControlledCombatPrepClock = (double)Get(run, "PhaseStarted") + 6;
             var kind = (string)Get(ScheduledPhase(run), "Kind");
             FailDesiredEnergyPreflight = true;
-            CallMain("CancelCombatPrep", Parse("{\"runId\":\"" + Get(run, "Id") + "\"}"));
+            CallMain("EndCombatPrep", "cancelled", "Injector unloaded.", true);
+            Equal(false, FailDesiredEnergyPreflight, "timing fixture reaches actual narrow resource release");
             Equal(true, Get(run, "CleanupPending"), "real native resource observation failure defers narrow release");
             var expected = new Dictionary<string, double> { { kind, 6 } };
             AssertActivityTimes(CallMain("GetCombatPrepRuntime"), expected);
@@ -306,8 +308,9 @@ public static partial class Program
             AssertActivityTimes(CallMain("GetCombatPrepRuntime"), expected);
             Set(Controller, "midDrag", false);
             if (handoff) Set(Get(Character, "bossController"), "isFighting", true);
-            CallMain("TickCombatPrep");
+            CallMain("AdvanceCombatPrep");
             Equal(false, Get(run, "CleanupPending"), "retry either finishes or relinquishes cleanup");
+            CallMain("ServiceAutomaticRecovery");
             Equal(false, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "same-pass coordinator retires resolved/relinquished narrow release metadata");
             Equal(handoff, Get(run, "Retired"), "native combat handoff retires old authority; healthy release completes without historical restoration");
             CallMain("ServiceAutomaticRecovery");

@@ -203,16 +203,15 @@ public static partial class PresetIntegrationChecks
             Equal(3000L, atTargets[0], fault + " retained native toughness target is positive3000");
             Equal(3000L, atTargets[1], fault + " retained native power target is positive3000");
             var basic = ExecutionStopProtectedState();
-            // A conserved native deficit is observed by the tokenized review; the
-            // actual production writer must repair it, not claim a retained receipt.
+            // Normal restart restores intent without action-history approval. The
+            // native writer must repair this deficit, not import an applied receipt.
             var ngu = ((IList)Get(Get(Character, "NGU"), "skills"))[0];
             Set(ngu, "energy", (long)Get(ngu, "energy") - 1); Set(Character, "idleEnergy", (long)Get(Character, "idleEnergy") + 1);
-            var preview = CallMain("PreviewExecutionRebind", JsonParse("{}"));
-            Equal("3c2748bd93c74f578553dcee8f3b09a2", Property(Json(preview, "acquisition"), "Value"), "actual retained acquisition survives real preview");
-            Equal(49822, Property(Json(preview, "horizon"), "AsInt"), "actual retained horizon survives review");
-            var reviewedArgs = ExecutionReviewApplyArgs(preview);
-            CallMain("ApplyExecutionRebind", reviewedArgs);
             var policy = Get(MainInstance, "_globalPresetApplyingPolicy");
+            Equal(null, Get(MainInstance, "_protectedSelectedPolicyIssue"), "valid retained restart needs no action-history approval");
+            Equal(false, Property(Json(CallMain("GetExecutionPersistenceRuntime"), "reviewRequired"), "AsBool"), "normal retained startup has no old-scope quarantine");
+            Equal("3c2748bd93c74f578553dcee8f3b09a2", Get(policy, "Acquisition"), "actual retained acquisition restores directly");
+            Equal(49822, Get(policy, "Horizon"), "actual retained horizon restores directly");
             Check(((Array)Get(Get(Get(policy, "Candidate"), "Support"), "Diggers")).Cast<object>().All(x => Get(x, "Name") == null),
                 "actual semantic import has no persisted digger display names; the test does not seed all-nonnull policy metadata");
             var writes = ResourceTransfers; var searches = PresetSearches; var projections = 0;
@@ -243,8 +242,7 @@ public static partial class PresetIntegrationChecks
                 CallMain("ReconcileCustomResources", plan, true);
                 Equal(uncertainWrites, ResourceTransfers, fault + " ordinary service cannot replay uncertain native work without review");
                 Equal(routes, AdventureZoneEntries, fault + " ordinary service cannot reacquire an uncertain route");
-                Throws(() => CallMain("ApplyExecutionRebind", reviewedArgs), "expired", fault + " the spent original token cannot acknowledge new uncertainty");
-                preview = CallMain("PreviewExecutionRebind", JsonParse("{}")); CallMain("ApplyExecutionRebind", ExecutionReviewApplyArgs(preview));
+                var preview = CallMain("PreviewExecutionRebind", JsonParse("{}")); CallMain("ApplyExecutionRebind", ExecutionReviewApplyArgs(preview));
                 Invoke(Get(Get(Character, "adventureController"), "zoneSelector"), "changeZone", -1);
                 System.Threading.Thread.Sleep(1100); // Existing retry backoff is not renewed authority or a new stage budget.
                 CallMain("ReconcileCustomResources", plan, true);
@@ -269,6 +267,11 @@ public static partial class PresetIntegrationChecks
             {
                 Check(RetainedProjectedResult != null, "positive retained payload executes the full real result serializer");
                 Equal(0, RetainedNullStrings, "current snapshot labels eliminate all imported null-name JSON strings without changing semantic decisions");
+                var exported = CallMain("ExportProtectedPresetSelection", resumed, Get(receipt, "Owner"));
+                Equal(null, Get(Get(resumed, "Candidate"), "SetupScore"), "historical import preserves exact decisions without inventing a setup-search rank");
+                Equal(null, Get(Get(resumed, "Candidate"), "SetupEligible"), "historical import does not manufacture a setup-search eligibility witness");
+                var roundTrip = CallMain("ImportExecutionSelection", exported, null);
+                Equal(null, Get(Get(roundTrip, "Candidate"), "SetupScore"), "semantic roundtrip never substitutes current utility for an absent historical rank");
             }
             var committedWrites = ResourceTransfers; var committedRoutes = AdventureZoneEntries;
             CallMain("ReconcileCustomResources", plan, true);

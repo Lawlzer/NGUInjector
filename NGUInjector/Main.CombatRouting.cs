@@ -1,9 +1,6 @@
 using System;
 using System.Linq;
 using System.Collections.Generic;
-using System.IO;
-using System.Globalization;
-using SimpleJSON;
 using NGUInjector.Managers;
 
 namespace NGUInjector
@@ -28,6 +25,7 @@ namespace NGUInjector
             internal object[] ResourceObjects;
             internal Dictionary<ResourceTarget, long[]> ProtectedResources;
             internal Func<bool> ResourceContextCurrent;
+            internal Func<bool> ApplicationCurrent;
             internal ExecutionGrant CombatGrant;
             internal ExecutionGrant TransitionGrant;
             internal string ResourceIssue;
@@ -40,8 +38,10 @@ namespace NGUInjector
             SupportSelection selectedSupport = null, bool capacityTransition = false,
             GearRecallFootprint resourceRecall = GearRecallFootprint.None, string acquisition = null)
         {
-            if (capacityTransition && !owner.StartsWith("manual-titan:", StringComparison.Ordinal))
-                throw new InvalidOperationException("Only manual titan may opt into the controlled-empty capacity policy.");
+            var preparation = owner == "fight-preparation" ? _fightPreparationAttempt : null;
+            if (capacityTransition && !owner.StartsWith("manual-titan:", StringComparison.Ordinal)
+                && (preparation == null || preparation.Identity.Owner != owner || preparation.Identity.Acquisition != acquisition))
+                throw new InvalidOperationException("Controlled-empty capacity requires a manual titan or identified fight preparation.");
             var process = new RouteProcess { Owner = owner, Objects = CombatPrepAdventureRouteObjects(),
                 Zone = Character.adventure.zone, AutoAttack = Character.adventure.autoattacking,
                 BeastMode = Character.adventure.beastModeOn, CapacityTransition = capacityTransition, ResourceRecall = resourceRecall };
@@ -56,6 +56,7 @@ namespace NGUInjector
                 domains |= (ExecutionDomain)(int)resourceRecall;
                 var settings = Settings; var stage = _customStageKey; var generation = _protectedGeneration;
                 var entry = _protectedScheduler?.Entry;
+                var scheduler = _protectedScheduler;
                 process.ResourceObjects = ResourceWriter.CaptureResourceContext(Character).Concat(SupportObjects()).Concat(CombatPrepAdventureRouteObjects()).ToArray();
                 process.ProtectedResources = ResourceWriter.CaptureAllocations(Character).Where(pair =>
                     pair.Key == ResourceTarget.BasicAttack || pair.Key == ResourceTarget.BasicDefense
@@ -64,43 +65,50 @@ namespace NGUInjector
                     || ResourceWriter.Lane(pair.Key) == 1 && !Settings.ManageMagic
                     || (_resourceSetupExecutor.Application.BlockedLanes & (1 << ResourceWriter.Lane(pair.Key))) != 0)
                     .ToDictionary(x => x.Key, x => x.Value?.ToArray());
-                process.ResourceContextCurrent = () => ReferenceEquals(settings, Settings) && stage == _customStageKey
-                    && generation == _protectedGeneration && entry == _protectedScheduler?.Entry;
+                process.ResourceContextCurrent = () => ReferenceEquals(settings, Settings) && generation == _protectedGeneration
+                    && (preparation == null ? stage == _customStageKey && entry == _protectedScheduler?.Entry
+                        : ReferenceEquals(preparation, _fightPreparationAttempt) && ReferenceEquals(scheduler, _protectedScheduler)
+                            && preparation.Epoch.Matches() && ReferenceEquals(preparation.Boss, Character.bossController)
+                            && preparation.PlanFile == Settings.CustomPlanFile);
+                if (preparation != null)
+                    process.ApplicationCurrent = () => !preparation.Cancelled && !preparation.Completed
+                        && (preparation.EntryCurrent == null || preparation.EntryCurrent());
             }
             process.Permission = RoutePermissionKey(owner);
-            process.Claim = BeginExecutionClaim(owner, acquisition ?? _routeRebindingAcquisition ?? Guid.NewGuid().ToString("N"),
+            process.Claim = BeginExecutionClaim(owner, acquisition ?? Guid.NewGuid().ToString("N"),
                 domains,
                 () => !process.Admitted || ReferenceEquals(process, _manualTitanProcess)
                     || ReferenceEquals(process, _customTitanGoldProcess) || ReferenceEquals(process, _customTitanFightProcess)
                     || ReferenceEquals(process, _customAdventureGoldProcess) || ReferenceEquals(process, _maxItopodProcess)
-                    || ReferenceEquals(process, _delegatedManualAdventureProcess) || ReferenceEquals(process, _bossPushProcess));
+                    || ReferenceEquals(process, _delegatedManualAdventureProcess) || ReferenceEquals(process, _bossPushProcess)
+                    || ReferenceEquals(process, _fightPreparationAttempt?.Process));
             // Capture the predecessor before claim.Setup resolves to the not-yet-applied incoming setup.
-            var entryRoute = CaptureExecutionBaselineRouteRetirement(process.Claim);
+            Func<bool> entryRoute = null;
             process.Setup = new SelectedSetupRequirements { Gear = gear, ControlsGear = controlsGear,
                 Recall = capacityTransition ? resourceRecall : GearRecallFootprint.None, Support = support, ChangeSupport = selectedSupport != null,
                 Budget = ActivityPolicy.Current.DiggerBudgetFraction, EnforceSupportBudget = false,
-                Authorized = () => ExecutionClaimCurrent(process.Claim) && process.Permission == RoutePermissionKey(owner),
+                Authorized = () => ExecutionClaimCurrent(process.Claim) && process.Permission == RoutePermissionKey(owner)
+                    && !Character.bossController.isFighting && !Character.bossController.nukeBoss,
                 MaterialValid = () => !gear.Where((x, i) => LoadoutPresetPrimitiveKey(x.equipment) != material[i]).Any(),
                 RouteRetirementAuthorized = () => RouteProcessMatches(process)
-                    && (process.Applied || Character.adventure.zone == -1 || entryRoute()),
+                    && (process.Applied || Character.adventure.zone == -1 || entryRoute?.Invoke() == true),
                 ObserveRouteRetirement = () => process.Zone = -1 };
             if (capacityTransition && resourceRecall != GearRecallFootprint.None)
                 SetExecutionResourcePolicy(process.Claim, new ResourceSetupIntent { Owner = owner,
                     Energy = (resourceRecall & GearRecallFootprint.Energy) != 0, Magic = (resourceRecall & GearRecallFootprint.Magic) != 0,
                     Desired = ResourceWriter.EmptyDesiredMap((resourceRecall & GearRecallFootprint.Energy) != 0, (resourceRecall & GearRecallFootprint.Magic) != 0),
-                    Authorized = () => process.ResourceRetired && CapacityRouteOwnership(process)
+                    Authorized = () => process.ResourceRetired && process.ResourceIssue == null && CapacityRouteOwnership(process)
                         && CapacityRoutePermissions(process) && (process.Claim.SetupReleased || process.Permission == RoutePermissionKey(owner))
                         && (process.Applied || ValidateExecutionGrant(process.TransitionGrant, process.Claim.Domains))
                         && (!process.ResourceApplied || CapacityRouteEmpty(process)) });
             if (capacityTransition) process.ResourceRevisions = (long[])_executionDomainRevisions.Clone();
+            entryRoute = CaptureExecutionBaselineRouteRetirement(process.Claim);
             if (capacityTransition)
             {
                 process.Claim.CapacityTransition = true;
-                process.TransitionGrant = ResolveExecutionGrant(owner, process.Claim.Acquisition, domains,
-                    () => CapacityRouteOwnership(process) && CapacityRoutePermissions(process)
-                        && process.Permission == RoutePermissionKey(owner) && process.ResourceIssue == null
-                        && (!process.ResourceApplied || CapacityRouteEmpty(process)), process.Claim);
-                process.Setup.Authorized = () => ValidateExecutionGrant(process.TransitionGrant, process.Claim.Domains);
+                process.TransitionGrant = ResolveCapacityRouteTransitionGrant(process);
+                process.Setup.Authorized = () => !Character.bossController.isFighting && !Character.bossController.nukeBoss
+                    && ValidateExecutionGrant(process.TransitionGrant, process.Claim.Domains);
             }
             process.Admitted = true;
             return process;
@@ -116,19 +124,27 @@ namespace NGUInjector
         private bool CapacityRouteOwnership(RouteProcess process)
         {
             if (!ExecutionClaimCurrent(process.Claim) || process.ResourceContextCurrent?.Invoke() != true) return false;
-            var context = ResourceWriter.CaptureResourceContext(Character).Concat(SupportObjects()).Concat(CombatPrepAdventureRouteObjects()).ToArray();
-            if (context.Length != process.ResourceObjects.Length || context.Where((x, i) => !ReferenceEquals(x, process.ResourceObjects[i])).Any()) return false;
-            var current = ResourceWriter.CaptureAllocations(Character);
-            return process.ProtectedResources.All(pair => pair.Value == null ? current[pair.Key] == null
-                : current[pair.Key] != null && pair.Value.SequenceEqual(current[pair.Key]));
+            try
+            {
+                var context = ResourceWriter.CaptureResourceContext(Character).Concat(SupportObjects()).Concat(CombatPrepAdventureRouteObjects()).ToArray();
+                if (context.Length != process.ResourceObjects.Length || context.Where((x, i) => !ReferenceEquals(x, process.ResourceObjects[i])).Any()) return false;
+                var current = ResourceWriter.CaptureAllocations(Character);
+                return process.ProtectedResources.All(pair => pair.Value == null ? current[pair.Key] == null
+                    : current[pair.Key] != null && pair.Value.SequenceEqual(current[pair.Key]));
+            }
+            catch { return false; }
         }
 
         private bool CapacityRouteEmpty(RouteProcess process)
         {
-            var current = ResourceWriter.CaptureAllocations(Character);
-            var policy = process.Claim.ResourcePolicy;
-            return policy == null ? process.ResourceRecall == GearRecallFootprint.None
-                : policy.Desired.All(pair => current[pair.Key] != null && current[pair.Key].SequenceEqual(pair.Value));
+            try
+            {
+                var current = ResourceWriter.CaptureAllocations(Character);
+                var policy = process.Claim.ResourcePolicy;
+                return policy == null ? process.ResourceRecall == GearRecallFootprint.None
+                    : policy.Desired.All(pair => current[pair.Key] != null && current[pair.Key].SequenceEqual(pair.Value));
+            }
+            catch { return false; }
         }
 
         private bool RouteProcessDependenciesReady(RouteProcess process) => process != null && process.Applied
@@ -136,7 +152,9 @@ namespace NGUInjector
             && (!process.Setup.ControlsGear || LoadoutManager.ExactLoadoutMatches(process.Setup.Gear))
             && ((process.Claim.Domains & ExecutionDomain.Support) == 0 || CaptureSupportState().Selection.StableKey == process.Setup.Support.StableKey)
             && (!process.CapacityTransition || process.ResourceIssue == null && process.ResourceApplied
-                && CapacityRouteOwnership(process) && CapacityRoutePermissions(process) && CapacityRouteEmpty(process));
+                && CapacityRouteOwnership(process) && CapacityRoutePermissions(process) && CapacityRouteEmpty(process))
+            && (!process.BorrowedPreparation || FightPreparationDependenciesReady
+                && ReferenceEquals(FightPreparationClaim, process.Claim) && ReferenceEquals(FightPreparationSetup, process.Setup));
 
         private string RoutePermissionKey(string owner)
         {
@@ -144,6 +162,7 @@ namespace NGUInjector
                 return Settings.ManualTitanEnabled + ":" + Settings.ManualTitanZone + ":" + Settings.ManualTitanLoadout
                     + ":" + Settings.ManualTitanRequireAT + ":" + Settings.ManualTitanMaxDeaths;
             if (owner == "boss-push") return _bossPushRunning + ":" + _bossPushIdentity;
+            if (owner == "fight-preparation") return ExecutionRebindPermissions();
             return Settings.CustomAdventureEnabled + ":" + Settings.CustomAdventureGoldPush + ":" + Settings.CustomAdventureMode
                 + ":" + Settings.CustomAdventureZone + ":" + Settings.ManualAdventureEnabled + ":" + Settings.ManualAdventureLoadout;
         }
@@ -156,7 +175,8 @@ namespace NGUInjector
 
         private bool ApplyRouteProcess(RouteProcess process)
         {
-            PersistRouteExecutionCommitments();
+            if (!ReferenceEquals(reference, this) || _unloaded) return false;
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
             if (process.CapacityTransition)
             {
                 if (!CapacityRouteOwnership(process) || !CapacityRoutePermissions(process) || process.ResourceIssue != null
@@ -196,15 +216,74 @@ namespace NGUInjector
 
         private bool RouteProcessReady(RouteProcess process) => RouteProcessMatches(process) && RouteProcessDependenciesReady(process);
 
+        private ExecutionGrant ResolveCapacityRouteTransitionGrant(RouteProcess process) =>
+            ResolveExecutionGrant(process.Claim.Owner, process.Claim.Acquisition, process.Claim.Domains,
+                () => CapacityRouteOwnership(process) && CapacityRoutePermissions(process)
+                    && process.Permission == RoutePermissionKey(process.Owner) && process.ResourceIssue == null
+                    && (process.ApplicationCurrent == null || process.ApplicationCurrent())
+                    && (!process.ResourceApplied || CapacityRouteEmpty(process)), process.Claim);
+
+        // Capture before the purchase; consume only its returned verified result, after
+        // the runner invalidates Support. No owner, selection or attempt budget changes.
+        internal Action<FiniteActionResult> CaptureRouteSupportGrowthApproval()
+        {
+            var process = _manualTitanProcess;
+            if (process?.CapacityTransition != true || !RouteProcessReady(process) || process.Claim.SetupReleased) return null;
+            var claim = process.Claim; var setup = process.Setup;
+            var transition = process.TransitionGrant; var combat = process.CombatGrant;
+            if (!ValidateExecutionGrant(transition, claim.Domains)
+                || combat != null && !ValidateExecutionGrant(combat, claim.Domains)) return null;
+            var owner = claim.Owner; var acquisition = claim.Acquisition; var domains = claim.Domains; var routeOwner = process.Owner;
+            var permission = process.Permission;
+            var current = claim.Current; var policy = claim.ResourcePolicy;
+            var settings = Settings; var generation = _executionGeneration;
+            var revisions = (long[])_executionDomainRevisions.Clone();
+            var conflicts = SelectedSetupConflictVersion(Character);
+            var allocations = ResourceWriter.AllocatedResourceKey();
+            var consumed = false;
+            return result => {
+                if (consumed) return;
+                consumed = true;
+                if (result?.Invoked != true || !result.Verified) return;
+                Func<bool> stillOwned = () => ReferenceEquals(_manualTitanProcess, process)
+                    && ReferenceEquals(process.Claim, claim) && ReferenceEquals(process.Setup, setup)
+                    && ReferenceEquals(claim.Setup, setup) && ReferenceEquals(claim.Current, current)
+                    && ReferenceEquals(claim.ResourcePolicy, policy) && !claim.SetupReleased
+                    && claim.Owner == owner && claim.Acquisition == acquisition && claim.Domains == domains && process.Owner == routeOwner
+                    && ReferenceEquals(process.TransitionGrant, transition) && ReferenceEquals(process.CombatGrant, combat)
+                    && ReferenceEquals(Settings, settings) && generation == _executionGeneration
+                    && SelectedSetupConflictVersion(Character) == conflicts
+                    && Enumerable.Range(0, revisions.Length).All(i => _executionDomainRevisions[i]
+                        == revisions[i] + ((1 << i) == (int)ExecutionDomain.Support ? 1 : 0))
+                    && process.Permission == permission && permission == RoutePermissionKey(routeOwner) && RouteProcessReady(process)
+                    && ResourceWriter.AllocatedResourceKey() == allocations;
+                var nextTransition = ResolveCapacityRouteTransitionGrant(process);
+                var nextCombat = combat == null ? null : ResolveExecutionGrant(owner, acquisition, domains,
+                    () => RouteProcessDependenciesReady(process) && process.Permission == RoutePermissionKey(process.Owner), claim);
+                if (!VerifyExecutionPrerequisites(nextTransition, domains, stillOwned)
+                    || nextCombat != null && !VerifyExecutionPrerequisites(nextCombat, domains, stillOwned)) return;
+                process.TransitionGrant = nextTransition;
+                process.CombatGrant = nextCombat;
+            };
+        }
+
         private ExecutionGrant RouteProcessGrant(RouteProcess process, bool retirement = false)
         {
+            if (process?.BorrowedPreparation == true && retirement)
+                return ResolveExecutionGrantCore(process.Claim.Owner, process.Claim.Acquisition,
+                    ExecutionDomain.Route | ExecutionDomain.NativeSettings,
+                    () => RouteProcessMatches(process) && ExecutionClaimSetupOwned(process.Claim)
+                        && ReferenceEquals(FightPreparationClaim, process.Claim) && ReferenceEquals(FightPreparationSetup, process.Setup)
+                        && (_fightPreparationAttempt?.Process == null || CapacityRouteOwnership(_fightPreparationAttempt.Process)
+                            && (!_fightPreparationAttempt.Process.ResourceApplied || CapacityRouteEmpty(_fightPreparationAttempt.Process))),
+                    null, new[] { process.Claim, process.SettingsClaim }, true);
             if (process?.CapacityTransition == true)
             {
                 if (retirement)
                 {
                     if (!RouteProcessMatches(process) || !ExecutionClaimSetupOwned(process.Claim) || !CapacityRouteOwnership(process)
                         || process.ResourceApplied && !CapacityRouteEmpty(process)) return null;
-                    return ResolveExecutionRetirementGrant(process.Claim, ExecutionDomain.Route | ExecutionDomain.NativeSettings,
+                    return ResolveExecutionRetirementGrant(process.Claim, process.Claim.Domains & (ExecutionDomain.Route | ExecutionDomain.NativeSettings),
                         () => RouteProcessMatches(process) && CapacityRouteOwnership(process) && (!process.ResourceApplied || CapacityRouteEmpty(process)));
                 }
                 if (!RouteProcessReady(process)) return null;
@@ -216,7 +295,9 @@ namespace NGUInjector
             if (!RouteProcessReady(process)) return null;
             if (process.BorrowedPreparation && !retirement)
                 return ResolveExecutionGrant(process.Claim.Owner, process.Claim.Acquisition,
-                    process.Claim.Domains | ExecutionDomain.NativeSettings,
+                    // Boss effects depend on the prep's resource hold but do not mutate
+                    // those lanes or invalidate its acquired capacity revisions.
+                    (process.Claim.Domains & ~(ExecutionDomain)7) | ExecutionDomain.NativeSettings,
                     () => RouteProcessReady(process) && ReferenceEquals(FightPreparationClaim, process.Claim)
                         && ReferenceEquals(FightPreparationSetup, process.Setup) && ReferenceEquals(process, _bossPushProcess),
                     resolvedClaims: new[] { process.Claim, process.SettingsClaim });
@@ -230,30 +311,31 @@ namespace NGUInjector
         private void ObserveRouteProcess(RouteProcess process)
         {
             // Only the typed actuator publishes its own verified route/settings effects.
-            var changed = process.Zone != Character.adventure.zone || process.AutoAttack != Character.adventure.autoattacking
-                || process.BeastMode != Character.adventure.beastModeOn;
             process.Zone = Character.adventure.zone;
             process.AutoAttack = Character.adventure.autoattacking;
             process.BeastMode = Character.adventure.beastModeOn;
-            if (changed) PersistRouteExecutionCommitments();
         }
 
         private bool EndRouteProcess(RouteProcess process)
         {
             if (process == null) return true;
-            if (!process.Claim.Epoch.Matches()) { EndExecutionClaim(process.Claim, false); return true; }
-            if (process.CapacityTransition && process.ResourceRecall != GearRecallFootprint.None) return EndCapacityRouteProcess(process);
+            if (!ReferenceEquals(reference, this) || _unloaded) return true;
+            if (!process.Claim.Epoch.Matches()) return EndExecutionClaim(process.Claim, false);
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
+            if (process.CapacityTransition && (process.ResourceRecall != GearRecallFootprint.None || process.Owner == "fight-preparation"))
+                return EndCapacityRouteProcess(process);
             if (process.Claim.Ended) return EndExecutionClaim(process.Claim, _executionLifecycle == ExecutionLifecycle.Running && !_routeHandoffPending);
             if (!RouteProcessMatches(process) || !ExecutionClaimSetupOwned(process.Claim))
             {
                 RecordSelectedSetupConflict(Character, Character.stats.rebirthNumber, "route", "Temporary route changed externally; prerequisites retained.");
+                if (process.BorrowedPreparation) return false;
                 EndExecutionClaim(process.Claim, false);
                 return true;
             }
             var grant = RouteProcessGrant(process, true);
-            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
             if (Character.adventure.zone != -1
                 && !_combManager.MoveToZone(-1, grant, () => ObserveRouteProcess(process))) return false;
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
             ObserveOrdinaryRoute();
             if (process.BorrowedPreparation) return true;
             return EndExecutionClaim(process.Claim, _executionLifecycle == ExecutionLifecycle.Running && !_routeHandoffPending);
@@ -264,20 +346,42 @@ namespace NGUInjector
             // Only our verified terminal path can make an ended same-epoch hold
             // idempotent. An externally ended claim grants no native cleanup rights.
             if (process.ResourceHoldEnded && process.Claim.Ended)
-            { PersistRouteExecutionCommitments(); return true; }
+                return true;
             if (!CapacityRouteOwnership(process) || !ExecutionClaimSetupOwned(process.Claim)
                 || !RouteProcessMatches(process) || process.ResourceApplied && !CapacityRouteEmpty(process)
                 || SelectedSetupConflicts.TryGetValue(Character, out var unresolved) && unresolved.Rebirth == Character.stats.rebirthNumber
                     && (unresolved.Gear != null || unresolved.Support != null || unresolved.Route != null))
             {
-                process.ResourceIssue = "Capacity transition retirement requires exact still-owned setup/resources and route; review is required.";
-                return false;
+                process.ResourceIssue = "Capacity transition authority changed; native setup/resources retained and attempt cancelled.";
+                if (process.Owner == "fight-preparation") return false;
+                EndExecutionClaim(process.Claim, false);
+                return process.Claim.Ended;
             }
             if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
             if (!process.ResourceAttempted && !process.ResourceApplied && !process.Applied) return EndExecutionClaim(process.Claim, false);
             if (Character.adventure.zone != -1 && !_combManager.MoveToZone(-1, RouteProcessGrant(process, true), () => ObserveRouteProcess(process))) return false;
-            if (!CapacityRoutePermissions(process)) process.ResourceIssue = "Capacity lane permission/revision changed; explicit review is required.";
-            if (process.ResourceIssue != null) return false;
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
+            if (!CapacityRoutePermissions(process) && process.ResourceIssue == null)
+            {
+                if (process.Owner == "fight-preparation"
+                    && (_resourceSetupExecutor.Application.BlockedLanes & (int)process.ResourceRecall) == 0
+                    && !ExecutionScopeNeedsReview(ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route | ExecutionDomain.NativeSettings)
+                    && (_executionLifecycle == ExecutionLifecycle.Running || _executionLifecycle == ExecutionLifecycle.Quiescing))
+                {
+                    // Withdraw exact owned authority without applying or funding the expired policy.
+                    LimitExecutionCapacityFunding((int)process.ResourceRecall);
+                    if (!EndExecutionClaim(process.Claim, false)) return false;
+                    process.ResourceHoldEnded = true;
+                    return true;
+                }
+                process.ResourceIssue = "Capacity lane permission/revision changed; native setup retained.";
+            }
+            if (process.ResourceIssue != null)
+            {
+                if (process.Owner == "fight-preparation") return false;
+                EndExecutionClaim(process.Claim, false);
+                return process.Claim.Ended;
+            }
             if (_executionLifecycle == ExecutionLifecycle.Quiescing)
             {
                 // Safe terminal shutdown withdraws authority, not native setup.
@@ -285,12 +389,10 @@ namespace NGUInjector
                 LimitExecutionCapacityFunding((int)process.ResourceRecall);
                 if (!EndExecutionClaim(process.Claim, false)) return false;
                 process.ResourceHoldEnded = true;
-                PersistRouteExecutionCommitments();
                 return true;
             }
             if (_executionLifecycle != ExecutionLifecycle.Running) return false;
             process.Claim.SetupReleased = true;
-            PersistRouteExecutionCommitments();
             var baseline = _executionBaseline;
             if (baseline?.Authorized?.Invoke() != true)
                 baseline = FocusSetupCurrent(_focusSetupSelection) ? _focusSetupSelection.Desired
@@ -300,8 +402,10 @@ namespace NGUInjector
                 var successor = baseline.Copy(); var current = baseline.Authorized;
                 successor.ResolvedClaims = new[] { process.Claim };
                 successor.Recall = process.ResourceRecall;
-                successor.Authorized = () => current() && CapacityRouteOwnership(process) && CapacityRoutePermissions(process) && CapacityRouteEmpty(process);
-                successor.BoundaryAuthorized = () => CapacityRouteOwnership(process) && CapacityRouteEmpty(process);
+                successor.Authorized = () => current() && !Character.bossController.isFighting && !Character.bossController.nukeBoss
+                    && CapacityRouteOwnership(process) && CapacityRoutePermissions(process) && CapacityRouteEmpty(process);
+                successor.BoundaryAuthorized = () => !Character.bossController.isFighting && !Character.bossController.nukeBoss
+                    && CapacityRouteOwnership(process) && CapacityRouteEmpty(process);
                 if ((process.Claim.Domains & ExecutionDomain.Support) != 0 && (baseline.ControlsSupport || baseline.ChangeSupport)) successor.ChangeSupport = true;
                 else if (!successor.ChangeSupport) successor.Support = CaptureSupportState().Selection;
                 BeginPresetSupportAcquisition(successor.Owner, successor.Acquisition);
@@ -310,322 +414,23 @@ namespace NGUInjector
             }
             LimitExecutionCapacityFunding((int)process.ResourceRecall);
             if (!EndExecutionClaim(process.Claim, false)) return false;
+            process.ResourceHoldEnded = true;
             ObserveOrdinaryRoute();
-            if (!_routeHandoffPending) { _resourceReconciliationPending = true; ReconcileCustomResources(); }
+            if (!_routeHandoffPending)
+            {
+                _resourceReconciliationPending = true;
+                // Prep clears its lifecycle references before ordinary dispatch can admit
+                // another entry. Do not recursively publish a new attempt during release.
+                if (process.Owner != "fight-preparation") ReconcileCustomResources();
+            }
             return true;
         }
 
         private bool _routeHandoffPending;
-        private JSONNode _importedRouteCommitments;
-        private string _routeCommitmentIssue;
-        private string _routeRebindingAcquisition;
-
-        internal JSONObject ExportRouteExecutionCommitments()
-        {
-            if (_importedRouteCommitments != null) return JsonFiles.ParseObject(_importedRouteCommitments.ToString());
-            var saved = new JSONObject(); saved["version"] = 1;
-            if (_executionCapacityFundingEpoch?.Matches() == true && _executionCapacityFundingLanes != 0)
-            {
-                saved["capacityFundingPolicy"] = "manual-titan-clamp-safe-v1";
-                saved["capacityFundingLanes"] = _executionCapacityFundingLanes;
-            }
-            saved["invalidEpoch"] = _manualTitanEpoch != null && !_manualTitanEpoch.Matches()
-                || new[] { _manualTitanProcess, _customTitanGoldProcess, _customTitanFightProcess, _customAdventureGoldProcess,
-                    _maxItopodProcess, _delegatedManualAdventureProcess, _bossPushProcess }
-                    .Any(x => x?.Claim != null && !x.Claim.Epoch.Matches());
-            saved["rebirth"] = Character.stats.rebirthNumber.ToString(CultureInfo.InvariantCulture);
-            saved["elapsed"] = Character.rebirthTime.totalseconds;
-            saved["origin"] = Character.totalPlaytime.totalseconds - Character.rebirthTime.totalseconds;
-            var processes = new JSONArray();
-            foreach (var process in new[] { _manualTitanProcess, _customTitanGoldProcess, _customTitanFightProcess,
-                _customAdventureGoldProcess, _maxItopodProcess, _delegatedManualAdventureProcess, _bossPushProcess })
-            {
-                if (process?.Claim == null || process.Claim.Ended) continue;
-                var row = new JSONObject(); row["owner"] = process.Owner ?? process.Claim.Owner;
-                row["claimOwner"] = process.Claim.Owner;
-                row["acquisition"] = process.Claim.Acquisition; row["domains"] = (int)process.Claim.Domains;
-                row["permission"] = process.Permission; row["zone"] = process.Zone;
-                row["idle"] = process.AutoAttack; row["beast"] = process.BeastMode;
-                row["controlsGear"] = process.Setup.ControlsGear; row["changeSupport"] = process.Setup.ChangeSupport;
-                if (process.CapacityTransition)
-                {
-                    row["resourcePolicy"] = "manual-titan-controlled-empty-v1";
-                    row["resourceRecall"] = (int)process.ResourceRecall;
-                    row["resourceApplied"] = process.ResourceApplied;
-                    row["releasing"] = process.Claim.SetupReleased;
-                    row["resourceIssue"] = process.ResourceIssue ?? "";
-                }
-                row["gear"] = ExportRouteGear(process.Setup.Gear, process.SelectedMaterial);
-                row["beards"] = LoadoutPresetNumbers(process.Setup.Support.Beards.Select(x => (double)x));
-                var diggers = new JSONArray();
-                foreach (var d in process.Setup.Support.Diggers) { var item = new JSONObject(); item["id"] = d.Id; item["level"] = d.Level.ToString(CultureInfo.InvariantCulture); diggers.Add(item); }
-                row["diggers"] = diggers; processes.Add(row);
-            }
-            saved["processes"] = processes;
-            var manual = new JSONArray();
-            foreach (var pair in _manualTitanSpawns ?? new Dictionary<int, ManualTitanSpawn>())
-            {
-                var spawn = pair.Value; var row = new JSONObject(); row["index"] = pair.Key;
-                row["started"] = spawn.Started; row["disarmed"] = spawn.Disarmed; row["resetSeen"] = spawn.ResetSeen;
-                row["elapsed"] = double.IsNaN(spawn.Elapsed) ? -1 : spawn.Elapsed;
-                row["deaths"] = spawn.Deaths; row["limit"] = spawn.Limit; row["kills"] = spawn.Kills; row["phase"] = spawn.Phase;
-                row["ownedSeconds"] = spawn.OwnedSeconds + (_manualTitanActive && pair.Key == _manualTitanIndex
-                    ? Math.Max(0, (DateTime.UtcNow - _manualTitanLastTick).TotalSeconds) : 0);
-                row["outcome"] = spawn.Outcome ?? ""; row["loadout"] = spawn.Loadout;
-                if (spawn.CapacityTransition)
-                { row["resourcePolicy"] = "manual-titan-controlled-empty-v1"; row["resourceRecall"] = (int)spawn.ResourceRecall; row["acquisition"] = spawn.Acquisition ?? ""; }
-                row["gear"] = ExportRouteGear(spawn.Gear, spawn.Material); manual.Add(row);
-            }
-            saved["manual"] = manual; saved["manualIndex"] = _manualTitanIndex;
-            saved["towerDeaths"] = _maxItopodPushRemainingDeaths; saved["towerFloor"] = _maxItopodPushFloor;
-            saved["towerMode"] = _maxItopodPushFromAdventureMode; saved["towerHistory"] = _maxItopodHistoryLost ? "lost" : "continuous";
-            saved["towerStart"] = _maxItopodPushSavedStart; saved["towerEnd"] = _maxItopodPushSavedEnd; saved["towerShifter"] = _maxItopodPushSavedShifter;
-            saved["towerGear"] = ExportRouteGear(_maxItopodSelectedGear, _maxItopodSelectedMaterial);
-            saved["goldIndex"] = _customTitanGoldIndex; saved["fightIndex"] = _customTitanFightIndex;
-            saved["goldStarted"] = _customTitanGoldStartedAt.Ticks.ToString(CultureInfo.InvariantCulture);
-            saved["fightStarted"] = _customTitanFightStartedAt.Ticks.ToString(CultureInfo.InvariantCulture);
-            saved["goldPending"] = _customTitanGoldPendingIndex; saved["goldGear"] = _customTitanGoldUsesGoldGear;
-            var spawns = new JSONArray();
-            foreach (var pair in _customTitanGoldSpawns ?? new Dictionary<int, double>()) { var row = new JSONObject(); row["index"] = pair.Key; row["elapsed"] = pair.Value; spawns.Add(row); }
-            saved["goldSpawns"] = spawns;
-            var cooldowns = new JSONArray();
-            for (var i = 0; i < (_customTitanAutokillCooldownUntil?.Length ?? 0); i++)
-            { var row = new JSONObject(); row["until"] = _customTitanAutokillCooldownUntil[i].Ticks.ToString(CultureInfo.InvariantCulture); row["reason"] = _customTitanAutokillCooldownReason[i] ?? ""; cooldowns.Add(row); }
-            saved["cooldowns"] = cooldowns;
-            saved["adventureGoldZone"] = _customAdventureGoldPushZone; saved["adventureGoldHighest"] = _customAdventureGoldPushHighestZone;
-            saved["adventureGoldEntered"] = _customAdventureGoldPushEnteredZone; saved["adventureGoldAttempted"] = _customAdventureAttemptedGoldPushZone;
-            saved["bossIdentity"] = _bossPushIdentity ?? ""; saved["bossOrdinal"] = _bossPushFightOrdinal;
-            saved["bossSeconds"] = _bossPushFightSecondsRemaining; saved["bossNuke"] = _bossPushNukeStarted; saved["bossStopping"] = _bossPushStopping;
-            saved["bossId"] = Character.bossID;
-            saved["os"] = (int)Character.wandoos98.os;
-            saved["wEnergyLevel"] = Character.wandoos98.energyLevel.ToString(CultureInfo.InvariantCulture);
-            saved["wMagicLevel"] = Character.wandoos98.magicLevel.ToString(CultureInfo.InvariantCulture);
-            saved["wEnergyProgress"] = Character.wandoos98.energyProgress; saved["wMagicProgress"] = Character.wandoos98.magicProgress;
-            saved["wBootup"] = Character.wandoos98.bootupTime.totalseconds;
-            saved["atTargets"] = LoadoutPresetNumbers(Character.advancedTraining.levelTarget.Select(x => (double)x));
-            var actions = new JSONArray();
-            foreach (var record in FiniteActions.Records.Where(x => x.Identity.Kind.StartsWith("route-", StringComparison.Ordinal)))
-            { var row = new JSONObject(); row["key"] = record.Identity.Key; row["state"] = record.State.ToString(); row["before"] = record.Before ?? ""; row["after"] = record.After ?? ""; actions.Add(row); }
-            saved["actions"] = actions;
-            return saved;
-        }
-
-        private JSONArray ExportRouteGear(ih[] gear, string[] material = null)
-        {
-            var result = new JSONArray();
-            var index = 0;
-            foreach (var item in gear ?? new ih[0])
-            { var row = new JSONObject(); row["slot"] = item.slot; row["id"] = item.id; row["material"] = material == null ? LoadoutPresetPrimitiveKey(item.equipment) : material[index]; result.Add(row); index++; }
-            return result;
-        }
-
-        internal void ImportRouteExecutionCommitments(JSONNode saved)
-        {
-            if (saved == null || !saved.IsObject || !EquipmentDescriptorInteger(saved["version"], 1, 1) || !saved["processes"].IsArray || !saved["manual"].IsArray)
-                throw new FormatException("Invalid route execution commitments.");
-            // Import is deliberately quarantined. Semantic history is not native cleanup authority.
-            _importedRouteCommitments = JsonFiles.ParseObject(saved.ToString());
-            _routeCommitmentIssue = "Route commitments require reviewed same-entry rebind; no acquisition or budget was renewed.";
-        }
-
-        internal bool RebindRouteExecutionCommitments()
-        {
-            var saved = _importedRouteCommitments;
-            if (saved == null) return true;
-            try
-            {
-                if (_executionLifecycle != ExecutionLifecycle.Running || saved["invalidEpoch"].AsBool
-                    || saved["rebirth"].Value != Character.stats.rebirthNumber.ToString(CultureInfo.InvariantCulture)
-                    || !FiniteCheckpointNumber(saved["origin"], false) || !FiniteCheckpointNumber(saved["elapsed"], true)
-                    || Math.Abs(saved["origin"].AsDouble - (Character.totalPlaytime.totalseconds - Character.rebirthTime.totalseconds)) > 5
-                    || saved["elapsed"].AsDouble > Character.rebirthTime.totalseconds + .1
-                    || saved["os"].AsInt != (int)Character.wandoos98.os
-                    || Character.wandoos98.energyLevel < SelectionLong(saved["wEnergyLevel"])
-                    || Character.wandoos98.magicLevel < SelectionLong(saved["wMagicLevel"]))
-                    throw new InvalidOperationException("Route commitment native context changed.");
-                if (_executionClaims.Any(x => !x.Ended)) throw new InvalidOperationException("Retire current claims before reviewed route rebind.");
-                foreach (var action in saved["actions"].Children)
-                {
-                    var retained = FiniteActions.Records.SingleOrDefault(x => x.Identity.Key == action["key"].Value);
-                    if (action["state"].Value == "Unknown" || action["state"].Value == "Invocation" || retained == null)
-                        throw new InvalidOperationException("Imported route effect evidence is uncertain or missing; invocation will not repeat.");
-                }
-                var rows = saved["processes"].Children.ToArray();
-                var fundingLanes = 0;
-                if (!string.IsNullOrEmpty(saved["capacityFundingPolicy"].Value))
-                {
-                    if (saved["capacityFundingPolicy"].Value != "manual-titan-clamp-safe-v1") throw new FormatException("Unsupported capacity funding policy.");
-                    fundingLanes = SelectionInt(saved["capacityFundingLanes"], 1, 3);
-                    foreach (var lane in new[] { 0, 1 })
-                    {
-                        if ((fundingLanes & (1 << lane)) == 0) continue;
-                        var cap = lane == 0 ? Character.totalCapEnergy() : Character.totalCapMagic();
-                        var allocations = ResourceWriter.CaptureAllocations(Character).Where(pair => pair.Value != null && ResourceWriter.Lane(pair.Key) == lane)
-                            .Sum(pair => pair.Value.Sum(value => (decimal)value));
-                        var total = lane == 0 ? Character.curEnergy : Character.magic.curMagic;
-                        var idle = lane == 0 ? Character.idleEnergy : Character.magic.idleMagic;
-                        if (allocations > cap || Math.Max(0m, (decimal)total - cap) > idle)
-                            throw new InvalidOperationException("Imported capacity buffer no longer protects native allocations.");
-                    }
-                }
-                else if (saved["capacityFundingLanes"].AsInt != 0) throw new FormatException("Capacity funding lanes require their original semantic policy.");
-                if (rows.Length > 1) throw new InvalidOperationException("Overlapping imported route commitments require review.");
-                var selections = rows.Select(row => {
-                    var owner = row["owner"].Value;
-                    if (string.IsNullOrEmpty(owner) || string.IsNullOrEmpty(row["acquisition"].Value)
-                        || row["claimOwner"].Value != owner
-                        || row["permission"].Value != (owner == "boss-push" ? true + ":" + saved["bossIdentity"].Value : RoutePermissionKey(owner))
-                        || row["zone"].AsInt != Character.adventure.zone && !(Character.adventure.zone == -1
-                            && (owner.StartsWith("manual-titan:", StringComparison.Ordinal) || owner == "max-itopod"))
-                        || row["idle"].AsBool != Character.adventure.autoattacking
-                        || row["beast"].AsBool != Character.adventure.beastModeOn)
-                        throw new InvalidOperationException("Imported route settings or acquisition changed.");
-                    var gear = ImportRouteGear(row["gear"]);
-                    var beards = row["beards"].Children.Select(x => SelectionInt(x, 0, 6)).ToArray();
-                    var diggers = row["diggers"].Children.Select(x => new SupportDiggerLevel(SelectionInt(x["id"], 0, 11), SelectionLong(x["level"]))).ToArray();
-                    var support = new SupportSelection(beards, diggers);
-                    var capacity = row["resourcePolicy"].Value == "manual-titan-controlled-empty-v1";
-                    var recall = row["resourceRecall"].IsNumber ? SelectionInt(row["resourceRecall"], 0, 3) : 0;
-                    var domains = (ExecutionDomain)SelectionInt(row["domains"], 1, 511);
-                    if (!string.IsNullOrEmpty(row["resourcePolicy"].Value) && !capacity
-                        || capacity && (!owner.StartsWith("manual-titan:", StringComparison.Ordinal)
-                            || domains != (ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route | ExecutionDomain.NativeSettings | (ExecutionDomain)recall)
-                            || !string.IsNullOrEmpty(row["resourceIssue"].Value)
-                            || Character.adventure.zone != -1
-                            || (_resourceSetupExecutor.Application.BlockedLanes & recall) != 0
-                            || (recall & 1) != 0 && !Settings.ManageEnergy || (recall & 2) != 0 && !Settings.ManageMagic)
-                        || !capacity && ((int)domains & (7 | (int)ExecutionDomain.Inventory)) != 0)
-                        throw new InvalidOperationException("Imported capacity policy/footprint is unsupported or requires explicit native review.");
-                    if (capacity && ResourceWriter.CaptureAllocations(Character).Any(pair => pair.Value != null
-                        && pair.Key != ResourceTarget.BasicAttack && pair.Key != ResourceTarget.BasicDefense
-                        && (recall & (1 << ResourceWriter.Lane(pair.Key))) != 0 && pair.Value.Any(value => value != 0)))
-                        throw new InvalidOperationException("Imported controlled-empty policy does not match actual native resources.");
-                    if (capacity)
-                    {
-                        var index = SelectionInt(saved["manualIndex"], 0, 11);
-                        var spawn = saved["manual"].Children.SingleOrDefault(x => x["index"].AsInt == index);
-                        if (owner != "manual-titan:" + index || spawn == null || spawn["resourcePolicy"].Value != row["resourcePolicy"].Value
-                            || spawn["resourceRecall"].AsInt != recall || spawn["acquisition"].Value != row["acquisition"].Value)
-                            throw new InvalidOperationException("Imported process and original spawn capacity commitments disagree.");
-                    }
-                    if (!LoadoutManager.ExactLoadoutMatches(gear) || CaptureSupportState().Selection.StableKey != support.StableKey)
-                        throw new InvalidOperationException("Imported acquired native setup does not match; no replacement was selected.");
-                    if (FiniteActions.Records.Any(x => x.Identity.Acquisition == row["acquisition"].Value
-                        && (x.State == FiniteActionState.Invocation || x.State == FiniteActionState.Unknown)))
-                        throw new InvalidOperationException("Imported finite route invocation remains uncertain.");
-                    return new { Row = row, Gear = gear, Support = support };
-                }).ToArray();
-                var manual = new Dictionary<int, ManualTitanSpawn>();
-                foreach (var row in saved["manual"].Children)
-                {
-                    var index = SelectionInt(row["index"], 0, ZoneHelpers.TitanZones.Length - 1);
-                    var spawn = new ManualTitanSpawn { Started = row["started"].AsBool, Disarmed = row["disarmed"].AsBool,
-                        ResetSeen = row["resetSeen"].AsBool, Elapsed = row["elapsed"].AsDouble, Deaths = SelectionInt(row["deaths"], 0, 1000),
-                        Limit = SelectionInt(row["limit"], 0, 1000), Kills = row["kills"].AsInt, Phase = row["phase"].AsInt,
-                        OwnedSeconds = row["ownedSeconds"].AsDouble, Outcome = row["outcome"].Value, Loadout = row["loadout"].AsInt,
-                         Gear = row["gear"].Count == 0 ? null : ImportRouteGear(row["gear"]) };
-                    if (!string.IsNullOrEmpty(row["resourcePolicy"].Value) && row["resourcePolicy"].Value != "manual-titan-controlled-empty-v1")
-                        throw new FormatException("Unsupported retained manual titan resource policy.");
-                    spawn.CapacityTransition = row["resourcePolicy"].Value == "manual-titan-controlled-empty-v1";
-                    spawn.ResourceRecall = spawn.CapacityTransition ? (GearRecallFootprint)SelectionInt(row["resourceRecall"], 0, 3) : GearRecallFootprint.None;
-                    spawn.Acquisition = spawn.CapacityTransition ? row["acquisition"].Value : null;
-                    if (spawn.CapacityTransition && string.IsNullOrEmpty(spawn.Acquisition)) throw new FormatException("Missing retained capacity acquisition.");
-                    if (!FiniteCheckpointNumber(row["ownedSeconds"], true)) throw new FormatException("Invalid retained owned-time budget.");
-                    if (spawn.Started && (ManualTitanNativeInt("titan" + (index + 1) + "Kills") > spawn.Kills
-                        || index == 4 && ManualTitanNativeInt("waldoDefeats") > spawn.Phase))
-                    { spawn.Disarmed = true; spawn.Outcome = "Native target completed while imported; waiting for observed next spawn"; }
-                    // A native-reference death cursor cannot cross import. An unfinished spawn
-                    // remains disarmed rather than inventing continuity or refreshing its budget.
-                    if (spawn.Started && !spawn.Disarmed) { spawn.Disarmed = true; spawn.Outcome = "Imported death history requires a new observed spawn"; }
-                    manual.Add(index, spawn);
-                }
-                _manualTitanSpawns = manual; _manualTitanEpoch = new LoadoutManager.SnapshotEpoch();
-                _maxItopodPushRemainingDeaths = SelectionInt(saved["towerDeaths"], 0, 1000);
-                _maxItopodPushFloor = saved["towerFloor"].AsInt; _maxItopodPushFromAdventureMode = saved["towerMode"].AsBool;
-                _customTitanGoldIndex = saved["goldIndex"].AsInt; _customTitanFightIndex = saved["fightIndex"].AsInt;
-                _customTitanGoldStartedAt = new DateTime(SelectionLong(saved["goldStarted"]), DateTimeKind.Utc);
-                _customTitanFightStartedAt = new DateTime(SelectionLong(saved["fightStarted"]), DateTimeKind.Utc);
-                _customTitanGoldSpawns = saved["goldSpawns"].Children.ToDictionary(x => SelectionInt(x["index"], 0, 11), x => x["elapsed"].AsDouble);
-                _customTitanGoldPendingIndex = saved["goldPending"].AsInt; _customTitanGoldUsesGoldGear = saved["goldGear"].AsBool;
-                _customTitanAutokillCooldownUntil = saved["cooldowns"].Children.Select(x => new DateTime(SelectionLong(x["until"]), DateTimeKind.Utc)).ToArray();
-                _customTitanAutokillCooldownReason = saved["cooldowns"].Children.Select(x => x["reason"].Value).ToArray();
-                _customAdventureGoldPushZone = saved["adventureGoldZone"].AsInt; _customAdventureGoldPushHighestZone = saved["adventureGoldHighest"].AsInt;
-                _customAdventureGoldPushEnteredZone = saved["adventureGoldEntered"].AsBool; _customAdventureAttemptedGoldPushZone = saved["adventureGoldAttempted"].AsInt;
-                _bossPushIdentity = saved["bossIdentity"].Value; _bossPushFightOrdinal = saved["bossOrdinal"].AsInt;
-                _bossPushFightSecondsRemaining = saved["bossSeconds"].AsFloat; _bossPushNukeStarted = saved["bossNuke"].AsBool; _bossPushStopping = saved["bossStopping"].AsBool;
-                foreach (var selection in selections)
-                {
-                    var row = selection.Row; var owner = row["owner"].Value;
-                    var footprint = (ExecutionDomain)SelectionInt(row["domains"], 1, 511);
-                    var capacity = row["resourcePolicy"].Value == "manual-titan-controlled-empty-v1";
-                    if (!capacity && (footprint & (ExecutionDomain.Energy | ExecutionDomain.Magic | ExecutionDomain.Res3 | ExecutionDomain.Inventory)) != 0)
-                        throw new InvalidOperationException("Imported route footprint requires its original preparation owner.");
-                    _routeRebindingAcquisition = row["acquisition"].Value;
-                    var process = BeginRouteProcess(owner, selection.Gear, row["controlsGear"].AsBool,
-                        footprint, row["changeSupport"].AsBool ? selection.Support : null, capacity,
-                        capacity ? (GearRecallFootprint)SelectionInt(row["resourceRecall"], 0, 3) : GearRecallFootprint.None);
-                    if (owner == "titan-gold") { _customTitanGoldProcess = process; _customTitanGoldActive = true; }
-                    else if (owner == "titan-autokill") { _customTitanFightProcess = process; _customTitanFightActive = true; }
-                    else if (owner == "adventure-gold") { _customAdventureGoldProcess = process; _customAdventureGoldPushActive = true; }
-                    else if (owner == "boss-push") { _bossPushProcess = process; _bossPushRunning = true; }
-                    else if (owner == "delegated-manual-adventure") _delegatedManualAdventureProcess = process;
-                    else if (owner.StartsWith("manual-titan:", StringComparison.Ordinal))
-                    {
-                        var index = SelectionInt(saved["manualIndex"], 0, 11);
-                        if (capacity && (!manual.ContainsKey(index) || manual[index].Acquisition != row["acquisition"].Value
-                            || !manual[index].CapacityTransition || manual[index].ResourceRecall != process.ResourceRecall))
-                            throw new InvalidOperationException("Imported process and original spawn capacity commitments disagree.");
-                        manual[index].Support = selection.Support;
-                        _manualTitanProcess = process; _manualTitanIndex = index; _manualTitanActive = _manualTitanRecovering = true;
-                        _manualTitanCleanupReason = manual[index].Outcome; _manualTitanLastTick = DateTime.UtcNow;
-                    }
-                    else if (owner == "max-itopod")
-                    {
-                        _maxItopodProcess = process; _maxItopodPushRouting = true; _maxItopodHistoryLost = true;
-                        _maxItopodPushEpoch = new LoadoutManager.SnapshotEpoch();
-                        _maxItopodBorrowedModel = Character.adventure; _maxItopodBorrowedArbitrary = Character.arbitrary;
-                        _maxItopodOwnedStart = Character.adventure.itopodStart; _maxItopodOwnedEnd = Character.adventure.itopodEnd;
-                        _maxItopodOwnedShifter = Character.arbitrary.lazyITOPODOn;
-                        // Saved native references/field values never import cleanup rights.
-                        _maxItopodPushSavedStart = _maxItopodPushSavedEnd = 0;
-                    }
-                    else throw new InvalidOperationException("Unknown route commitment owner.");
-                    process.Applied = true; process.Claim.Setup = process.Setup;
-                    if (capacity) { process.ResourceRetired = process.ResourceApplied = true; process.Claim.SetupReleased = row["releasing"].AsBool; }
-                }
-                if (fundingLanes != 0) LimitExecutionCapacityFunding(fundingLanes);
-                _importedRouteCommitments = null; _routeCommitmentIssue = null;
-                if (_manualTitanRecovering) CancelManualTitan(_manualTitanCleanupReason);
-                if (_maxItopodHistoryLost && _maxItopodPushRouting) CancelMaxItopodPush();
-                PersistRouteExecutionCommitments();
-                return true;
-            }
-            catch (Exception error) { _routeCommitmentIssue = "Route rebind blocked: " + error.Message; return false; }
-            finally { _routeRebindingAcquisition = null; }
-        }
-
-        private ih[] ImportRouteGear(JSONNode rows)
-        {
-            if (!rows.IsArray || rows.Count > 100) throw new FormatException("Invalid route gear selection.");
-            var available = Character.inventory.GetConvertedEquips().Concat(Character.inventory.GetConvertedInventory())
-                .Where(x => x.equipment != null).GroupBy(x => x.equipment).Select(x => x.First()).ToArray();
-            return rows.Children.Select(row => {
-                var slot = SelectionInt(row["slot"], -100, 20000); var id = SelectionInt(row["id"], 0, int.MaxValue);
-                var matches = available.Where(x => x.id == id && LoadoutPresetPrimitiveKey(x.equipment) == row["material"].Value).ToArray();
-                if (id != 0 && matches.Length != 1) throw new InvalidOperationException("Acquired route item is missing or ambiguous.");
-                return new ih { slot = slot, id = id, equipment = id == 0 ? new Equipment() : matches[0].equipment };
-            }).ToArray();
-        }
-
-        private void PersistRouteExecutionCommitments()
-        {
-            if (_importedRouteCommitments != null) throw new InvalidOperationException(_routeCommitmentIssue);
-            if (string.IsNullOrEmpty(_dir)) throw new IOException("Route commitment storage is unavailable.");
-            JsonFiles.WriteAtomic(Path.Combine(_dir, "route-execution-v1.json"), ExportRouteExecutionCommitments().ToString());
-        }
 
         private bool RetireRoutesForSuccessor()
         {
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
             _routeHandoffPending = true;
             try
             {
@@ -641,17 +446,17 @@ namespace NGUInjector
 
         internal ExecutionGrant ObserveRouteGrant(int zone)
         {
-            if (!_ordinaryRouteZone.HasValue && (Character.adventure.zone == -1
-                || _globalPresetReceipt != null && GlobalPresetGearMatches(_globalPresetReceipt)
-                    && GlobalPresetSupportState() == _globalPresetReceipt.Support
-                    && _globalPresetReceipt.Execution.Zone == Character.adventure.zone)) ObserveOrdinaryRoute();
+            // First-session observation is current native state, not an imported cleanup claim.
+            if (!_ordinaryRouteZone.HasValue) ObserveOrdinaryRoute();
             var settings = Settings;
             var mode = settings.CustomAdventureMode; var manual = settings.ManualAdventureEnabled;
             var enabled = settings.CustomAdventureEnabled;
             var gear = LoadoutManager.CaptureExactLoadout(); var support = CaptureSupportState().StableKey;
             var objects = CombatPrepAdventureRouteObjects();
             return ResolveExecutionGrant("adventure-route", zone.ToString(), ExecutionDomain.Route | ExecutionDomain.NativeSettings,
-                () => ReferenceEquals(settings, Settings) && mode == settings.CustomAdventureMode
+                () => !Character.bossController.isFighting && !Character.bossController.nukeBoss
+                    && !ExecutionScopeNeedsReview(ExecutionDomain.Route | ExecutionDomain.NativeSettings)
+                    && ReferenceEquals(settings, Settings) && mode == settings.CustomAdventureMode
                     && manual == settings.ManualAdventureEnabled && enabled == settings.CustomAdventureEnabled
                     && _ordinaryRouteZone == Character.adventure.zone && _ordinaryRouteIdle == Character.adventure.autoattacking
                     && _ordinaryRouteBeast == Character.adventure.beastModeOn && _ordinaryRouteObjects != null
@@ -689,21 +494,34 @@ namespace NGUInjector
         private int? _manualAdventureOverlayRouteZone;
         private RouteProcess _delegatedManualAdventureProcess;
         private int? _ordinaryRouteZone;
+        private int _ordinaryRouteStart, _ordinaryRouteEnd;
         private bool _ordinaryRouteIdle, _ordinaryRouteBeast;
+        private bool _ordinaryRouteActuated;
+        private LoadoutManager.SnapshotEpoch _ordinaryRouteEpoch;
         private object[] _ordinaryRouteObjects;
 
         internal void ObserveOrdinaryRoute()
         {
+            // Observation/settings-only callbacks do not acquire an existing route.
+            var actuated = _ordinaryRouteEpoch?.Matches() == true
+                && (_ordinaryRouteActuated || _ordinaryRouteZone != Character.adventure.zone);
             _ordinaryRouteZone = Character.adventure.zone;
             _ordinaryRouteIdle = Character.adventure.autoattacking;
             _ordinaryRouteBeast = Character.adventure.beastModeOn;
+            _ordinaryRouteStart = Character.adventure.itopodStart;
+            _ordinaryRouteEnd = Character.adventure.itopodEnd;
             _ordinaryRouteObjects = CombatPrepAdventureRouteObjects();
+            _ordinaryRouteEpoch = new LoadoutManager.SnapshotEpoch();
+            _ordinaryRouteActuated = actuated;
         }
 
         private void CustomAdventureTick()
         {
+            if (!ReferenceEquals(reference, this) || _unloaded) return;
             try
             {
+                ObserveManualTitanOpportunities();
+                if (Character.bossController.isFighting || Character.bossController.nukeBoss) return;
                 // Restore idle once on explicit disable; later routes may reclaim manual combat.
                 var manualAdventureEnabled = Settings.ManualAdventureEnabled;
                 if (_manualAdventureWasEnabled && !manualAdventureEnabled && !Character.adventure.autoattacking)
@@ -715,7 +533,6 @@ namespace NGUInjector
                 _manualAdventureWasEnabled = manualAdventureEnabled;
 
                 ObserveCustomRebirthEpoch();
-                if (_routeCommitmentIssue != null) { SetCustomAutomationStatus(_routeCommitmentIssue); return; }
                 if (ServiceCustomAdventureGoldPushCleanup()) return;
                 if (ServiceCustomTitanRestoration()) return;
                 SynchronizeMaxItopodAdventureMode();
@@ -771,6 +588,7 @@ namespace NGUInjector
 
         private bool TryRoutePriorityTitan()
         {
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
             if (_customTitanGoldActive && _customTitanGoldIndex >= 0
                 && ManualTitanBlocksZone(ZoneHelpers.TitanZones[_customTitanGoldIndex]))
                 CancelCustomTitanGoldKill("target reserved for manual titan rule");
@@ -820,6 +638,7 @@ namespace NGUInjector
 
         private bool RouteManualAdventureZone(int targetZone, bool allowFallback, string note)
         {
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
             CancelCustomAdventureGoldPush("manual adventure fighting");
             CancelCustomTitanGoldKill("manual adventure fighting");
             var routeZone = targetZone;
@@ -914,7 +733,6 @@ namespace NGUInjector
             // Its ordinary reconciliation owns CURRENT successor application.
             if (!EndExecutionClaim(process.Claim, false)) return false;
             _delegatedManualAdventureProcess = null;
-            PersistRouteExecutionCommitments();
             return true;
         }
 

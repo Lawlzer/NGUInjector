@@ -5,16 +5,16 @@ Uses real temporary runtime/queue/result files and a separate PowerShell bridge 
 Only the external backend is faked: harness functions, hashing, validation, timeouts,
 atomic publication and reporting run unchanged. Inspector integration uses the actual
 compiled CLI and generated native fixtures. Only standalone check tools are built;
-no game, deployment or production injector build is involved. Offline orchestration
-checks substitute only native child processes, not the gate/phase implementation.
+no game, deployment or production injector build is involved. Native process helper
+checks retain a real child-process boundary.
 #>
 [CmdletBinding()]
-param()
+param([string]$CaseFilter = '*')
 
 & {
     $ErrorActionPreference = 'Stop'
     Set-StrictMode -Off
-    $harness = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../test-all.ps1'))
+    $harness = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../test.ps1'))
     . $harness -FunctionsOnly
     $parent = Join-Path $env:LOCALAPPDATA 'Temp/opencode'
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw 'Approved temporary parent does not exist.' }
@@ -22,6 +22,8 @@ param()
     $null = [IO.Directory]::CreateDirectory($root)
     $results = [Collections.Generic.List[object]]::new()
     $jobs = [Collections.Generic.List[object]]::new()
+    $toolState = @{}
+    $completedSuccessfully = $false
 
     function Assert-Equal($Actual, $Expected, [string]$Label = 'value') {
         $actualJson = ConvertTo-Json -InputObject $Actual -Depth 100 -Compress
@@ -39,12 +41,20 @@ param()
             $null = [IO.Directory]::CreateDirectory((Join-Path $directory $child))
         }
         $report = @{ phases = [Collections.Generic.List[object]]::new(); commands = [Collections.Generic.List[object]]::new()
-            errors = [Collections.Generic.List[object]]::new(); restoration = @{ originalBackupVerified = $false }; baseline = $null; fullOfflineGatePassed = $false }
+            errors = [Collections.Generic.List[object]]::new(); restoration = @{ originalBackupVerified = $false; required = $false; attempted = $false; restored = $false }
+            restorationErrors = [Collections.Generic.List[string]]::new(); baseline = $null; liveFixturesExecuted = 0 }
         return @{ RuntimeDir = (Join-Path $directory 'runtime'); ReportDir = (Join-Path $directory 'reports'); Report = $report
-            Session = $null; ConfirmLiveSaveLoad = $false; CommandTimeoutSeconds = 2; ScanTimeoutSeconds = 3; PollMilliseconds = 30 }
+            Session = $null; ConfirmLiveSaveLoad = $false; CommandTimeoutSeconds = 2; ScanTimeoutSeconds = 3; PollMilliseconds = 30
+            TransitionTimeoutSeconds = 2; SettleTimeoutSeconds = 2; StableSamples = 3; SettleMilliseconds = 100 }
     }
     function Get-Requests($Context) {
         return ,@([IO.Directory]::GetFiles((Join-Path $Context.RuntimeDir 'commands/claimed'), '*.claimed') | Sort-Object | ForEach-Object { Read-TestAllJson $_ })
+    }
+    function Get-StableRuntimeFiles($Context) {
+        $runtimePath = [regex]::Escape((Join-Path $Context.RuntimeDir 'runtime.json'))
+        # Only the fake heartbeat writer's atomic-publication files are transient.
+        return ,@([IO.Directory]::GetFiles($Context.RuntimeDir, '*', [IO.SearchOption]::AllDirectories) |
+            Where-Object { $_ -notmatch ('^' + $runtimePath + '(?:\.[a-f0-9]{32})?\.tmp$') } | Sort-Object)
     }
     function Stop-Bridge($Job) {
         Stop-Job -Job $Job -ErrorAction SilentlyContinue
@@ -187,8 +197,33 @@ param()
         }
         return $job
     }
-    function Test-Case([string]$Name, [scriptblock]$Action) {
+    function Start-LiveBridge($Context, [string]$Behavior = 'Normal', [double]$AutomationTimeScale = 0.1) {
+        $job = Start-Job -ArgumentList (Join-Path $PSScriptRoot 'TestAllFakeBackend.ps1'), $Context.RuntimeDir, $Behavior, $harness, $Context.ReportDir, $AutomationTimeScale -ScriptBlock {
+            param($Backend, $Directory, $Behavior, $Harness, $ReportDir, $AutomationTimeScale)
+            & $Backend -Directory $Directory -Behavior $Behavior -Harness $Harness -ReportDir $ReportDir -AutomationTimeScale $AutomationTimeScale
+        }
+        $jobs.Add($job)
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        while (-not [IO.File]::Exists((Join-Path $Context.RuntimeDir 'ready'))) {
+            if ($job.State -in @('Failed', 'Completed') -or $clock.Elapsed.TotalSeconds -gt 20) { Stop-Bridge $job; throw 'External live-test fake did not start.' }
+            Start-Sleep -Milliseconds 30
+        }
+        return $job
+    }
+    function Assert-GameReport($Report, [string]$Mode) {
+        Assert-Equal $Report.schema 'ngu.test.game'
+        Assert-Equal $Report.version 2
+        Assert-Equal $Report.scope 'game'
+        Assert-Equal $Report.mode $Mode
+        Assert-Equal @($Report.phases | Where-Object name -Like 'offline.*').Count 0
+    }
+    function Test-Case([string]$Name, [scriptblock]$Action, [switch]$NativeTools) {
+        if ($Name -notlike $CaseFilter) { return }
         try {
+            if ($NativeTools) {
+                Initialize-CheckTools
+                $tools = $toolState.context; $inspectorDll = $toolState.inspectorDll; $nativeFixtures = $toolState.nativeFixtures
+            }
             $null = & $Action
             $results.Add(@{ name = $Name; success = $true; error = $null })
         } catch {
@@ -198,6 +233,7 @@ param()
     try {
         Test-Case 'FunctionsOnly imports without invoking checks or live commands' {
             Assert-Equal (Get-Command Invoke-TestAllPrepare).CommandType ([Management.Automation.CommandTypes]::Function)
+            Assert-Equal (Get-Command Invoke-TestAllOffline -ErrorAction SilentlyContinue) $null
             Assert-Equal @([IO.Directory]::GetFiles($root, '*', [IO.SearchOption]::AllDirectories)).Count 0
         }
         Test-Case 'fresh local capture uses atomic queue envelope with session-preserving timestamps' {
@@ -253,6 +289,8 @@ param()
                 Assert-Equal $load.args.Count 2
                 Assert-Equal ([IO.File]::GetLastWriteTimeUtc($prepared.saveSafety.longest.path) -lt [IO.File]::GetLastWriteTimeUtc($context.Report.baseline.path)) $true
                 Assert-Equal $context.Report.baseline.totalPlaytimeSeconds '1000.25'
+                Assert-Equal $context.Report.originalBaselineAfterRecovery.totalPlaytimeSeconds '2000.25'
+                Assert-Throws { Assert-TestAllProgress $context.Report.originalBaselineAfterRecovery $context.Report.baseline } 'behind restoreTarget'
                 Assert-Equal $context.Report.recovery.loaded $true
             } finally { Stop-Bridge $job }
         }
@@ -349,12 +387,15 @@ param()
             $one = Join-Path $context.ReportDir 'one.txt'; $two = Join-Path $context.ReportDir 'two.txt'
             [IO.File]::WriteAllText($one, 'first'); [IO.File]::WriteAllText($two, 'second')
             $manifest = Join-Path $context.ReportDir 'manifest.json'
-            Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'one'; path = 'one.txt'; scenario = 'early'; plan = 'Plan A'; stage = 0 }, @{ name = 'two'; path = 'two.txt'; scenario = 'late'; stage = @{ index = 2 } }) }
+            Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'one'; path = 'one.txt'; scenario = 'early'; plan = '24hr'; stage = 0 }, @{ name = 'two'; path = 'two.txt'; scenario = 'Human allocation label'; stage = 2 }) }
             $fixtures = @(Read-TestAllManifest $manifest)
             Assert-Equal $fixtures.Count 2
             Assert-Equal $fixtures[0].scenario 'early'
-            Assert-Equal $fixtures[0].stage 0
-            Assert-Equal $fixtures[1].stage.index 2
+            Assert-Equal $fixtures[0].stageIndex 0
+            Assert-Equal $fixtures[1].stageIndex 2
+            Assert-Equal $fixtures[1].scenario 'allocation'
+            Assert-Equal $fixtures[1].description 'Human allocation label'
+            Assert-Equal $fixtures[1].plan '24hr'
             Assert-Equal $fixtures[0].sha256 (Get-FileHash -LiteralPath $one -Algorithm SHA256).Hash.ToLowerInvariant()
             Assert-Equal @($fixtures | ForEach-Object status) @('CONFIGURED_NOT_EXECUTED', 'CONFIGURED_NOT_EXECUTED')
             Assert-Equal @($fixtures | ForEach-Object decoded) @($false, $false)
@@ -373,90 +414,347 @@ param()
             Assert-Equal $context.Report.commands.Count 0
         }
 
-        # Build only the real read-only CLI and trusted offline fixture generator.
         $repo = [IO.Path]::GetDirectoryName($harness)
-        $tools = New-Context
-        $inspectorDll = Initialize-TestAllInspector $tools $repo
-        $generatorOutput = Join-Path $tools.ReportDir 'generator'
-        $nativeFixtures = Join-Path $tools.ReportDir 'native fixtures'
-        Invoke-TestAllNative $tools 'tools.buildGenerator' 'dotnet' @('build', (Join-Path $PSScriptRoot 'Fixtures/FixtureGenerator.csproj'), '--configuration', 'Release', '--nologo', '--output', $generatorOutput)
-        Invoke-TestAllNative $tools 'tools.generateFixtures' (Join-Path $generatorOutput 'FixtureGenerator.exe') @($nativeFixtures)
+        function Initialize-CheckTools {
+            if ($toolState.initialized) { return }
+            # Build only standalone tools, lazily and entirely under this run's report.
+            $toolState.context = New-Context
+            $toolState.inspectorDll = Initialize-TestAllInspector $toolState.context $repo
+            $generatorOutput = Join-Path $toolState.context.ReportDir 'generator'
+            $intermediate = (Join-Path $toolState.context.ReportDir 'generator-obj').Replace('\', '/') + '/'
+            $toolState.nativeFixtures = Join-Path $toolState.context.ReportDir 'native fixtures'
+            Invoke-TestAllNative $toolState.context 'tools.buildGenerator' 'dotnet' @('build', (Join-Path $PSScriptRoot 'Fixtures/FixtureGenerator.csproj'), '--configuration', 'Release', '--nologo',
+                "-p:BaseIntermediateOutputPath=$intermediate", "-p:MSBuildProjectExtensionsPath=$intermediate", "-p:IntermediateOutputPath=${intermediate}Release/", '--output', $generatorOutput)
+            Invoke-TestAllNative $toolState.context 'tools.generateFixtures' (Join-Path $generatorOutput 'FixtureGenerator.exe') @($toolState.nativeFixtures)
+            $toolState.initialized = $true
+        }
 
-        foreach ($outcomes in @(
-            @{ label = 'both gates pass'; ui = 0; native = 0; codec = 0 },
-            @{ label = 'UI fails but native still runs'; ui = 1; native = 0; codec = 0 },
-            @{ label = 'native fails independently'; ui = 0; native = 7; codec = 0 },
-            @{ label = 'both independent failures are retained'; ui = 1; native = 7; codec = 0 },
-            @{ label = 'other checks still gate success'; ui = 0; native = 0; codec = 9 }
+        function New-LiveContext([string[]]$Scenarios = @('allocation')) {
+            Initialize-CheckTools
+            $context = New-Context
+            $context.InspectorDll = $toolState.inspectorDll; $context.ConfirmLiveSaveLoad = $true
+            $manifest = Join-Path $context.ReportDir 'manifest.json'
+            $index = 0
+            $entries = @($Scenarios | ForEach-Object {
+                @{ name = "fixture-$index"; path = (Join-Path $toolState.nativeFixtures 'valid.ok.txt'); scenario = $_; stage = $(if ($_ -eq 'early') { 0 } else { 3 }) }
+                $index++
+            })
+            Write-TestAllJson $manifest @{ version = 1; fixtures = $entries }
+            $context.Report.fixtures = @(Read-TestAllManifest $manifest)
+            Invoke-TestAllFixtureInspection $context $repo
+            return $context
+        }
+        Test-Case 'live sequential fixtures use restart acknowledgements, real stage guards and backend-only restoration' {
+            $context = New-LiveContext @('allocation', 'fallback', 'early'); $job = Start-LiveBridge $context
+            try {
+                $null = Assert-TestAllLiveCapability $context
+                $null = Invoke-TestAllPrepare $context
+                Invoke-TestAllLive $context
+                Assert-Equal @($context.Report.fixtures | ForEach-Object status) @('PASS', 'PASS', 'INCONCLUSIVE')
+                Assert-Equal $context.Report.liveFixturesExecuted 3
+                Assert-Equal $context.Report.restoration.restored $true
+                Assert-Equal $context.Report.restorationErrors.Count 0
+                Assert-Equal @($context.Report.commands | ForEach-Object { $_.request.command }) @('captureLocalSave', 'scanSaves', 'startSaveTest', 'setSaveTestStage', 'loadSaveTestFixture', 'setSaveTestStage', 'loadSaveTestFixture', 'setSaveTestStage', 'restoreSaveTest')
+                Assert-Equal @($context.Report.commands | Where-Object { $_.request.command -eq 'loadSaveTestFixture' } | ForEach-Object { $_.request.args.expectedFixtureGeneration }) @('1', '2')
+                Assert-Equal $context.Report.commands[2].result.data.pendingRestart $true
+                Assert-Equal $context.Report.commands[2].result.data.runtime.status 'starting'
+                Assert-Equal $context.Report.fixtures[0].samples.Count 3
+                Assert-Equal $context.Report.fixtures[0].native.offlineProgress.totalGainSeconds '10'
+                Assert-Equal $context.Report.fixtures[0].reset.verified $true
+                Assert-Equal @($context.Report.fixtures[1].assertions | Where-Object id -Like 'fallback.*' | ForEach-Object status) @('PASS', 'PASS')
+                Assert-Equal @($context.Report.fixtures[2].assertions | Where-Object id -Like 'fundedNgu.*').Count 0
+                Assert-Equal @($context.Report.fixtures[2].assertions | Where-Object id -EQ 'support.nonemptyFeasibleVerified')[0].status 'INCONCLUSIVE'
+                Assert-Equal ([IO.File]::ReadAllText((Join-Path $context.RuntimeDir 'native-local.txt'))) 'original native bytes'
+                Assert-Equal ([IO.File]::ReadAllText((Join-Path $context.RuntimeDir 'settings.json'))) 'original domain settings'
+                Assert-Equal (Get-Requests $context).Count 9
+                Assert-Equal $context.Report.restoration.backend.observed.totalPlaytimeSeconds '2020.25'
+                Assert-Equal $context.Report.restoreTarget.totalPlaytimeSeconds '2000.25'
+            } finally { Stop-Bridge $job }
+        }
+        Test-Case 'settled assertion failures do not prevent subsequent sequential fixtures or final restoration' {
+            $context = New-LiveContext @('allocation', 'allocation'); $job = Start-LiveBridge $context 'ZeroNgu'
+            try {
+                $null = Invoke-TestAllPrepare $context; Invoke-TestAllLive $context
+                Assert-Equal @($context.Report.fixtures | ForEach-Object status) @('FAIL', 'FAIL')
+                Assert-Equal @($context.Report.fixtures | ForEach-Object { $_.samples.Count -gt 3 }) @($true, $true)
+                Assert-Equal @($context.Report.fixtures | ForEach-Object { $_.samples[-1].timedOut }) @($true, $true)
+                Assert-Equal $context.Report.errors.Count 2
+                Assert-Equal $context.Report.restorationErrors.Count 0
+                Assert-Equal $context.Report.restoration.restored $true
+                Assert-Equal @($context.Report.commands | ForEach-Object { $_.request.command }) @('captureLocalSave', 'scanSaves', 'startSaveTest', 'setSaveTestStage', 'loadSaveTestFixture', 'setSaveTestStage', 'restoreSaveTest')
+            } finally { Stop-Bridge $job }
+        }
+        Test-Case 'settling waits past four seconds of failures for the ten-second automation tick before three progressing passes' {
+            $context = New-LiveContext; $scale = 0.15
+            $context.SettleMilliseconds = [int](2000 * $scale); $context.SettleTimeoutSeconds = 30 * $scale
+            $job = Start-LiveBridge $context 'LateApply' $scale
+            try {
+                $null = Invoke-TestAllPrepare $context; Invoke-TestAllLive $context
+                $fixture = $context.Report.fixtures[0]
+                $failed = @($fixture.samples | Where-Object status -EQ 'FAIL')
+                $passed = @($fixture.samples | Where-Object status -EQ 'PASS')
+                Assert-Equal ($failed.Count -ge 3) $true
+                Assert-Equal (($failed[2].elapsedSeconds - $failed[0].elapsedSeconds) / $scale -ge 4) $true
+                Assert-Equal @($failed | ForEach-Object { $_.runtime.fakeAutomation.applied } | Sort-Object -Unique) @($false)
+                Assert-Equal $fixture.status 'PASS'
+                Assert-Equal $passed.Count 3
+                Assert-Equal @($passed | ForEach-Object stableSamples) @(1, 2, 3)
+                Assert-Equal @($passed | ForEach-Object { $_.runtime.runtimeRevision } | Sort-Object -Unique).Count 3
+                Assert-Equal $passed[-1].runtime.fakeAutomation.applied $true
+                Assert-Equal ($passed[0].runtime.fakeAutomation.elapsedSeconds -ge 10) $true
+                Assert-Equal $passed[-1].timedOut $false
+                Assert-Equal $context.Report.restoration.restored $true
+                Assert-Equal $context.Report.errors.Count 0
+            } finally { Stop-Bridge $job }
+        }
+        Test-Case 'settling timeout retains the actual stable failed checks and still restores' {
+            $context = New-LiveContext; $context.SettleTimeoutSeconds = 0.7; $job = Start-LiveBridge $context 'ZeroNgu'
+            try {
+                $null = Invoke-TestAllPrepare $context; Invoke-TestAllLive $context
+                $fixture = $context.Report.fixtures[0]; $last = $fixture.samples[-1]
+                Assert-Equal $fixture.status 'FAIL'
+                Assert-Equal $last.timedOut $true
+                Assert-Equal ($last.elapsedSeconds -ge $context.SettleTimeoutSeconds) $true
+                Assert-Equal ($last.stableSamples -ge 3) $true
+                Assert-Equal @($fixture.assertions | Where-Object id -EQ 'fundedNgu.Energy')[0].status 'FAIL'
+                Assert-Equal @($context.Report.phases | Where-Object name -EQ 'live.fixture-0.observe')[0].status 'PASS'
+                Assert-Equal @($context.Report.errors | ForEach-Object phase) @('live.fixture-0.assertions')
+                $saved = Read-TestAllJson (Join-Path $context.ReportDir 'report.json')
+                Assert-Equal @($saved.fixtures[0].assertions | Where-Object id -EQ 'fundedNgu.Energy')[0].status 'FAIL'
+                Assert-Equal $saved.restoration.restored $true
+            } finally { Stop-Bridge $job }
+        }
+        foreach ($behavior in @('NoStartAck', 'NoLoadAck', 'StageFailure', 'FailedStartup', 'BadGeneration', 'ResetMissing', 'MissingResultSession')) {
+            Test-Case "live interruption restores without replay: $behavior" {
+                $scenarios = if ($behavior -eq 'NoLoadAck') { @('allocation', 'allocation') } else { @('allocation') }
+                $context = New-LiveContext $scenarios
+                $context.CommandTimeoutSeconds = 1; $context.TransitionTimeoutSeconds = 0.5
+                $job = Start-LiveBridge $context $behavior
+                try {
+                    $null = Invoke-TestAllPrepare $context
+                    Assert-Throws { Invoke-TestAllLive $context } 'UNKNOWN|rejected|recovery required|generation advanced|startup/reset timed out|saveTestSession contract'
+                    Assert-Equal $context.Report.restoration.restored $true
+                    Assert-Equal $context.Report.restoration.attempted $true
+                    Assert-Equal @($context.Report.commands | Where-Object { $_.request.command -eq 'startSaveTest' }).Count 1
+                    Assert-Equal @($context.Report.commands | Where-Object { $_.request.command -eq 'restoreSaveTest' }).Count 1
+                    Assert-Equal @($context.Report.commands | Where-Object { $_.request.command -eq 'loadSaveTestFixture' }).Count $(if ($behavior -eq 'NoLoadAck') { 1 } else { 0 })
+                    if ($behavior -in @('NoStartAck', 'MissingResultSession', 'BadGeneration')) {
+                        Assert-Equal $context.Report.commands[2].outcome 'UNKNOWN'
+                        Assert-Equal $context.Report.commands[2].request.args.sessionId $context.TestSessionId
+                    }
+                    Assert-Equal ([IO.File]::ReadAllText((Join-Path $context.RuntimeDir 'native-local.txt'))) 'original native bytes'
+                } finally { Stop-Bridge $job }
+            }
+        }
+        foreach ($case in @(
+            @{ behavior = 'ZeroNgu'; scenario = 'allocation'; id = 'fundedNgu.Energy'; status = 'FAIL' },
+            @{ behavior = 'ExcludedFunded'; scenario = 'allocation'; id = 'diagnostics.ngu.energy.exclusions'; status = 'FAIL' },
+            @{ behavior = 'UnverifiedGear'; scenario = 'allocation'; id = 'loadout.nonemptyVerified'; status = 'FAIL' },
+            @{ behavior = 'UnverifiedResource'; scenario = 'allocation'; id = 'actualEnergy'; status = 'FAIL' },
+            @{ behavior = 'IdleUnexplained'; scenario = 'allocation'; id = 'idle.Energy'; status = 'FAIL' },
+            @{ behavior = 'EmptySupport'; scenario = 'allocation'; id = 'support.nonemptyFeasibleVerified'; status = 'FAIL' },
+            @{ behavior = 'FallbackNoSpend'; scenario = 'fallback'; id = 'fallback.Energy'; status = 'FAIL' },
+            @{ behavior = 'Idle'; scenario = 'allocation'; id = 'idle.Energy'; status = 'INCONCLUSIVE' },
+            @{ behavior = 'IdleZero'; scenario = 'early'; id = 'idle.Energy'; status = 'INCONCLUSIVE' }
         )) {
-            Test-Case "offline command subprocess boundary: $($outcomes.label)" {
-                $context = New-Context; $context.InspectorDll = $inspectorDll
-                $uiScript = Join-Path $repo 'verify-ui.ps1'
-                $nativeScript = Join-Path $repo 'checks/VerifyExecutorOffline.ps1'
-                $codecProject = Join-Path $repo 'checks/SaveSafety/SaveSafetyChecks.csproj'
-                Write-TestAllJson (Join-Path $context.ReportDir 'boundary-config.json') @{
-                    uiScript = $uiScript; nativeScript = $nativeScript; codecProject = $codecProject; outcomes = $outcomes
-                }
-                $context.NativeProcessBoundary = Join-Path $context.ReportDir 'native-process-boundary.ps1'
-                [IO.File]::WriteAllText($context.NativeProcessBoundary, @'
-param([string]$Executable, [string]$ArgumentsBase64)
-$ErrorActionPreference = 'Stop'
-$config = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'boundary-config.json'))) -AsHashtable
-$arguments = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ArgumentsBase64)))
-$request = ConvertTo-Json -InputObject @{ executable = $Executable; arguments = @($arguments) } -Compress
-[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'invocations.jsonl'), $request + [Environment]::NewLine)
-$code = if ($arguments -contains $config.uiScript) { $config.outcomes.ui }
-    elseif ($arguments -contains $config.nativeScript) { $config.outcomes.native }
-    elseif ($arguments -contains $config.codecProject) { $config.outcomes.codec }
-    else { 0 }
-"Synthetic subprocess boundary exit=$code"
-exit $code
-'@)
-                $game = Join-Path $context.ReportDir 'game folder with spaces'
-                $success = $outcomes.ui -eq 0 -and $outcomes.native -eq 0 -and $outcomes.codec -eq 0
-                if ($success) { Invoke-TestAllOffline $context $repo $game }
-                else { Assert-Throws { Invoke-TestAllOffline $context $repo $game } 'Offline gate failed' }
-                $requests = @([IO.File]::ReadAllLines((Join-Path $context.ReportDir 'invocations.jsonl')) | ForEach-Object { ConvertFrom-Json -InputObject $_ -AsHashtable })
-                $ui = @($requests | Where-Object { $_.arguments -contains $uiScript })
-                $native = @($requests | Where-Object { $_.arguments -contains $nativeScript })
-                Assert-Equal $ui.Count 1 'UI invocation count'
-                Assert-Equal $native.Count 1 'native invocation count'
-                Assert-Equal $ui[0].executable (Join-Path $PSHOME 'pwsh.exe')
-                Assert-Equal $ui[0].arguments @('-NoProfile', '-NonInteractive', '-File', $uiScript, '-BrowserTests', '-GameFolder', $game)
-                Assert-Equal $native[0].arguments @('-NoProfile', '-NonInteractive', '-File', $nativeScript, '-GameFolder', $game)
-                Assert-Equal ($ui[0].arguments -contains '-IncludeInjector') $false
-                Assert-Equal $requests[0].arguments $ui[0].arguments
-                Assert-Equal $requests[1].arguments $native[0].arguments
-                Assert-Equal @($context.Report.phases | Where-Object name -EQ 'offline.verifyUi').Count 1
-                Assert-Equal @($context.Report.phases | Where-Object name -EQ 'offline.nativeExecutor').Count 1
-                $uiPhase = @($context.Report.phases | Where-Object name -EQ 'offline.verifyUi')[0]
-                $nativePhase = @($context.Report.phases | Where-Object name -EQ 'offline.nativeExecutor')[0]
-                Assert-Equal $uiPhase.evidence.exitCode $outcomes.ui
-                Assert-Equal $nativePhase.evidence.exitCode $outcomes.native
-                Assert-Equal $uiPhase.status $(if ($outcomes.ui) { 'FAIL' } else { 'PASS' })
-                Assert-Equal $nativePhase.status $(if ($outcomes.native) { 'FAIL' } else { 'PASS' })
-                Assert-Equal $context.Report.fullOfflineGatePassed $success
-                $failedPhases = @(
-                    if ($outcomes.ui) { 'offline.verifyUi' }
-                    if ($outcomes.native) { 'offline.nativeExecutor' }
-                    if ($outcomes.codec) { 'offline.SaveSafetyChecks' }
-                )
-                Assert-Equal @($context.Report.errors | ForEach-Object phase) $failedPhases
+            Test-Case "actual fixture assertion is honest and still restores: $($case.behavior)" {
+                $context = New-LiveContext @($case.scenario); $job = Start-LiveBridge $context $case.behavior
+                try {
+                    $null = Invoke-TestAllPrepare $context
+                    Invoke-TestAllLive $context
+                    $fixture = $context.Report.fixtures[0]
+                    Assert-Equal @($fixture.assertions | Where-Object id -EQ $case.id)[0].status $case.status
+                    Assert-Equal ($fixture.samples.Count -gt 3) $true
+                    Assert-Equal $fixture.samples[-1].timedOut $true
+                    Assert-Equal $context.Report.restoration.restored $true
+                    if ($case.status -eq 'FAIL') { Assert-Equal $fixture.status 'FAIL' }
+                    Assert-Equal @($fixture.assertions | Where-Object id -EQ 'independentCurrentCaps')[0].required $false
+                    Assert-Equal @($fixture.assertions | Where-Object id -EQ 'independentCurrentCaps')[0].status 'INCONCLUSIVE'
+                } finally { Stop-Bridge $job }
+            }
+        }
+        foreach ($behavior in @('RestoreFailure', 'RestoreMissingFlag', 'RestoreMissingNative', 'RestoreMissingVerified', 'RestoreClock', 'RestoreRuntimeClock')) {
+            Test-Case "restoration never passes contradictory backend evidence: $behavior" {
+                $context = New-LiveContext; $job = Start-LiveBridge $context $behavior
+                try {
+                    $null = Invoke-TestAllPrepare $context
+                    Assert-Throws { Invoke-TestAllLive $context } 'restore recovery required|Verified|verified|behind restoreTarget'
+                    Assert-Equal $context.Report.fixtures[0].status 'PASS'
+                    Assert-Equal $context.Report.restoration.restored $false
+                    Assert-Equal $context.Report.restoration.status 'RECOVERY_REQUIRED'
+                    Assert-Equal $context.Report.restorationErrors.Count 1
+                    Assert-Equal @($context.Report.errors | Where-Object phase -EQ 'live.restore').Count 1
+                } finally { Stop-Bridge $job }
+            }
+        }
+        Test-Case 'lost restore acknowledgement can only pass on fresh backend restoration evidence' {
+            $context = New-LiveContext; $context.CommandTimeoutSeconds = 1; $job = Start-LiveBridge $context 'NoRestoreAck'
+            try {
+                $null = Invoke-TestAllPrepare $context
+                Invoke-TestAllLive $context
+                Assert-Equal $context.Report.restoration.restored $true
+                Assert-Equal ($context.Report.restoration.acknowledgementError -match 'UNKNOWN') $true
+                Assert-Equal $context.Report.commands[-1].outcome 'UNKNOWN'
+                Assert-Equal @($context.Report.commands | Where-Object { $_.request.command -eq 'restoreSaveTest' }).Count 1
+            } finally { Stop-Bridge $job }
+        }
+        foreach ($behavior in @('NoProgress', 'PriorityChange')) {
+            Test-Case "bounded observations reject broken reconciliation and restore: $behavior" {
+                $context = New-LiveContext; $context.SettleTimeoutSeconds = 0.6; $job = Start-LiveBridge $context $behavior
+                try {
+                    $null = Invoke-TestAllPrepare $context
+                    if ($behavior -eq 'NoProgress') {
+                        Invoke-TestAllLive $context
+                        $fixture = $context.Report.fixtures[0]
+                        Assert-Equal $fixture.status 'INCONCLUSIVE'
+                        Assert-Equal @($fixture.assertions | Where-Object id -EQ 'settlement.progress')[0].status 'INCONCLUSIVE'
+                        Assert-Equal $fixture.samples[-1].timedOut $true
+                        Assert-Equal $fixture.samples[-1].stableSamples 0
+                    } else {
+                        Assert-Throws { Invoke-TestAllLive $context } 'source priority order changed'
+                        Assert-Equal $context.Report.fixtures[0].status 'FAIL'
+                    }
+                    Assert-Equal $context.Report.restoration.restored $true
+                    Assert-Equal $context.Report.commands[-1].request.command 'restoreSaveTest'
+                } finally { Stop-Bridge $job }
+            }
+        }
+        foreach ($behavior in @('CancelledRejected', 'CancelledQueued')) {
+            Test-Case "cancelled start verifies the current epoch without claiming fixture rollback: $behavior" {
+                $context = New-LiveContext; $context.CommandTimeoutSeconds = 1; $job = Start-LiveBridge $context $behavior
+                try {
+                    $null = Invoke-TestAllPrepare $context
+                    Assert-Throws { Invoke-TestAllLive $context } 'rejected|UNKNOWN'
+                    Assert-Equal $context.Report.originalBaselineAfterRecovery.rebirth '7'
+                    Assert-Equal $context.Report.restoration.backend.restoreTarget.rebirth '8'
+                    Assert-Equal $context.Report.restoration.restored $true
+                    Assert-Equal $context.Report.restoration.cancelledBeforeStart $true
+                    Assert-Equal $context.Report.restoration.reason 'start cancelled; no fixture applied. Backend verified current native progression and files; no rollback was performed.'
+                    Assert-Equal $context.Report.liveFixturesExecuted 0
+                    Assert-Equal $context.Report.fixtures[0].executed $false
+                    Assert-Equal $context.Report.commands[2].outcome $(if ($behavior -eq 'CancelledQueued') { 'UNKNOWN' } else { 'FAILED' })
+                    Assert-Equal @($context.Report.commands | ForEach-Object { $_.request.command }) @('captureLocalSave', 'scanSaves', 'startSaveTest', 'restoreSaveTest')
+                    Assert-Equal $context.Report.restorationErrors.Count 0
+                    Assert-Equal ([IO.File]::ReadAllText((Join-Path $context.RuntimeDir 'native-local.txt'))) 'original native bytes'
+                    Assert-Equal ([IO.File]::Exists((Join-Path $context.RuntimeDir 'native.snapshot'))) $false
+                } finally { Stop-Bridge $job }
+            }
+        }
+        foreach ($behavior in @('CancelledMissingNative', 'CancelledMissingFiles', 'CancelledMissingVerified', 'CancelledObservedClock', 'CancelledRuntimeClock')) {
+            Test-Case "cancelled start still requires native/files verification and actual target clocks: $behavior" {
+                $context = New-LiveContext; $job = Start-LiveBridge $context $behavior
+                try {
+                    $null = Invoke-TestAllPrepare $context
+                    Assert-Throws { Invoke-TestAllLive $context } 'Verified|verified|behind restoreTarget'
+                    Assert-Equal $context.Report.restoration.restored $false
+                    Assert-Equal $context.Report.restoration.status 'RECOVERY_REQUIRED'
+                    Assert-Equal $context.Report.restorationErrors.Count 1
+                } finally { Stop-Bridge $job }
+            }
+        }
+        Test-Case 'explicit Restore recovers a known failed-startup session without starting a new test' {
+            $context = New-LiveContext; $job = Start-LiveBridge $context 'FailedStartup'
+            try {
+                $null = Invoke-TestAllPrepare $context
+                $context.TestSessionId = [guid]::NewGuid().ToString('N'); $context.Report.testSessionId = $context.TestSessionId
+                $context.Report.restoration.required = $true
+                Save-TestAllReport $context
+                $payload = @{}; foreach ($key in @('name', 'path', 'sha256', 'plan', 'stageIndex', 'scenario')) { $payload[$key] = $context.Report.fixtures[0][$key] }
+                $null = Invoke-TestAllCommand $context 'startSaveTest' @{ expectedStartedAt = $context.Session; sessionId = $context.TestSessionId; acceptNativeSideEffects = $true; fixture = $payload }
+                Start-Sleep -Milliseconds 250
+                Assert-Equal (Read-TestAllRuntime $context -AllowTransition).status 'failed'
+                $report = Invoke-TestAllHarness -Mode Restore -RuntimeDir $context.RuntimeDir -ReportParent $context.ReportDir
+                Assert-GameReport $report 'Restore'
+                Assert-Equal $report.restoration.restored $true
+                Assert-Equal $report.testSessionId $context.TestSessionId
+                Assert-Equal $report.exitCode 0
+                Assert-Equal $report.status 'PASS'
+                Assert-Equal @($report.commands | ForEach-Object { $_.request.command }) @('restoreSaveTest')
+                Assert-Equal $report.fixtures.Count 0
+            } finally { Stop-Bridge $job }
+        }
+        Test-Case 'natural stage remains -1 in the payload and invokes the guarded backend stage command once' {
+            $context = New-LiveContext; $context.Report.fixtures[0].stageIndex = -1; $job = Start-LiveBridge $context
+            try {
+                $null = Invoke-TestAllPrepare $context; Invoke-TestAllLive $context
+                Assert-Equal $context.Report.fixtures[0].status 'PASS'
+                Assert-Equal $context.Report.commands[2].request.args.fixture.stageIndex (-1)
+                Assert-Equal @($context.Report.commands | Where-Object { $_.request.command -eq 'setSaveTestStage' }).Count 1
+                Assert-Equal $context.Report.restoration.restored $true
+            } finally { Stop-Bridge $job }
+        }
+        Test-Case 'a locked report cannot prevent a guarded idempotent backend restore' {
+            $context = New-LiveContext; $job = Start-LiveBridge $context
+            try {
+                $null = Invoke-TestAllPrepare $context; Invoke-TestAllLive $context
+                $context.Report.restoration.attempted = $false; $context.Report.restoration.restored = $false
+                $lock = [IO.File]::Open((Join-Path $context.ReportDir 'report.json'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+                try { $null = Invoke-TestAllRestore $context } finally { $lock.Dispose() }
+                Save-TestAllReport $context
+                Assert-Equal $context.Report.restoration.restored $true
+                Assert-Equal ($context.Report.restoration.reportingError -match 'denied|used by another process') $true
+                Assert-Equal @($context.Report.commands | Where-Object { $_.request.command -eq 'restoreSaveTest' }).Count 2
+                Assert-Equal (Read-TestAllJson (Join-Path $context.ReportDir 'report.json')).restoration.status 'RESTORED'
+            } finally { Stop-Bridge $job }
+        }
+        Test-Case 'fixture generation and hash fence reject stale observations despite unchanged startedAt' {
+            $context = New-LiveContext; $job = Start-LiveBridge $context
+            try {
+                $null = Invoke-TestAllPrepare $context; Invoke-TestAllLive $context
+                $runtime = $context.Report.fixtures[0].samples[0].runtime
+                $runtime.saveTestSession.fixtureGeneration = '2'
+                Assert-Throws { Assert-TestAllFixtureFence $context $runtime $context.ActiveFixture '1' } 'generation/reset fence'
+                $runtime.saveTestSession.fixtureGeneration = '1'; $runtime.saveTestSession.fixture.sha256 = '0' * 64
+                Assert-Throws { Assert-TestAllFixtureFence $context $runtime $context.ActiveFixture '1' } 'sha256 changed'
+                $runtime.saveTestSession.sessionId = 'f' * 32
+                Assert-Throws { Assert-TestAllFixtureFence $context $runtime $context.ActiveFixture '1' } 'session changed'
+            } finally { Stop-Bridge $job }
+        }
+        Test-Case 'native Live subprocess passes the selected game mode after verified restoration' {
+            $context = New-LiveContext; $job = Start-LiveBridge $context
+            try {
+                $output = @(& (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $harness -Mode Live -RuntimeDir $context.RuntimeDir -FixtureManifestPath (Join-Path $context.ReportDir 'manifest.json') -ReportParent $context.ReportDir -ConfirmLiveSaveLoad)
+                Assert-Equal $LASTEXITCODE 0
+                $path = @([IO.Directory]::GetFiles($context.ReportDir, 'report.json', [IO.SearchOption]::AllDirectories) | Where-Object { $_ -ne (Join-Path $context.ReportDir 'report.json') })[0]
+                $report = Read-TestAllJson $path
+                Assert-GameReport $report 'Live'
+                Assert-Equal $report.success $true
+                Assert-Equal $report.fixtures[0].status 'PASS'
+                Assert-Equal $report.restoration.restored $true
+                Assert-Equal $report.phases[-1].name 'live.restore'
+                Assert-Equal ($output -join "`n" -match 'test: PASS') $true
+                Assert-Equal ($output -join "`n" -match 'RESTORED') $true
+            } finally { Stop-Bridge $job }
+        }
+
+        foreach ($invalid in @(@{ stage = 0.5 }, @{ stage = '0' }, @{ stage = -2 }, @{ stage = 1024 }, @{ scenario = 'typo' }, @{ plan = '../unsafe' }, @{ plan = '' })) {
+            Test-Case "manifest rejects backend-incompatible metadata $(ConvertTo-Json -Compress $invalid)" -NativeTools {
+                $context = New-Context; $manifest = Join-Path $context.ReportDir 'manifest.json'
+                $entry = @{ name = 'invalid'; path = (Join-Path $toolState.nativeFixtures 'valid.ok.txt') }
+                foreach ($key in $invalid.Keys) { $entry[$key] = $invalid[$key] }
+                Write-TestAllJson $manifest @{ version = 1; fixtures = @($entry) }
+                Assert-Throws { Read-TestAllManifest $manifest } 'stage must|scenario must|plan must'
                 Assert-Equal $context.Report.commands.Count 0
             }
         }
 
-        Test-Case 'successful inspector build is reused instead of rebuilt' {
+        Test-Case 'successful inspector build is isolated and reused instead of rebuilt' -NativeTools {
             Assert-Equal (Initialize-TestAllInspector $tools $repo) $inspectorDll
             Assert-Equal @($tools.Report.phases | Where-Object name -EQ 'inspector.build').Count 1
             Assert-Equal (Test-Path -LiteralPath $inspectorDll -PathType Leaf) $true
+            $build = @($tools.Report.phases | Where-Object name -EQ 'inspector.build')[0].evidence
+            $intermediate = (Join-Path $tools.ReportDir 'save-inspector-obj').Replace('\', '/') + '/'
+            Assert-Equal $build.arguments @('build', (Join-Path $repo 'checks/SaveSafety/SaveInspector.csproj'), '--configuration', 'Release', '--nologo',
+                "-p:BaseIntermediateOutputPath=$intermediate", "-p:MSBuildProjectExtensionsPath=$intermediate", "-p:IntermediateOutputPath=${intermediate}Release/", '--output', (Join-Path $tools.ReportDir 'save-inspector'))
+            Assert-Equal ([IO.File]::Exists((Join-Path $intermediate 'project.assets.json'))) $true
+            Assert-Equal ([IO.File]::Exists((Join-Path $intermediate 'Release/SaveInspector.dll'))) $true
         }
-        Test-Case 'real inspector decodes registered native paths and retains scenario metadata without executing' {
+        Test-Case 'real inspector decodes registered native paths and retains scenario metadata without executing' -NativeTools {
             $context = New-Context; $context.InspectorDll = $inspectorDll
             $manifest = Join-Path $context.ReportDir 'manifest.json'
             $one = Join-Path $nativeFixtures 'valid.ok.txt'; $two = Join-Path $nativeFixtures 'bridge/earlier.ok.txt'
             $hashes = @((Get-FileHash -LiteralPath $one).Hash, (Get-FileHash -LiteralPath $two).Hash)
-            Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'one'; path = $one; scenario = 'late'; plan = 'Plan A'; stage = 0 }, @{ name = 'two'; path = $two; scenario = 'early'; stage = @{ index = 2 } }) }
+            Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'one'; path = $one; scenario = 'allocation'; plan = '24hr'; stage = 0 }, @{ name = 'two'; path = $two; scenario = 'early'; stage = 2 }) }
             $context.Report.fixtures = @(Read-TestAllManifest $manifest)
             Invoke-TestAllFixtureInspection $context $repo
             $fixtures = $context.Report.fixtures
@@ -472,9 +770,9 @@ exit $code
             Assert-Equal $fixtures[0].metadata.lastTime 1720000000
             Assert-Equal $fixtures[0].metadata.sha256 $fixtures[0].sha256
             Assert-Equal $fixtures[1].metadata.sha256 $fixtures[1].sha256
-            Assert-Equal $fixtures[0].scenario 'late'
-            Assert-Equal $fixtures[0].plan 'Plan A'
-            Assert-Equal $fixtures[1].stage.index 2
+            Assert-Equal $fixtures[0].scenario 'allocation'
+            Assert-Equal $fixtures[0].plan '24hr'
+            Assert-Equal $fixtures[1].stageIndex 2
             Assert-Equal $context.Report.commands.Count 0
             $phase = @($context.Report.phases | Where-Object name -EQ 'fixtures.inspector.1')[0]
             Assert-Equal $phase.evidence.executable 'dotnet'
@@ -487,7 +785,7 @@ exit $code
             Assert-Equal $saved.fixtures[0].status 'INSPECTED_NOT_EXECUTED'
             Assert-Equal @((Get-FileHash -LiteralPath $one).Hash, (Get-FileHash -LiteralPath $two).Hash) $hashes
         }
-        Test-Case 'real inspector rejects a corrupt native fixture and preserves its JSON errors' {
+        Test-Case 'real inspector rejects a corrupt native fixture and preserves its JSON errors' -NativeTools {
             $context = New-Context; $context.InspectorDll = $inspectorDll
             $manifest = Join-Path $context.ReportDir 'manifest.json'
             Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'broken'; path = (Join-Path $nativeFixtures 'wrong-checksum.bad.txt') }) }
@@ -503,7 +801,7 @@ exit $code
             Assert-Equal $phase.evidence.output.errors.Count 1
             Assert-Equal $context.Report.commands.Count 0
         }
-        Test-Case 'changed registered bytes fail the hash cross-check even when the real inspector decodes them' {
+        Test-Case 'changed registered bytes fail the hash cross-check even when the real inspector decodes them' -NativeTools {
             $context = New-Context; $context.InspectorDll = $inspectorDll
             $registered = Join-Path $context.ReportDir 'registered.txt'
             [IO.File]::Copy((Join-Path $nativeFixtures 'valid.ok.txt'), $registered)
@@ -521,7 +819,7 @@ exit $code
             Assert-Equal ($phase.evidence.output.files[0].sha256 -cne $context.Report.fixtures[0].sha256) $true
             Assert-Equal $context.Report.commands.Count 0
         }
-        Test-Case 'tied native fixture branches are each inspected without choosing or loading a branch' {
+        Test-Case 'tied native fixture branches are each inspected without choosing or loading a branch' -NativeTools {
             $context = New-Context; $context.InspectorDll = $inspectorDll
             $manifest = Join-Path $context.ReportDir 'manifest.json'
             Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'branch-a'; path = (Join-Path $nativeFixtures 'valid.ok.txt') }, @{ name = 'branch-b'; path = (Join-Path $nativeFixtures 'bridge/tied-branch.ok.txt') }) }
@@ -533,21 +831,25 @@ exit $code
             Assert-Equal @($context.Report.fixtures | ForEach-Object status) @('INSPECTED_NOT_EXECUTED', 'INSPECTED_NOT_EXECUTED')
             Assert-Equal $context.Report.commands.Count 0
         }
-        Test-Case 'offline manifest preparation decodes native files without requiring a runtime' {
+        Test-Case 'Inspect decodes native files without requiring or creating a runtime' -NativeTools {
             $context = New-Context
             $manifest = Join-Path $context.ReportDir 'manifest.json'
-            Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'offline'; path = (Join-Path $nativeFixtures 'valid.ok.txt') }) }
-            $report = Invoke-TestAllHarness 'Offline' (Join-Path $root 'no-runtime') '' $manifest $context.ReportDir $false $true
-            Assert-Equal $report.exitCode 2
-            Assert-Equal $report.status 'BLOCKED'
+            Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'inspect-only'; path = (Join-Path $nativeFixtures 'valid.ok.txt') }) }
+            $runtime = Join-Path $context.ReportDir 'no-runtime'
+            $report = Invoke-TestAllHarness -Mode Inspect -RuntimeDir $runtime -FixtureManifestPath $manifest -ReportParent $context.ReportDir
+            Assert-GameReport $report 'Inspect'
+            Assert-Equal $report.exitCode 0
+            Assert-Equal $report.status 'PASS'
             Assert-Equal $report.fixtures[0].metadata.totalPlaytimeSeconds '1000.25'
             Assert-Equal $report.fixtures[0].status 'INSPECTED_NOT_EXECUTED'
             Assert-Equal $report.fixtures[0].executed $false
             Assert-Equal $report.commands.Count 0
             Assert-Equal $report.originalRuntime $null
-            Assert-Equal $report.fullOfflineGatePassed $false
+            Assert-Equal $report.preparationPassed $false
+            Assert-Equal @($report.phases | Where-Object name -Like 'prepare.*').Count 0
+            Assert-Equal (Test-Path -LiteralPath $runtime) $false
         }
-        Test-Case 'confirmed recovery uses the runtime catalog rather than inspected fixture playtime or hash' {
+        Test-Case 'confirmed recovery uses the runtime catalog rather than inspected fixture playtime or hash' -NativeTools {
             $context = New-Context; $context.InspectorDll = $inspectorDll; $context.ConfirmLiveSaveLoad = $true
             $manifest = Join-Path $context.ReportDir 'manifest.json'
             Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'not-a-recovery-source'; path = (Join-Path $nativeFixtures 'large-finite-clocks.ok.txt') }) }
@@ -564,43 +866,49 @@ exit $code
                 Assert-Equal $context.Report.fixtures[0].executed $false
             } finally { Stop-Bridge $job }
         }
-        Test-Case 'corrupt manifest fixture fails the native harness before any game command or recovery' {
-            $context = New-Context; $job = Start-Bridge $context 'Behind'
-            try {
-                $manifest = Join-Path $context.ReportDir 'manifest.json'
-                Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'broken'; path = (Join-Path $nativeFixtures 'wrong-checksum.bad.txt') }) }
-                $null = & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $harness -Mode Prepare -RuntimeDir $context.RuntimeDir -ReportParent $context.ReportDir -FixtureManifestPath $manifest -ConfirmLiveSaveLoad -SkipOfflineChecks
-                Assert-Equal $LASTEXITCODE 1
-                $path = @([IO.Directory]::GetFiles($context.ReportDir, 'report.json', [IO.SearchOption]::AllDirectories))[0]
-                $report = Read-TestAllJson $path
-                Assert-Equal $report.status 'FAIL'
-                Assert-Equal $report.commands.Count 0
-                Assert-Equal $report.baseline $null
-                Assert-Equal $report.fixtures[0].decoded $false
-                Assert-Equal $report.fixtures[0].executed $false
-                Assert-Equal (Get-Requests $context).Count 0
-            } finally { Stop-Bridge $job }
+        foreach ($mode in @('Inspect', 'Prepare', 'Live')) {
+            Test-Case "corrupt manifest fixture fails native $mode before any game command or recovery" -NativeTools {
+                $context = New-Context; $job = Start-Bridge $context 'Behind'
+                try {
+                    $manifest = Join-Path $context.ReportDir 'manifest.json'
+                    Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'broken'; path = (Join-Path $nativeFixtures 'wrong-checksum.bad.txt') }) }
+                    $null = & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $harness -Mode $mode -RuntimeDir $context.RuntimeDir -ReportParent $context.ReportDir -FixtureManifestPath $manifest -ConfirmLiveSaveLoad
+                    Assert-Equal $LASTEXITCODE 1
+                    $path = @([IO.Directory]::GetFiles($context.ReportDir, 'report.json', [IO.SearchOption]::AllDirectories))[0]
+                    $report = Read-TestAllJson $path
+                    Assert-GameReport $report $mode
+                    Assert-Equal $report.status 'FAIL'
+                    Assert-Equal $report.commands.Count 0
+                    Assert-Equal $report.baseline $null
+                    Assert-Equal $report.fixtures[0].decoded $false
+                    Assert-Equal $report.fixtures[0].executed $false
+                    Assert-Equal (Get-Requests $context).Count 0
+                } finally { Stop-Bridge $job }
+            }
         }
-        Test-Case 'inspected fixture playtime never drives a native load and Live remains blocked' {
+        Test-Case 'unsupported backend blocks Live after inspecting every fixture and before preparation or mutation' -NativeTools {
             $context = New-Context; $job = Start-Bridge $context
             try {
                 $manifest = Join-Path $context.ReportDir 'manifest.json'
-                Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'huge-playtime'; path = (Join-Path $nativeFixtures 'large-finite-clocks.ok.txt'); scenario = 'fixture only' }) }
-                $null = & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $harness -Mode Live -RuntimeDir $context.RuntimeDir -ReportParent $context.ReportDir -FixtureManifestPath $manifest -ConfirmLiveSaveLoad -SkipOfflineChecks
+                Write-TestAllJson $manifest @{ version = 1; fixtures = @(@{ name = 'huge-playtime'; path = (Join-Path $nativeFixtures 'large-finite-clocks.ok.txt'); scenario = 'fixture only' },
+                    @{ name = 'second'; path = (Join-Path $nativeFixtures 'valid.ok.txt') }) }
+                $null = & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $harness -Mode Live -RuntimeDir $context.RuntimeDir -ReportParent $context.ReportDir -FixtureManifestPath $manifest -ConfirmLiveSaveLoad
                 Assert-Equal $LASTEXITCODE 2
                 $path = @([IO.Directory]::GetFiles($context.ReportDir, 'report.json', [IO.SearchOption]::AllDirectories))[0]
                 $report = Read-TestAllJson $path
+                Assert-GameReport $report 'Live'
                 Assert-Equal $report.status 'BLOCKED'
-                Assert-Equal $report.liveFixtureBlocker 'Synthetic isolation blocker: autosave/cloud/achievements/checkpoints are not isolated.'
+                Assert-Equal ($report.liveFixtureBlocker -match 'capability unsupported.*runtime.saveTestSession') $true
                 Assert-Equal $report.fixtures[0].status 'INSPECTED_NOT_EXECUTED'
                 Assert-Equal $report.fixtures[0].metadata.rebirth '9223372036854775807'
-                Assert-Equal ((Get-TestAllClock $report.fixtures[0].metadata.totalPlaytimeSeconds) -gt (Get-TestAllClock $report.preparedRuntime.saveSafety.longest.totalPlaytimeSeconds)) $true
+                Assert-Equal $report.preparedRuntime $null
                 Assert-Equal $report.fixtures[0].executed $false
                 Assert-Equal $report.liveFixturesExecuted 0
-                Assert-Equal @($report.commands | ForEach-Object { $_.request.command }) @('captureLocalSave', 'scanSaves')
+                Assert-Equal $report.commands.Count 0
                 Assert-Equal @($report.phases | Where-Object name -EQ 'inspector.build').Count 1
-                $inspectionIndex = @($report.phases.name).IndexOf('fixtures.inspector.1')
-                $preflightIndex = @($report.phases.name).IndexOf('prepare.preflight')
+                Assert-Equal @($report.fixtures | ForEach-Object decoded) @($true, $true)
+                $inspectionIndex = @($report.phases.name).IndexOf('fixtures.inspector.2')
+                $preflightIndex = @($report.phases.name).IndexOf('live.capability')
                 Assert-Equal ($inspectionIndex -ge 0 -and $inspectionIndex -lt $preflightIndex) $true
                 Assert-Equal $report.restoration.restored $false
             } finally { Stop-Bridge $job }
@@ -612,8 +920,8 @@ exit $code
         }
         Test-Case 'report parent cannot redirect harness writes into the runtime' {
             $context = New-Context
-            Assert-Throws { Invoke-TestAllHarness 'Offline' $context.RuntimeDir '' '' $context.RuntimeDir $false $true } 'outside RuntimeDir'
-            Assert-Throws { Invoke-TestAllHarness 'Offline' ($context.RuntimeDir + '\') '' '' $context.RuntimeDir $false $true } 'outside RuntimeDir'
+            Assert-Throws { Invoke-TestAllHarness -Mode Diagnostics -RuntimeDir $context.RuntimeDir -ReportParent $context.RuntimeDir } 'outside RuntimeDir'
+            Assert-Throws { Invoke-TestAllHarness -Mode Inspect -RuntimeDir ($context.RuntimeDir + '\') -ReportParent $context.RuntimeDir } 'outside RuntimeDir'
             Assert-Equal @([IO.Directory]::GetFiles($context.RuntimeDir, '*', [IO.SearchOption]::AllDirectories)).Count 0
         }
         Test-Case 'native child failure retains its exit code and fails the phase' {
@@ -630,6 +938,26 @@ exit $code
             Assert-Equal $context.Report.phases[0].evidence.exitCode 0
             Assert-Equal ([IO.File]::ReadAllText($context.Report.phases[0].evidence.log).Trim()) 'synthetic child success'
         }
+        Test-Case 'NativeProcessBoundary retains real subprocess arguments JSON logs and exit failures' {
+            $context = New-Context
+            $context.NativeProcessBoundary = Join-Path $context.ReportDir 'native-process-boundary.ps1'
+            [IO.File]::WriteAllText($context.NativeProcessBoundary, @'
+param([string]$Executable, [string]$ArgumentsBase64)
+$arguments = @(ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ArgumentsBase64))))
+ConvertTo-Json -InputObject @{ executable = $Executable; arguments = @($arguments); pid = $PID } -Compress
+exit ([int]$arguments[-1])
+'@)
+            $arguments = @('path with spaces', '--flag', '0')
+            $output = Invoke-TestAllNative $context 'boundary.success' 'synthetic-tool' $arguments -JsonOutput
+            Assert-Equal $output.executable 'synthetic-tool'
+            Assert-Equal $output.arguments $arguments
+            Assert-Equal ($output.pid -ne $PID) $true
+            Assert-Equal $context.Report.phases[0].evidence.processBoundary $context.NativeProcessBoundary
+            Assert-Throws { Invoke-TestAllNative $context 'boundary.failure' 'synthetic-tool' @('7') -JsonOutput } 'exited 7'
+            Assert-Equal $context.Report.phases[1].status 'FAIL'
+            Assert-Equal $context.Report.phases[1].evidence.exitCode 7
+            Assert-Equal $context.Report.phases[1].evidence.output.arguments @('7')
+        }
         Test-Case 'capture metadata tolerance is based on elapsed seconds, not a seven-day session' {
             $context = New-Context; $job = Start-Bridge $context
             try {
@@ -639,48 +967,156 @@ exit $code
                 Assert-Throws { Assert-TestAllCapture $result.data.save $runtime.saveSafety.current $runtime.saveSafety.current 1 } 'tolerance'
             } finally { Stop-Bridge $job }
         }
-        foreach ($mode in @('Offline', 'Prepare', 'Live')) {
-            Test-Case "native script exit/report is honest for diagnostic-only $mode" {
+        Test-Case 'runtime file snapshots ignore only heartbeat publication temporaries' {
+            $context = New-Context
+            $originals = @('native-local.txt', 'settings.json', 'unrelated.tmp', 'commands/request.tmp', 'commands/runtime.json.tmp')
+            foreach ($name in @('runtime.json') + $originals) { [IO.File]::WriteAllText((Join-Path $context.RuntimeDir $name), 'protected or unrelated bytes') }
+            $before = Get-StableRuntimeFiles $context
+            foreach ($name in @('runtime.json.tmp', ('runtime.json.' + [guid]::NewGuid().ToString('N') + '.tmp'))) {
+                $temporary = Join-Path $context.RuntimeDir $name
+                [IO.File]::WriteAllText($temporary, 'heartbeat publication')
+                Assert-Equal (Get-StableRuntimeFiles $context) $before
+                [IO.File]::Delete($temporary)
+                Assert-Equal (Get-StableRuntimeFiles $context) $before
+            }
+            foreach ($name in $originals) {
+                $path = Join-Path $context.RuntimeDir $name
+                Assert-Equal ($before -contains $path) $true
+                [IO.File]::Delete($path)
+                Assert-Equal ((Get-StableRuntimeFiles $context) -contains $path) $false
+                [IO.File]::WriteAllText($path, 'protected or unrelated bytes')
+                Assert-Equal (Get-StableRuntimeFiles $context) $before
+            }
+        }
+        foreach ($mode in @('Diagnostics', 'Inspect', 'Prepare', 'Live', 'Restore')) {
+            Test-Case "native script exit/report is honest for selected game mode $mode" {
                 $context = New-Context; $job = $null
-                if ($mode -ne 'Offline') { $job = Start-Bridge $context }
+                $arguments = @('-NoProfile', '-NonInteractive', '-File', $harness, '-RuntimeDir', $context.RuntimeDir, '-ReportParent', $context.ReportDir)
+                # Omit Mode entirely to prove the safe public default.
+                if ($mode -ne 'Diagnostics') { $arguments += @('-Mode', $mode) }
+                if ($mode -eq 'Inspect') {
+                    $manifest = Join-Path $context.ReportDir 'manifest.json'
+                    Write-TestAllJson $manifest @{ version = 1; fixtures = @() }
+                    $arguments += @('-FixtureManifestPath', $manifest)
+                } elseif ($mode -eq 'Restore') { $job = Start-LiveBridge $context }
+                else { $job = Start-Bridge $context }
                 try {
-                    $before = @([IO.Directory]::GetFiles($context.RuntimeDir, '*', [IO.SearchOption]::AllDirectories))
-                    $output = @(& (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $harness -Mode $mode -RuntimeDir $context.RuntimeDir -ReportParent $context.ReportDir -SkipOfflineChecks 2>&1)
-                    Assert-Equal $LASTEXITCODE 2 'native exit code'
+                    $before = Get-StableRuntimeFiles $context
+                    $output = @(& (Join-Path $PSHOME 'pwsh.exe') @arguments 2>&1)
+                    $childExitCode = $LASTEXITCODE
+                    [IO.File]::WriteAllText((Join-Path $context.ReportDir 'child.output.log'), ($output -join [Environment]::NewLine))
+                    [IO.File]::WriteAllText((Join-Path $context.ReportDir 'child.exit-code.txt'), [string]$childExitCode)
+                    $blocked = $mode -in @('Live', 'Restore')
+                    Assert-Equal $childExitCode $(if ($blocked) { 2 } else { 0 }) 'native exit code'
                     $reports = @([IO.Directory]::GetFiles($context.ReportDir, 'report.json', [IO.SearchOption]::AllDirectories))
                     Assert-Equal $reports.Count 1
                     $report = Read-TestAllJson $reports[0]
-                    Assert-Equal $report.status 'BLOCKED'
-                    Assert-Equal $report.success $false
-                    Assert-Equal $report.fullOfflineGatePassed $false
+                    Assert-GameReport $report $mode
+                    Assert-Equal $report.status $(if ($blocked) { 'BLOCKED' } else { 'PASS' })
+                    Assert-Equal $report.success (-not $blocked)
+                    Assert-Equal ($output -join "`n" -match ('test: ' + $report.status)) $true
                     Assert-Equal $report.liveFixturesExecuted 0
                     Assert-Equal $report.restoration.restored $false
                     Assert-Equal $report.restoration.attempted $false
                     Assert-Equal $report.fixtures.Count 0
                     Assert-Equal @($report.phases | Where-Object name -EQ 'inspector.build').Count 0
-                    if ($mode -eq 'Offline') {
+                    if ($mode -ne 'Prepare') {
                         Assert-Equal $report.commands.Count 0
-                        Assert-Equal @([IO.Directory]::GetFiles($context.RuntimeDir, '*', [IO.SearchOption]::AllDirectories)) $before
-                    } else {
+                        Assert-Equal (Get-Requests $context).Count 0
+                        Assert-Equal (Get-StableRuntimeFiles $context) $before
+                        Assert-Equal $report.preparationPassed $false
+                        Assert-Equal @($report.phases | Where-Object name -Like 'prepare.*').Count 0
+                    } elseif ($mode -eq 'Prepare') {
                         Assert-Equal $report.preparationPassed $true
                         Assert-Equal @($report.commands | ForEach-Object { $_.request.command }) @('captureLocalSave', 'scanSaves')
                     }
-                    if ($mode -eq 'Prepare') { Assert-Equal $report.runtimeDiagnostics.success $true }
+                    if ($mode -in @('Diagnostics', 'Prepare')) { Assert-Equal $report.runtimeDiagnostics.success $true }
                     if ($mode -eq 'Live') {
-                        Assert-Equal $report.liveFixtureBlocker 'Synthetic isolation blocker: autosave/cloud/achievements/checkpoints are not isolated.'
-                        Assert-Equal @($report.phases | Where-Object name -EQ 'live.fixtureIsolationGate')[0].status 'BLOCKED'
-                        Assert-Equal ($output -join "`n" -match 'Synthetic isolation blocker') $true
+                        Assert-Equal $report.preparationPassed $false
+                        Assert-Equal $report.commands.Count 0
+                        Assert-Equal ($output -join "`n" -match 'ConfirmLiveSaveLoad') $true
                     }
+                } catch {
+                    [Console]::Error.WriteLine("Selected $mode child output:`n$($output -join [Environment]::NewLine)`nChild reports: $($context.ReportDir)")
+                    throw
                 } finally { if ($job) { Stop-Bridge $job } }
             }
+        }
+        Test-Case 'default Diagnostics failure is read-only and never falls through to preparation or verification' {
+            $context = New-Context; $job = Start-Bridge $context 'Behind'
+            try {
+                $output = @(& (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $harness -RuntimeDir $context.RuntimeDir -ReportParent $context.ReportDir)
+                Assert-Equal $LASTEXITCODE 1
+                $path = @([IO.Directory]::GetFiles($context.ReportDir, 'report.json', [IO.SearchOption]::AllDirectories))[0]
+                $report = Read-TestAllJson $path
+                Assert-GameReport $report 'Diagnostics'
+                Assert-Equal $report.status 'FAIL'
+                Assert-Equal $report.runtimeDiagnostics.success $false
+                Assert-Equal $report.commands.Count 0
+                Assert-Equal (Get-Requests $context).Count 0
+                Assert-Equal @($report.phases | ForEach-Object name) @('diagnostics.runtimeDiagnostics')
+                Assert-Equal $report.restoration.attempted $false
+            } finally { Stop-Bridge $job }
+        }
+        Test-Case 'native Live recovery failure stays failed without invoking offline verification' {
+            $context = New-LiveContext; $job = Start-LiveBridge $context 'RestoreMissingFlag'
+            try {
+                $null = & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $harness -Mode Live -RuntimeDir $context.RuntimeDir -FixtureManifestPath (Join-Path $context.ReportDir 'manifest.json') -ReportParent $context.ReportDir -ConfirmLiveSaveLoad
+                Assert-Equal $LASTEXITCODE 1
+                $path = @([IO.Directory]::GetFiles($context.ReportDir, 'report.json', [IO.SearchOption]::AllDirectories) | Where-Object { $_ -ne (Join-Path $context.ReportDir 'report.json') })[0]
+                $report = Read-TestAllJson $path
+                Assert-GameReport $report 'Live'
+                Assert-Equal $report.fixtures[0].status 'PASS'
+                Assert-Equal $report.restoration.status 'RECOVERY_REQUIRED'
+                Assert-Equal @($report.commands | Where-Object { $_.request.command -eq 'restoreSaveTest' }).Count 1
+                Assert-Equal $report.restoration.restored $false
+            } finally { Stop-Bridge $job }
+        }
+        Test-Case 'Restore failure reports unknown session without publishing commands or preparing' {
+            $context = New-Context; $job = Start-LiveBridge $context
+            try {
+                $report = Invoke-TestAllHarness -Mode Restore -RuntimeDir $context.RuntimeDir -ReportParent $context.ReportDir
+                Assert-GameReport $report 'Restore'
+                Assert-Equal $report.exitCode 2
+                Assert-Equal $report.status 'BLOCKED'
+                Assert-Equal $report.commands.Count 0
+                Assert-Equal (Get-Requests $context).Count 0
+                Assert-Equal @($report.phases | ForEach-Object name) @('restore.existingSession')
+            } finally { Stop-Bridge $job }
+        }
+        Test-Case 'native Restore fails contradictory recovery evidence without preparing or running verification' {
+            $context = New-LiveContext; $job = Start-LiveBridge $context 'RestoreMissingFlag'
+            try {
+                $null = Invoke-TestAllPrepare $context
+                Assert-Throws { Invoke-TestAllLive $context } 'filesVerified=true'
+                $null = & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $harness -Mode Restore -RuntimeDir $context.RuntimeDir -ReportParent $context.ReportDir
+                Assert-Equal $LASTEXITCODE 1
+                $path = @([IO.Directory]::GetFiles($context.ReportDir, 'report.json', [IO.SearchOption]::AllDirectories) | Where-Object { $_ -ne (Join-Path $context.ReportDir 'report.json') })[0]
+                $report = Read-TestAllJson $path
+                Assert-GameReport $report 'Restore'
+                Assert-Equal $report.status 'FAIL'
+                Assert-Equal $report.restoration.status 'RECOVERY_REQUIRED'
+                Assert-Equal $report.restoration.restored $false
+                Assert-Equal @($report.commands | ForEach-Object { $_.request.command }) @('restoreSaveTest')
+                Assert-Equal @($report.phases | ForEach-Object name) @('restore.existingSession', 'finally.restore')
+                Assert-Equal $report.preparationPassed $false
+                Assert-Equal $report.testSessionId $context.TestSessionId
+            } finally { Stop-Bridge $job }
+        }
+        Test-Case 'CaseFilter matching zero cases fails instead of reporting green or building tools' {
+            $output = @(& (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $PSCommandPath -CaseFilter ('no-such-case-' + [guid]::NewGuid().ToString('N')) 2>&1)
+            Assert-Equal $LASTEXITCODE 1
+            Assert-Equal ($output -join "`n" -match 'CaseFilter matched zero cases') $true
+            Assert-Equal ($output -join "`n" -match 'Determining projects to restore|Build succeeded') $false
         }
         Test-Case 'finally writes a failure report when native capture evidence is invalid' {
             $context = New-Context; $job = Start-Bridge $context 'CaptureHash'
             try {
-                $null = & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $harness -Mode Prepare -RuntimeDir $context.RuntimeDir -ReportParent $context.ReportDir -SkipOfflineChecks
+                $null = & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -File $harness -Mode Prepare -RuntimeDir $context.RuntimeDir -ReportParent $context.ReportDir
                 Assert-Equal $LASTEXITCODE 1
                 $path = @([IO.Directory]::GetFiles($context.ReportDir, 'report.json', [IO.SearchOption]::AllDirectories))[0]
                 $report = Read-TestAllJson $path
+                Assert-GameReport $report 'Prepare'
                 Assert-Equal $report.status 'FAIL'
                 Assert-Equal $report.commands.Count 1
                 Assert-Equal $report.restoration.originalBackupVerified $false
@@ -688,11 +1124,20 @@ exit $code
                 Assert-Equal ($null -ne $report.completedAt) $true
             } finally { Stop-Bridge $job }
         }
+        if ($results.Count -eq 0) { throw "CaseFilter matched zero cases: $CaseFilter" }
         $failures = @($results | Where-Object success -EQ $false)
-        if ($failures.Count) { throw "$($failures.Count)/$($results.Count) harness checks failed:`n$((@($failures | ForEach-Object { $_.name + ': ' + $_.error })) -join "`n")" }
+        if ($failures.Count) {
+            foreach ($failure in $failures) { [Console]::Error.WriteLine($failure.name + ': ' + $failure.error) }
+            throw "$($failures.Count)/$($results.Count) harness checks failed."
+        }
+        $completedSuccessfully = $true
         [pscustomobject]@{ success = $true; passed = $results.Count; failed = 0; liveActions = 0; cases = $results.ToArray() }
     } finally {
         foreach ($job in $jobs.ToArray()) { Stop-Job -Job $job -ErrorAction SilentlyContinue; Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
-        if ([IO.Directory]::Exists($root)) { [IO.Directory]::Delete($root, $true) }
+        if ($completedSuccessfully) { [IO.Directory]::Delete($root, $true) }
+        else {
+            Write-TestAllJson (Join-Path $root 'checks-failure.json') @{ caseFilter = $CaseFilter; cases = $results.ToArray(); success = $false }
+            [Console]::Error.WriteLine("Harness failure evidence retained: $root")
+        }
     }
 }

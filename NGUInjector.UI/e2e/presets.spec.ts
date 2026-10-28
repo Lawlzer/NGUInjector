@@ -25,8 +25,8 @@ type FixtureWindow = typeof window & {
   __presetTaskIndex: number;
 };
 
-async function openPresets(page: Page, rows?: Record<string, unknown>[]) {
-  await page.addInitScript(({ rows, objectiveKeys }) => {
+async function openPresets(page: Page, rows?: Record<string, unknown>[], resourcePrioritiesVersion = 2) {
+  await page.addInitScript(({ rows, objectiveKeys, resourcePrioritiesVersion }) => {
     const fixture = window as FixtureWindow;
     fixture.__presetActions = []; fixture.__presetWrites = []; fixture.__presetPlanWrites = []; fixture.__presetNative = []; fixture.__presetDialogs = []; fixture.__presetConfirm = true;
     fixture.__presetSettingWrites = [];
@@ -37,9 +37,9 @@ async function openPresets(page: Page, rows?: Record<string, unknown>[]) {
      fixture.__presetZeroBlood = false;
      fixture.__presetDelaySave = false; fixture.__presetReleaseSave = null;
      fixture.__presetTaskIndex = 3;
-    fixture.__presetRuntime = { externalUiEnabled: true, status: 'running', protocolVersion: 3, settingsCasVersion: 1, planVersion: 17, stageTimingVersion: 1, globalPresetsVersion: 2, loadoutPresetsVersion: 2, globalNguWeightsVersion: 1, startedAt: 'session-one', supportedCommands: ['readPlan', 'savePlan', 'applySettingsPatch', 'previewGlobalPreset', 'applyGlobalPreset', 'equipGlobalPreset', 'status'] };
+    fixture.__presetRuntime = { externalUiEnabled: true, status: 'running', protocolVersion: 3, settingsCasVersion: 1, planVersion: 18, fightScheduleVersion: 1, stageTimingVersion: 1, globalPresetsVersion: 2, loadoutPresetsVersion: 2, globalNguWeightsVersion: 1, resourceLanePrioritiesVersion: resourcePrioritiesVersion, startedAt: 'session-one', supportedCommands: ['readPlan', 'savePlan', 'applySettingsPatch', 'previewGlobalPreset', 'applyGlobalPreset', 'equipGlobalPreset', 'status'] };
     const row = { Id: 'balanced', Name: 'Balanced NGU', Weights: [100, 100, 0, 0, 0, 0], HorizonSeconds: 3600, MagicBloodPercent: -1, SupportMode: 'current', DiggerBudgetPercent: 75, Zone: -1, MinimumPower: 0, MinimumToughness: 0, SwapSeconds: 5, BeardPriority: [], DiggerWeights: [], Future: { keep: 'unknown field' } };
-    let plan: Record<string, unknown> = { Version: 17, Name: 'plan-a', __externalUiRevision: 'a'.repeat(64), Stages: [{ Name: 'NGU', Percent: 100 }], GoalPresets: [{ Name: 'Legacy', GearGoal: 2 }], GearGoal: 2, ActiveGoalPresetIndex: 0, LoadoutPresets: [row, { ...row, Id: 'background', Name: 'Background blood', Weights: [300, 0, 50, 0, 0, 0] }], UnknownRoot: 42 };
+    let plan: Record<string, unknown> = { Version: 18, Name: 'plan-a', __externalUiRevision: 'a'.repeat(64), Stages: [{ Name: 'NGU', Percent: 100 }], GoalPresets: [{ Name: 'Legacy', GearGoal: 2 }], GearGoal: 2, ActiveGoalPresetIndex: 0, LoadoutPresets: [row, { ...row, Id: 'background', Name: 'Background blood', Weights: [300, 0, 50, 0, 0, 0] }], UnknownRoot: 42 };
     let library: Record<string, unknown> = { Version: 1, Presets: structuredClone(rows ?? plan.LoadoutPresets), __externalUiRevision: 'c'.repeat(64), UnknownLibrary: 42 };
     let response: Record<string, unknown> | null = null;
     const metrics = (value: number) => [
@@ -107,7 +107,7 @@ async function openPresets(page: Page, rows?: Record<string, unknown>[]) {
       throw new Error(`Unexpected native invocation: ${command}`);
     } } });
     localStorage.clear();
-  }, { rows, objectiveKeys: definitions.objectives.map(row => row.key) });
+  }, { rows, objectiveKeys: definitions.objectives.map(row => row.key), resourcePrioritiesVersion });
   await page.goto('/');
   await page.getByRole('navigation', { name: 'Primary' }).getByRole('button', { name: 'Presets', exact: true }).click();
   const presets = page.getByRole('region', { name: 'Loadout presets', exact: true });
@@ -123,12 +123,12 @@ async function waitForLibrary(page: Page, row: Record<string, unknown>): Promise
   await expect(presets).not.toContainText(/autosave|all changes saved|storage|polling/i);
 }
 
-test('resource lane review is explicit and independent orders survive edits, reload and cloning', async ({ page }) => {
+test('resource priority review is explicit and independent orders survive edits, reload and cloning', async ({ page }) => {
   const preset = { ...definitions.defaults, Id: 'lane_review', Name: 'Lane review', AdventureDynamicWeight: 2, Weights: [2, 3, 4, 0, 0, 0, 5, 1, 1, 0, 0, 0, 0, 0] };
-  const presets = await openPresets(page, [preset]);
+  const presets = await openPresets(page, [preset], 1);
   await presets.getByLabel('Browse preset').selectOption(preset.Id);
-  const energy = presets.getByRole('group', { name: 'Energy funding', exact: true });
-  const magic = presets.getByRole('group', { name: 'Magic funding', exact: true });
+  const energy = presets.getByRole('group', { name: 'Energy priorities', exact: true });
+  const magic = presets.getByRole('group', { name: 'Magic priorities', exact: true });
   const energyNames = () => energy.getByRole('listitem').locator('.priority-name');
   const magicNames = () => magic.getByRole('listitem').locator('.priority-name');
   await expect(energyNames()).toHaveText(['Time Machine', 'Energy NGU', 'Augments', 'Wandoos']);
@@ -137,7 +137,7 @@ test('resource lane review is explicit and independent orders survive edits, rel
   await expect(energy.getByRole('button', { name: 'Move Time Machine down', exact: true })).toBeDisabled();
   await page.waitForTimeout(500);
   expect(await page.evaluate(() => (window as FixtureWindow).__presetWrites)).toEqual([]);
-  await presets.getByRole('button', { name: 'Review & enable lane order', exact: true }).click();
+  await presets.getByRole('button', { name: 'Review & enable priorities', exact: true }).click();
   await waitForLibrary(page, { Id: preset.Id, ResourcePrioritiesReviewed: true, EnergyPriorities: ['TM', 'NGU', 'AUG', 'WAN'], MagicPriorities: ['TM', 'RIT', 'NGU', 'WAN'] });
   await expect(presets).not.toContainText('Legacy proportional allocation');
   await energy.getByRole('button', { name: 'Move Energy NGU up', exact: true }).click();
@@ -152,28 +152,95 @@ test('resource lane review is explicit and independent orders survive edits, rel
   await presets.getByRole('button', { name: 'Clone preset', exact: true }).click();
   await expect(presets.getByLabel('Preset name', { exact: true })).toHaveValue('Lane review copy');
   await waitForLibrary(page, { Name: 'Lane review copy', ResourcePrioritiesReviewed: true, EnergyPriorities: ['NGU', 'TM', 'AUG', 'WAN'], MagicPriorities: ['RIT', 'TM', 'NGU', 'WAN'], AdventureDynamicWeight: 2 });
-  await expect(presets).toContainText('Update the injector to use reviewed lane order.');
+  await expect(presets).toContainText('Update the injector to use reviewed resource priorities.');
   await expect(presets.getByRole('button', { name: 'Preview preset', exact: true })).toBeDisabled();
   await expect(presets.getByRole('button', { name: 'Equip preset', exact: true })).toBeDisabled();
   expect(await page.evaluate(() => (window as FixtureWindow).__presetActions)).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test('reviewed lane actions require the capability but remain editable on older runtimes', async ({ page }) => {
+test('reviewed priority actions require version 2 but remain editable on older runtimes', async ({ page }) => {
   const preset = { ...definitions.defaults, Id: 'reviewed', Name: 'Reviewed', ResourcePrioritiesReviewed: true, EnergyPriorities: ['NGU'], MagicPriorities: [] };
-  const presets = await openPresets(page, [preset]);
+  const presets = await openPresets(page, [preset], 1);
   await presets.getByLabel('Browse preset').selectOption(preset.Id);
   await expect(presets.getByRole('button', { name: 'Equip preset', exact: true })).toBeDisabled();
-  const magic = presets.getByRole('group', { name: 'Magic funding', exact: true });
+  const magic = presets.getByRole('group', { name: 'Magic priorities', exact: true });
   await expect(magic).toContainText('No activity');
-  await magic.getByLabel('Add magic funding', { exact: true }).selectOption({ label: 'Magic NGU' });
+  await magic.getByLabel('Add magic priorities', { exact: true }).selectOption({ label: 'Magic NGU' });
   await waitForLibrary(page, { Id: preset.Id, MagicPriorities: ['NGU'], EnergyPriorities: ['NGU'], ResourcePrioritiesReviewed: true });
   expect(await page.evaluate(() => (window as FixtureWindow).__presetActions)).toEqual([]);
-  await page.evaluate(() => { (window as FixtureWindow).__presetRuntime.resourceLanePrioritiesVersion = 1; });
+  await page.evaluate(() => { (window as FixtureWindow).__presetRuntime.resourceLanePrioritiesVersion = 2; });
   // A mocked heartbeat refresh is enough; no native or game action is used to refresh capability.
   await expect(presets.getByRole('button', { name: 'Equip preset', exact: true })).toBeEnabled({ timeout: 15000 });
   await presets.getByRole('button', { name: 'Equip preset', exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as FixtureWindow).__presetActions)).toEqual([{ command: 'equipGlobalPreset', args: { presetId: preset.Id, libraryRevision: 'd'.repeat(64) } }]);
+});
+
+test('resource-only fallbacks leave gear goals unchanged and explain only NGU-first pools at the top', async ({ page }) => {
+  const preset = { ...definitions.defaults, Id: 'allocation_only', Name: 'Adventure Stats', Weights: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 0, 0], ResourcePrioritiesReviewed: true, EnergyPriorities: ['NGU'], MagicPriorities: ['NGU'], Future: { keep: 'custom data' } };
+  const presets = await openPresets(page, [preset]);
+  await presets.getByLabel('Browse preset').selectOption(preset.Id);
+  const settings = presets.getByRole('article', { name: 'Preset settings', exact: true });
+  const notice = settings.getByRole('note', { name: 'Resource allocation', exact: true });
+  await expect(notice).toHaveText('This preset does not optimize Energy/Magic production. Energy and Magic prioritize NGUs using your Misc settings.');
+  expect(await notice.evaluate(element => !!(element.compareDocumentPosition(document.querySelector('.preset-header')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+  const energy = presets.getByRole('group', { name: 'Energy priorities', exact: true });
+  const magic = presets.getByRole('group', { name: 'Magic priorities', exact: true });
+  const energyAdd = energy.getByLabel('Add energy priorities', { exact: true });
+  const magicAdd = magic.getByLabel('Add magic priorities', { exact: true });
+  await expect(energyAdd.locator('optgroup option')).toHaveText(['Time Machine', 'Augments', 'Wandoos', 'Advanced Training']);
+  await expect(magicAdd.locator('optgroup option')).toHaveText(['Blood', 'Time Machine', 'Wandoos']);
+  await energyAdd.selectOption({ label: 'Time Machine' });
+  await magicAdd.selectOption({ label: 'Blood' });
+  await waitForLibrary(page, { ...preset, EnergyPriorities: ['NGU', 'TM'], MagicPriorities: ['NGU', 'RIT'] });
+  await expect(settings.getByRole('table', { name: 'Goal weights', exact: true }).getByRole('rowheader')).toHaveText(['Adventure power', 'Adventure toughness']);
+  await expect(settings.getByLabel('Time Machine weight', { exact: true })).toHaveCount(0);
+  await expect(settings.getByLabel('Blood weight', { exact: true })).toHaveCount(0);
+  await energy.getByRole('button', { name: 'Move Time Machine up', exact: true }).click();
+  await expect(notice).toHaveText('This preset does not optimize Magic production. Magic prioritizes NGUs using your Misc settings.');
+  await magic.getByRole('button', { name: 'Move Blood up', exact: true }).click();
+  await expect(notice).toHaveCount(0);
+  await magic.getByRole('button', { name: 'No activity', exact: true }).click();
+  await expect(notice).toHaveCount(0);
+  await waitForLibrary(page, { ...preset, EnergyPriorities: ['TM', 'NGU'], MagicPriorities: [] });
+  const writes = await page.evaluate(() => (window as FixtureWindow).__presetWrites);
+  for (const write of writes) expect((write.Presets as Record<string, unknown>[])[0]).toMatchObject({ Weights: preset.Weights, AdventureDynamicWeight: 0, DiggerWeights: preset.DiggerWeights, Future: preset.Future });
+  expect(await page.evaluate(() => (window as FixtureWindow).__presetActions)).toEqual([]);
+  expect(await page.evaluate(() => (window as FixtureWindow).__presetPlanWrites)).toEqual([]);
+  expect(await page.evaluate(() => (window as FixtureWindow).__presetSettingWrites)).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('AT allocation exposes editable ratios without adding a training gear goal', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-10-19T12:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-10-19T12:00:01Z'));
+  const preset = { ...definitions.defaults, Id: 'allocation_at', Name: 'Adventure AT allocation', Weights: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 0, 0], ResourcePrioritiesReviewed: true, EnergyPriorities: ['NGU'], MagicPriorities: [] };
+  const presets = await openPresets(page, [preset]);
+  await presets.getByLabel('Browse preset').selectOption(preset.Id);
+  const energy = presets.getByRole('group', { name: 'Energy priorities', exact: true });
+  const power = presets.getByLabel('Preset AT Power ratio', { exact: true });
+  await expect(power).toHaveCount(0);
+  await energy.getByLabel('Add energy priorities', { exact: true }).selectOption({ label: 'Advanced Training' });
+  await expect(power).toBeVisible();
+  await expect(presets.getByLabel('Advanced Training weight', { exact: true })).toHaveCount(0);
+  await presets.getByLabel('Preset AT Toughness ratio', { exact: true }).fill('3');
+  await power.fill('4');
+  await page.clock.runFor(350);
+  await waitForLibrary(page, { ...preset, EnergyPriorities: ['NGU', 'AT'], AdvancedTrainingWeights: [3, 4, 0, 0, 0] });
+  await energy.getByRole('button', { name: 'Remove Advanced Training', exact: true }).click();
+  await expect(power).toHaveCount(0);
+  await energy.getByLabel('Add energy priorities', { exact: true }).selectOption({ label: 'Advanced Training' });
+  await expect(power).toHaveValue('4');
+  await power.fill('-');
+  await energy.getByRole('button', { name: 'Remove Advanced Training', exact: true }).click();
+  await expect(presets.getByRole('button', { name: 'Reset AT ratios', exact: true })).toBeVisible();
+  await page.clock.runFor(500);
+  expect(await page.evaluate(() => (window as FixtureWindow).__presetWrites)).toHaveLength(1);
+  await presets.getByRole('button', { name: 'Reset AT ratios', exact: true }).click();
+  await page.clock.runFor(350);
+  await waitForLibrary(page, { ...preset, AdvancedTrainingWeights: definitions.defaults.AdvancedTrainingWeights });
+  expect(await page.evaluate(() => (window as FixtureWindow).__presetActions)).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test('cap goals edit independently of the dynamic sentinel and preview cap outputs', async ({ page }) => {
@@ -558,8 +625,8 @@ test('preset autosave keeps focused controls editable during a delayed save and 
   await expect(name).toBeEditable();
   const settings = presets.getByRole('article', { name: 'Preset settings', exact: true });
   // Unreviewed proposal lanes are intentionally read-only, independent of save state.
-  expect(await settings.locator('input, select').evaluateAll(controls => controls.filter(control => control.matches(':disabled')).map(control => control.getAttribute('aria-label') || control.closest('label')?.textContent))).toEqual(['Add energy funding', 'Add magic funding']);
-  await expect(settings.getByRole('button', { name: 'Review & enable lane order', exact: true })).toBeEnabled();
+  expect(await settings.locator('input, select').evaluateAll(controls => controls.filter(control => control.matches(':disabled')).map(control => control.getAttribute('aria-label') || control.closest('label')?.textContent))).toEqual(['Add energy priorities', 'Add magic priorities']);
+  await expect(settings.getByRole('button', { name: 'Review & enable priorities', exact: true })).toBeEnabled();
   await expect(settings.getByRole('button', { name: 'Move Fu Manchu beard down', exact: true })).toBeEnabled();
   await expect(settings.getByLabel('NGU beard', { exact: true })).toBeEnabled();
   await expect(settings.getByRole('button', { name: 'Use default beards', exact: true })).toBeEnabled();
@@ -1471,7 +1538,7 @@ test('plan and new stages use saved global selectors while retaining timing and 
   await expect(panel.getByLabel('Focus preset', { exact: true })).toHaveValue('@active');
   await expect(panel.getByLabel('Energy focus', { exact: true })).toHaveCount(0);
   await panel.getByLabel('Focus preset', { exact: true }).selectOption('background');
-  await panel.getByLabel('Fight on entry', { exact: true }).check();
+  await panel.getByLabel('Fights enabled', { exact: true }).check();
   await panel.getByLabel('Duration', { exact: true }).fill('7m');
   await panel.getByLabel('Duration', { exact: true }).press('Enter');
   await panel.getByLabel('Stage mode', { exact: true }).selectOption('1');
@@ -1479,11 +1546,11 @@ test('plan and new stages use saved global selectors while retaining timing and 
   await panel.getByLabel('Stage mode', { exact: true }).selectOption('0');
   await expect(panel.getByLabel('Focus preset', { exact: true })).toHaveValue('background');
   await expect(panel.getByLabel('Duration', { exact: true })).toHaveValue('7m');
-  await expect(panel.getByLabel('Fight on entry', { exact: true })).toBeChecked();
+  await expect(panel.getByLabel('Fights enabled', { exact: true })).toBeChecked();
   await expect.poll(async () => {
     const writes = await page.evaluate(() => (window as FixtureWindow).__presetPlanWrites);
     return (writes.at(-1)?.Stages as Record<string, unknown>[] | undefined)?.[1];
-  }).toMatchObject({ PresetId: 'background', DurationSeconds: 420, FightOnEntry: true, ExecutionMode: 0 });
+  }).toMatchObject({ PresetId: 'background', DurationSeconds: 420, FightSchedule: { Anchor: 0, DelaySeconds: 0, IntervalSeconds: 0 }, ExecutionMode: 0 });
   expect(await page.evaluate(() => (window as FixtureWindow).__presetActions)).toEqual([]);
   expect(await page.evaluate(() => (window as FixtureWindow).__presetWrites)).toEqual([]);
 });

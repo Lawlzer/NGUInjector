@@ -12,19 +12,19 @@ const first = '9007199254740993';
 const second = '123456789012345678901234567890';
 const revision = (value: string) => value.repeat(64);
 const source = () => `{
-  "Version":14,"Name":"plan","__externalUiRevision":"${revision('a')}",
+  "Version":18,"Name":"plan","__externalUiRevision":"${revision('a')}",
   "StageDurationSeconds":1800,"StageLoopStartIndex":0,"GearGoal":0,"ActiveGoalPresetIndex":0,
   "Future":${first},"Nested":{"value":${second},"array":[${first},${second}]},
   "GoalPresets":[{"Name":"Default","GearGoal":0,"Future":${second}}],
   "RebirthHistory":[{"Future":${second}}],
   "Stages":[
-    {"Name":"First","Percent":60,"GearGoal":-1,"Future":{"value":${first},"nested":{"value":${second}}},"TargetAdvancedTrainingPower":"9223372036854775807"},
-    {"Name":"Second","Percent":40,"GearGoal":-1,"Future":{"value":${second}}}
+    {"Name":"First","Percent":60,"GearGoal":-1,"FightSchedule":null,"Future":{"value":${first},"nested":{"value":${second}}},"TargetAdvancedTrainingPower":"9223372036854775807"},
+    {"Name":"Second","Percent":40,"GearGoal":-1,"FightSchedule":null,"Future":{"value":${second}}}
   ]
 }`;
 const plan = () => api.parseJson(source()) as JsonObject;
 const savedSettingsResponse = (settings: JsonObject) => api.stringifyJson({ success: true, mode: 'offline', data: { settings, revision: revision('b') } });
-const ready = (): NguiState => ({ runtime_dir: 'A:/runtime', marker_enabled: true, connected: true, protocol: {}, settings: {}, settings_revision: revision('a'), runtime: { status: 'running', externalUiEnabled: true, protocolVersion: 3, updatedAt: new Date().toISOString(), supportedCommands: ['readPlan', 'savePlan', 'createPlan', 'applySettingsPatch'] }, profiles: [], plans: [], logs: [], command_results: [] });
+const ready = (): NguiState => ({ runtime_dir: 'A:/runtime', marker_enabled: true, connected: true, protocol: {}, settings: {}, settings_revision: revision('a'), runtime: { status: 'running', externalUiEnabled: true, protocolVersion: 3, stageTimingVersion: 1, fightScheduleVersion: 1, planVersion: 18, updatedAt: new Date().toISOString(), supportedCommands: ['readPlan', 'savePlan', 'createPlan', 'applySettingsPatch'] }, profiles: [], plans: [], logs: [], command_results: [] });
 
 beforeEach((): void => {
   // Returning the mock would register it as a teardown callback in Vitest.
@@ -34,7 +34,7 @@ beforeEach((): void => {
 describe('lossless JSON helpers', () => {
   it('keeps small known values as numbers and unsafe unknown tokens as numeric scalars', () => {
     const value = plan();
-    expect(value.Version).toBe(14);
+    expect(value.Version).toBe(18);
     expect(value.StageDurationSeconds).toBe(1800);
     expect(value.Future).toBeInstanceOf(LosslessNumber);
     expect(String(value.Future)).toBe(first);
@@ -110,7 +110,7 @@ describe('revision metadata', () => {
 
 describe('native plan string IPC', () => {
   it('strips retired overrides on read, save, and copy while preserving version and unknown data', async () => {
-    const original = { ...plan(), Version: 17, EnergyNguWeights: [3], MagicNguWeights: null, LoadoutPresets: [{ Id: 'legacy', EnergyNguWeights: [4], MagicNguWeights: [5], AdvancedTrainingWeights: [1, 1, 0, 0, 0] }], Stages: [{ Name: 'First', EnergyNguWeights: [6], MagicNguWeights: [7], Future: new LosslessNumber(first) }] };
+    const original = { ...plan(), Version: 18, EnergyNguWeights: [3], MagicNguWeights: null, LoadoutPresets: [{ Id: 'legacy', EnergyNguWeights: [4], MagicNguWeights: [5], AdvancedTrainingWeights: [1, 1, 0, 0, 0] }], Stages: [{ Name: 'First', EnergyNguWeights: [6], MagicNguWeights: [7], Future: new LosslessNumber(first) }] };
     const before = api.stringifyJson(original);
     native.mockResolvedValueOnce(before).mockResolvedValueOnce({ success: true }).mockResolvedValueOnce('copy');
     const loaded = await api.readPlan('A:/runtime', 'plan');
@@ -119,9 +119,9 @@ describe('native plan string IPC', () => {
     const saved = api.parseJson((native.mock.calls[1][1] as { planJson: string }).planJson) as JsonObject;
     const copied = api.parseJson((native.mock.calls[2][1] as { sourceJson: string }).sourceJson) as JsonObject;
     for (const value of [loaded, saved, copied]) {
-      expect(value.Version).toBe(17);
+      expect(value.Version).toBe(18);
       expect(value).not.toHaveProperty('EnergyNguWeights'); expect(value).not.toHaveProperty('MagicNguWeights');
-      expect(value.Stages).toEqual([{ Name: 'First', Future: new LosslessNumber(first) }]);
+      expect(value.Stages).toEqual([{ Name: 'First', FightSchedule: null, Future: new LosslessNumber(first) }]);
       expect(value.LoadoutPresets).toEqual([{ Id: 'legacy', AdvancedTrainingWeights: [1, 1, 0, 0, 0] }]);
       expect(String(value.Future)).toBe(first);
     }
@@ -148,7 +148,7 @@ describe('native plan string IPC', () => {
   });
   it('rejects a non-normalized successful native response', async () => {
     native.mockResolvedValueOnce(api.stringifyJson({ ...plan(), Version: 13 }));
-    await expect(api.readPlan('A:/runtime', 'legacy')).rejects.toThrow('normalized migrations');
+    await expect(api.readPlan('A:/runtime', 'legacy')).rejects.toThrow('version 18');
   });
   it('sends only planJson as a string containing unquoted exact numbers and the CAS token', async () => {
     native.mockResolvedValueOnce({ success: true, mode: 'connected' });
@@ -269,7 +269,7 @@ describe('frontend save regressions: numeric settings IPC', () => {
 describe('controller and string IPC round trips', () => {
   it('retains automatic adventure weight through saves, readback, and standard mode switching', async () => {
     const original = plan();
-    original.Version = 17;
+    original.Version = 18;
     let disk = api.stringifyJson(original);
     const writes: JsonObject[] = [];
     native.mockImplementation(async (command, args) => {

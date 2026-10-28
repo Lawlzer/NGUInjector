@@ -9,19 +9,19 @@ import { equal, object, validatePlan } from '../src/lib/model';
 import { presetZones } from '../src/lib/options';
 import { diggerNames, focusEfficiency, newPreset, objectiveKeys, objectiveLabels, presetFields, presetArgs, presetMetric, presetNumberInput, globalPresetRows, globalPresetArgs, globalPreviewMatches, normalizePreset, normalizePresetLibrary, rebasePresetLibrary, readPresetPreview, relativeProduction, validatePreset, validatePresetArgs, validatePresetLibrary } from '../src/lib/presets';
 import Presets from '../src/lib/Presets.svelte';
-import { proposedResourcePriorities, resourceLaneOptions, resourceLanePrioritiesReady } from '../src/lib/presets';
+import { proposedResourcePriorities, resourceAllocationNotice, resourceLaneOptions, resourceLanePrioritiesReady } from '../src/lib/presets';
 import ZoneReference from '../src/lib/ZoneReference.svelte';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 const native = vi.mocked(invoke);
 beforeEach(() => { native.mockReset(); });
 
-const row = (): JsonObject => ({ ...newPreset(), Id: 'balanced' });
+const row = (): JsonObject => ({ ...newPreset(), Id: 'balanced', ResourcePrioritiesReviewed: false, EnergyPriorities: null, MagicPriorities: null });
 const previewId = '0123456789abcdef0123456789abcdef';
 const library = (): JsonObject => ({ Version: 1, Presets: [row()], __externalUiRevision: 'a'.repeat(64) });
 const globalArgs = (): JsonObject => globalPresetArgs('balanced', library());
 function plan(): JsonObject {
-  return { Version: 17, Name: 'test', __externalUiRevision: 'a'.repeat(64), Stages: [{ Name: 'NGU', Percent: 100 }], LoadoutPresets: [row()], GoalPresets: [{ Name: 'Legacy', GearGoal: 2 }], ActiveGoalPresetIndex: 0, GearGoal: 2, Future: { token: api.parseJson('9007199254740993') } };
+  return { Version: 18, Name: 'test', __externalUiRevision: 'a'.repeat(64), Stages: [{ Name: 'NGU', Percent: 100, FightSchedule: null }], LoadoutPresets: [row()], GoalPresets: [{ Name: 'Legacy', GearGoal: 2 }], ActiveGoalPresetIndex: 0, GearGoal: 2, Future: { token: api.parseJson('9007199254740993') } };
 }
 function candidate(key = 'mixed'): JsonObject {
   return { key, label: key === 'current' ? 'Current gear' : 'Shared NGU + blood', itemIds: [123], items: [{ id: 123, name: 'Owned NGU hat', slot: -1, sourceSlot: 4, level: 100, factor: 1.5 }], metrics: [
@@ -38,7 +38,7 @@ function result(args = presetArgs(row())): JsonObject {
 function setup() {
   let savedPlan = plan();
   let savedLibrary = library();
-  const snapshot: NguiState = { runtime_dir: 'A:/runtime', connected: true, marker_enabled: true, settings_revision: 'a'.repeat(64), settings: { _energyNguWeights: [0, 0, 0, 0, 1, 0, 1, 0, 0], _magicNguWeights: [1, 0, 0, 0, 0, 0, 0] }, protocol: {}, profiles: [], plans: ['test', 'other'], logs: [], command_results: [], runtime: { externalUiEnabled: true, status: 'running', protocolVersion: 3, startedAt: 'session-one', globalPresetsVersion: 2, loadoutPresetsVersion: 2, globalNguWeightsVersion: 1, updatedAt: new Date().toISOString(), supportedCommands: ['previewGlobalPreset', 'applyGlobalPreset', 'equipGlobalPreset', 'status', 'readPlan', 'savePlan', 'previewLoadoutPreset', 'applyLoadoutPreset', 'applySettingsPatch'] } };
+  const snapshot: NguiState = { runtime_dir: 'A:/runtime', connected: true, marker_enabled: true, settings_revision: 'a'.repeat(64), settings: { _energyNguWeights: [0, 0, 0, 0, 1, 0, 1, 0, 0], _magicNguWeights: [1, 0, 0, 0, 0, 0, 0] }, protocol: {}, profiles: [], plans: ['test', 'other'], logs: [], command_results: [], runtime: { externalUiEnabled: true, status: 'running', protocolVersion: 3, stageTimingVersion: 1, fightScheduleVersion: 1, planVersion: 18, startedAt: 'session-one', globalPresetsVersion: 2, loadoutPresetsVersion: 2, globalNguWeightsVersion: 1, updatedAt: new Date().toISOString(), supportedCommands: ['previewGlobalPreset', 'applyGlobalPreset', 'equipGlobalPreset', 'status', 'readPlan', 'savePlan', 'previewLoadoutPreset', 'applyLoadoutPreset', 'applySettingsPatch'] } };
   let submitted: JsonObject = {};
   let command = '';
   const backend = { ...api, getState: vi.fn(async () => ({ ...snapshot, settings: api.cloneObject(snapshot.settings), runtime: api.cloneObject(snapshot.runtime) })), storeRuntimeDir: vi.fn(),
@@ -55,10 +55,10 @@ function setup() {
 }
 const props = (state: ReturnType<ReturnType<typeof createController>['current']>) => ({ state, onchange: vi.fn(), onselect: vi.fn(), oncandidate: vi.fn(), onpreview: vi.fn(async () => {}), onapply: vi.fn(async () => {}), onequip: vi.fn(async () => {}), onstop: vi.fn(async () => {}), onreload: vi.fn(async () => {}), ondiscard: vi.fn(async () => {}) });
 
-describe('reviewed resource lanes', () => {
+describe('reviewed resource priorities', () => {
   const reviewed = (): JsonObject => ({ ...row(), ResourcePrioritiesReviewed: true, EnergyPriorities: ['TM', 'NGU'], MagicPriorities: ['NGU', 'RIT'], AdventureDynamicWeight: 2 });
 
-  it.each<JsonValue | undefined>([undefined, null, false, true, '1', 0, 2])('blocks plan execution against committed reviewed bindings on capability %j', async capability => {
+  it.each<JsonValue | undefined>([undefined, null, false, true, '2', 0, 1, 3])('blocks plan execution against committed reviewed bindings on capability %j', async capability => {
     const { ui, backend, snapshot } = setup();
     if (capability !== undefined) snapshot.runtime.resourceLanePrioritiesVersion = capability;
     const selectedPlan = { ...plan(), ActivePresetId: 'balanced', AutoRebirthEnabled: false };
@@ -79,7 +79,7 @@ describe('reviewed resource lanes', () => {
 
   it.each(['active', 'stage', 'inherited'])('starts a reviewed %s binding only on capable runtimes', async binding => {
     const { ui, backend, snapshot } = setup();
-    snapshot.runtime.resourceLanePrioritiesVersion = 1;
+    snapshot.runtime.resourceLanePrioritiesVersion = 2;
     const selectedPlan = { ...plan(), ActivePresetId: binding === 'stage' ? '' : 'balanced', Stages: [{ Name: 'Bound', Percent: 100, PresetId: binding === 'stage' ? 'balanced' : binding === 'inherited' ? '@active' : '' }] };
     backend.readPlan.mockResolvedValue(selectedPlan);
     backend.readPresetLibrary.mockResolvedValue({ ...library(), Presets: [reviewed()] });
@@ -105,7 +105,7 @@ describe('reviewed resource lanes', () => {
 
   it('refuses plan execution when the injector session changes during the library read', async () => {
     const { ui, backend, snapshot } = setup();
-    snapshot.runtime.resourceLanePrioritiesVersion = 1;
+    snapshot.runtime.resourceLanePrioritiesVersion = 2;
     backend.readPlan.mockResolvedValue({ ...plan(), ActivePresetId: 'balanced' });
     await ui.refresh(); await ui.loadPlan('test');
     let release!: (library: JsonObject) => void;
@@ -119,14 +119,83 @@ describe('reviewed resource lanes', () => {
     expect(backend.savePlan).not.toHaveBeenCalled(); ui.dispose();
   });
 
-  it('proposes only active lane activities with stable descending-weight ties, without mutating goals', () => {
+  it('keeps legacy review proposals goal-derived without limiting selectable activities', () => {
     const preset = { ...row(), Weights: [2, 5, 5, 99, 99, 99, 5, 2, 2, 0, 99, 99, 99, 99] };
     const before = api.stringifyJson(preset);
     expect(proposedResourcePriorities(preset, true)).toEqual(['TM', 'NGU', 'AUG', 'WAN']);
     expect(proposedResourcePriorities(preset, false)).toEqual(['NGU', 'RIT', 'TM', 'WAN']);
-    expect(resourceLaneOptions(preset, true).map(row => row.value)).toEqual(['NGU', 'TM', 'AUG', 'WAN']);
+    expect(resourceLaneOptions(preset, true).map(row => row.value)).toEqual(['NGU', 'TM', 'AUG', 'WAN', 'AT']);
     expect(proposedResourcePriorities({ ...preset, Weights: Array(14).fill(0), AdventureDynamicWeight: 100 }, true)).toEqual([]);
     expect(api.stringifyJson(preset)).toBe(before);
+  });
+
+  it('offers every valid resource activity for non-production goals without changing gear or support weights', () => {
+    const preset = { ...row(), Weights: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 0, 0], DiggerWeights: Array(12).fill(4), EnergyPriorities: [], MagicPriorities: [] };
+    const before = api.stringifyJson(preset);
+    expect(resourceLaneOptions(preset, true)).toEqual([
+      { value: 'NGU', label: 'Energy NGU', group: 'Activities' }, { value: 'TM', label: 'Time Machine', group: 'Activities' },
+      { value: 'AUG', label: 'Augments', group: 'Activities' }, { value: 'WAN', label: 'Wandoos', group: 'Activities' },
+      { value: 'AT', label: 'Advanced Training', group: 'Activities' }
+    ]);
+    expect(resourceLaneOptions(preset, false)).toEqual([
+      { value: 'NGU', label: 'Magic NGU', group: 'Activities' }, { value: 'RIT', label: 'Blood', group: 'Activities' },
+      { value: 'TM', label: 'Time Machine', group: 'Activities' }, { value: 'WAN', label: 'Wandoos', group: 'Activities' }
+    ]);
+    expect(validatePreset({ ...preset, ResourcePrioritiesReviewed: true, EnergyPriorities: ['NGU', 'TM', 'AUG', 'WAN', 'AT'], MagicPriorities: ['NGU', 'RIT', 'TM', 'WAN'] })).toBeUndefined();
+    expect(api.stringifyJson(preset)).toBe(before);
+  });
+
+  const allocationOnly = (): JsonObject => ({ ...row(), Weights: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0], ResourcePrioritiesReviewed: true, EnergyPriorities: ['NGU'], MagicPriorities: ['NGU'] });
+
+  it('explains NGU-first allocation separately from non-production gear goals without mutating the preset', () => {
+    const preset = allocationOnly();
+    const before = api.stringifyJson(preset);
+    expect(resourceAllocationNotice(preset)).toBe('This preset does not optimize Energy/Magic production. Energy and Magic prioritize NGUs using your Misc settings.');
+    expect(api.stringifyJson(preset)).toBe(before);
+  });
+
+  it.each([
+    [0, 'Magic'], [1, 'Energy'], [2, 'Energy'], [6, ''], [7, 'Magic'], [8, ''], [9, 'Magic'],
+    [12, 'Energy/Magic'], [13, 'Energy/Magic']
+  ] as const)('only explains pools without production goals when objective %i is positive', (index, pool) => {
+    const preset = allocationOnly();
+    (preset.Weights as number[])[index] = 2;
+    const message = resourceAllocationNotice(preset);
+    expect(message).toBe(pool ? `This preset does not optimize ${pool} production. ${pool === 'Energy/Magic' ? 'Energy and Magic prioritize' : `${pool} prioritizes`} NGUs using your Misc settings.` : '');
+  });
+
+  it.each<JsonObject>([
+    { ResourcePrioritiesReviewed: false }, { EnergyPriorities: [], MagicPriorities: [] },
+    { EnergyPriorities: ['TM', 'NGU'], MagicPriorities: ['RIT', 'NGU'] },
+    { EnergyPriorities: null, MagicPriorities: null }
+  ])('does not promise NGU allocation for unreviewed, empty or later NGU orders %j', fields => {
+    expect(resourceAllocationNotice({ ...allocationOnly(), ...fields })).toBe('');
+  });
+
+  it('places the resource explanation before the selected preset controls', async () => {
+    const { ui, backend } = setup();
+    backend.readPresetLibrary.mockResolvedValue({ ...library(), Presets: [allocationOnly()] });
+    await ui.refresh(); ui.selectLoadoutPreset('balanced');
+    const body = render(Presets, { props: props(ui.current()) }).body;
+    expect(body).toContain('aria-label="Resource allocation"');
+    expect(body.indexOf(resourceAllocationNotice(allocationOnly()))).toBeLessThan(body.indexOf('Preset name'));
+    expect(body).toContain('Gear goals');
+    expect(body).toContain('Energy priorities');
+    expect(body).toContain('Magic priorities');
+    expect(body).toContain('Priority #1 funds to its useful cap; only leftovers go to #2 and later priorities.');
+    ui.dispose();
+  });
+
+  it.each([true, false])('shows allocation-only AT ratios only for reviewed priorities, reviewed=%s', async reviewed => {
+    const { ui, backend } = setup();
+    const preset = { ...allocationOnly(), ResourcePrioritiesReviewed: reviewed, EnergyPriorities: ['NGU', 'AT'], AdvancedTrainingWeights: [3, 4, 0, 0, 0] };
+    backend.readPresetLibrary.mockResolvedValue({ ...library(), Presets: [preset] });
+    await ui.refresh(); ui.selectLoadoutPreset('balanced');
+    const body = render(Presets, { props: props(ui.current()) }).body;
+    expect(body.includes('aria-label="Preset AT Power ratio"')).toBe(reviewed);
+    expect(body).not.toContain('aria-label="Advanced Training weight"');
+    expect(globalPresetRows(ui.current().presetLibrary)[0]).toMatchObject(preset);
+    ui.dispose();
   });
 
   it('renders legacy proposals without conversion or autosave', async () => {
@@ -141,7 +210,7 @@ describe('reviewed resource lanes', () => {
       const callbacks = props(ui.current());
       const body = render(Presets, { props: callbacks }).body;
       expect(body).toContain('Legacy proportional allocation');
-      expect(body).toContain('Review &amp; enable lane order');
+      expect(body).toContain('Review &amp; enable priorities');
       expect(callbacks.onchange).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1000);
       expect(backend.savePresetLibrary).not.toHaveBeenCalled();
@@ -226,7 +295,7 @@ describe('reviewed resource lanes', () => {
     expect(() => rebasePresetLibrary(base, draft, { ...fresh, Presets: [{ ...reviewed(), EnergyPriorities: [] }] })).toThrow('Source changed');
   });
 
-  it.each<JsonValue | undefined>([undefined, null, 0, 2, '1', true])('blocks reviewed global and inline actions on old capability %j', async capability => {
+  it.each<JsonValue | undefined>([undefined, null, 0, 1, 3, '2', true])('blocks reviewed global and inline actions on unsupported capability %j', async capability => {
     const { ui, backend, snapshot } = setup();
     if (capability === undefined) delete snapshot.runtime.resourceLanePrioritiesVersion; else snapshot.runtime.resourceLanePrioritiesVersion = capability;
     snapshot.runtime.adventureDynamicPresetsVersion = 1;
@@ -239,13 +308,13 @@ describe('reviewed resource lanes', () => {
       expect(ui.current().error).toContain('resourceLanePrioritiesVersion');
     }
     const body = render(Presets, { props: props(ui.current()) }).body;
-    expect(body).toContain('Update the injector to use reviewed lane order.');
+    expect(body).toContain('Update the injector to use reviewed resource priorities.');
     expect(backend.enqueueCommand).not.toHaveBeenCalled(); ui.dispose();
   });
 
   it('sends reviewed actions with the existing ID/revision contract on capable runtimes', async () => {
     const { ui, backend, snapshot } = setup();
-    snapshot.runtime.resourceLanePrioritiesVersion = 1;
+    snapshot.runtime.resourceLanePrioritiesVersion = 2;
     backend.readPresetLibrary.mockResolvedValue({ ...library(), Presets: [{ ...reviewed(), AdventureDynamicWeight: 0 }] });
     await ui.refresh(); await ui.equipGlobalPreset('balanced');
     expect(backend.enqueueCommand).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'equipGlobalPreset', globalArgs());

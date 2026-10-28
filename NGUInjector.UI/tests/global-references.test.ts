@@ -8,7 +8,7 @@ import GlobalPresetSelect from '../src/lib/GlobalPresetSelect.svelte';
 import StageEditor from '../src/lib/StageEditor.svelte';
 
 const library = (): JsonObject => ({ Version: 1, Presets: [{ ...newPreset(), Id: 'balanced', Name: 'Shared balanced' }], __externalUiRevision: 'a'.repeat(64) });
-const plan = (row = weightedStage()): JsonObject => ({ Version: 17, Name: 'test', __externalUiRevision: 'b'.repeat(64), ActivePresetId: 'balanced', Stages: [row] });
+const plan = (row = weightedStage()): JsonObject => ({ Version: 18, Name: 'test', __externalUiRevision: 'b'.repeat(64), ActivePresetId: 'balanced', Stages: [row] });
 
 describe('global preset references', () => {
   it('requires both the AT objective and power/toughness ratios for mandatory targets', () => {

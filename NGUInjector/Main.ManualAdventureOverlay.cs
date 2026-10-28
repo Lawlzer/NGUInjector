@@ -289,16 +289,20 @@ namespace NGUInjector
                     var plan = LoadoutPresetPlanner.Plan(capture.Snapshot, request, timer);
                     string failure = "No feasible allocation-preserving manual adventure loadout.";
                     ih[] selected = null;
-                    foreach (var candidate in plan.Candidates.Where(x => x.Feasible && x.Score.HasValue).OrderByDescending(x => x.Score.Value))
+                    foreach (var candidate in LoadoutPresetSetupCandidates(plan.Candidates, request.ResourcePrioritiesReviewed))
                     {
+                        if (!candidate.Feasible || !candidate.Score.HasValue)
+                        {
+                            failure = "The exact selected setup cannot be funded. " + string.Join(" ", candidate.Warnings);
+                            break;
+                        }
                         var gear = candidate.Items.Select((item, i) => {
                             var wrapper = item.Id == 0 ? new ih { equipment = new Equipment(), id = 0 } : capture.Gear[item.SourceSlot];
                             return new ih { id = wrapper.id, name = wrapper.name, equipment = wrapper.equipment,
                                 level = wrapper.level, slot = capture.Snapshot.Slots[i] };
                         }).ToArray();
                         gear = LoadoutManager.ComposeExactLoadout(LoadoutManager.CaptureExactLoadout(), gear);
-                        // Pure preflight may try another candidate. Once acquired, a
-                        // native partial/error never falls through to replacement selection.
+                        // Only unreviewed preflight may try another candidate.
                         failure = GearOptimizer.CheckExactSwapCapacity(gear, Character.curEnergy, Character.res3.curRes3);
                         if (failure == null) { selected = gear; break; }
                     }

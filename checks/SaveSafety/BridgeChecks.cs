@@ -63,6 +63,13 @@ internal static class BridgeChecks
         foreach (string source in new[] { "scan", "capture" })
             Run(fixtures, "failed high-water persistence retains observed maximum and retries " + source, s => HighWaterWriteFails(s, source));
         Run(fixtures, "freshly captured backup permits immediate publication authorization", CapturePublication);
+        if (Path.DirectorySeparatorChar == '\\')
+        {
+            foreach (bool deleted in new[] { false, true })
+                Run(fixtures, deleted ? "deleted mixed-slash capture retains high-water and blocks publication"
+                    : "mixed-slash capture survives forced scan and authorizes publication", s => MixedSlashCapturePublication(s, deleted));
+        }
+        else Console.WriteLine("SKIP: mixed-slash capture regressions require Windows path semantics.");
         Run(fixtures, "longest selection uses decoded clocks not file names or mtimes", Selection);
         Run(fixtures, "identical byte copies tie without ambiguity", IdenticalTie);
         Run(fixtures, "different-hash tie blocks native loading after protection", AmbiguousTie);
@@ -457,6 +464,52 @@ internal static class BridgeChecks
         Equal(runtime["status"].Value, "verified", "fresh protective backup does not block its own publication");
         Equal(runtime["longest"]["sha256"].Value, backup.Sha256, "publication sees newly captured maximum");
         Equal(s.Character.importExport.ExportCalls, 1, "authorization does not repeat capture");
+        NoNativeLoad(s);
+    }
+
+    private static void MixedSlashCapturePublication(Scenario s, bool deleted)
+    {
+        string directory = Path.Combine(s.Root.Replace('\\', '/'), "runtime");
+        Assert(directory.Contains("/") && directory.Contains("\\"), "runtime directory actually uses mixed slashes");
+        Assert(directory != Path.GetFullPath(directory), "raw runtime directory differs from its canonical spelling");
+        s.Main = new InjectorMain(directory, s.Character);
+        s.SetCurrent("valid.ok.txt");
+        var backup = s.Main.Capture();
+        Assert(File.Exists(backup.Path), "captured bytes exist at returned canonical path");
+        Equal(backup.Path, Path.GetFullPath(backup.Path), "capture identity uses canonical path");
+        Equal(backup.Sha256, Hash(File.ReadAllBytes(backup.Path)), "mixed-slash capture read-back hash");
+        Equal(JsonFiles.ParseObject(File.ReadAllText(backup.Path + ".json"))["path"].Value, backup.Path, "manifest uses canonical capture path");
+        string evidencePath = Path.Combine(s.Safety, "high-water.json");
+        string evidence = File.ReadAllText(evidencePath);
+        Equal(JsonFiles.ParseObject(evidence)["path"].Value, backup.Path, "high-water uses canonical capture path");
+        if (deleted) File.Delete(backup.Path);
+
+        var runtime = s.ScanAll();
+        Equal(runtime["knownFiles"].AsInt, 1, "capture and discovery share one catalog key");
+        Equal(runtime["longest"]["path"].Value, backup.Path, "forced scan retains captured path");
+        Equal(runtime["longest"]["sha256"].Value, backup.Sha256, "forced scan retains captured high-water hash");
+        Equal(File.ReadAllText(evidencePath), evidence, "rescan cannot rewrite captured high-water evidence");
+        if (deleted)
+        {
+            Assert(!runtime["scanComplete"].AsBool, "actual missing captured bytes still block completion");
+            Assert(runtime["errors"].Children.Any(error => error["path"].Value == backup.Path
+                && error["message"].Value.Contains("disappeared", StringComparison.Ordinal)), "missing capture reported at its canonical path");
+            Equal(runtime["status"].Value, "unknown", "missing captured bytes never authorize publication");
+            Throws<InvalidOperationException>(() => s.Main.RequirePublication(), "blocked");
+        }
+        else
+        {
+            Assert(runtime["scanComplete"].AsBool, "existing mixed-slash capture completes forced inspection");
+            Equal(runtime["errors"].Count, 0, "existing capture is not falsely reported missing");
+            Equal(runtime["status"].Value, "verified", "matching live state remains verified");
+            s.Main.RequirePublication();
+            Equal(s.Main.Runtime()["knownFiles"].AsInt, 1, "publication rescan cannot duplicate the capture");
+            s.Main.Scan(false);
+            Equal(s.Main.Runtime()["pendingFiles"].AsInt, 0, "canonical capture remains cached after inspection");
+            Assert(s.Main.Runtime()["scanComplete"].AsBool, "cached scan retains verified capture");
+        }
+        Equal(s.Character.lastTime, Scenario.OriginalLastTime, "mixed-slash capture restores native time");
+        Equal(s.Character.importExport.ExportCalls, 1, "inspection and publication guard do not recapture");
         NoNativeLoad(s);
     }
 

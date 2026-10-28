@@ -31,8 +31,9 @@ export function injectorErrors(state: Pick<UiState, 'snapshot' | 'error' | 'save
   });
 
   const resources = object(runtime.resourceAllocation);
-  if (failed(resources.state)) add('resources', ['Resource allocation', text(resources.owner), text(resources.blockedDomain)].filter(Boolean).join(' / '), resources.reason || 'Resource allocation failed.', resources);
+  if (failed(resources.state) || resources.blocked === true) add('resources', ['Resource allocation', text(resources.owner), text(resources.blockedDomain)].filter(Boolean).join(' / '), resources.reason || 'Resource allocation failed.', resources);
   const execution = object(runtime.execution);
+  if (failed(execution.status)) add('execution', 'Execution status', execution.reason || execution.waitingReason || 'Execution status is unavailable.', execution);
   for (const [domain, value] of Object.entries(object(execution.domains))) {
     const row = object(value);
     if (failed(row.state)) add(`domain:${domain}`, domain, row.reason || row.waitingReason || `${domain} execution failed.`, row, row.count);
@@ -57,7 +58,7 @@ export function injectorErrors(state: Pick<UiState, 'snapshot' | 'error' | 'save
     add('combat-prep', 'Combat prep', combat.cleanupRecoveryReason || combat.blockedReason || combat.reason || 'Combat prep failed.', combat);
   }
   if (runtime.focusStatus === 'failed') add('focus', ['Quick', text(runtime.activeFocusGoal)].filter(Boolean).join(' / '), runtime.customStatus || 'Quick execution failed.', { focusStatus: runtime.focusStatus, customStatus: runtime.customStatus ?? '' });
-  for (const [key, context] of [['bloodGoals', 'Blood Magic'], ['ironPill', 'Iron Pill']] as const) {
+  for (const [key, context] of [['bloodGoals', 'Blood Magic'], ['ironPill', 'Iron Pill'], ['nguAllocation', 'NGU allocation']] as const) {
     const row = object(runtime[key]);
     if (row.status === 'error') add(key, context, row.reason || `${context} failed.`, row);
   }
@@ -66,9 +67,14 @@ export function injectorErrors(state: Pick<UiState, 'snapshot' | 'error' | 'save
   const results: JsonObject[] = [...state.commandErrors];
   if (state.lastResult?.success === false) results.push(state.lastResult);
   for (const result of state.snapshot?.command_results ?? []) if (result.success === false) results.push({ ...result });
+  const seenCommands = new Set<string>();
   for (const result of results) {
     const command = text(result.command);
-    add(`command:${text(result.id) || command}`, `Command failed: ${commandLabels[command] ?? (command || 'Action')}`, result.message || 'Command failed.', result);
+    const key = `${command}\0${text(result.message).split(/\r?\n/)[0]}`;
+    if (seenCommands.has(key)) continue;
+    seenCommands.add(key);
+    const context = 'completed_at' in result ? 'Earlier command failed' : 'Command failed';
+    add(`command:${text(result.id) || command}`, `${context}: ${commandLabels[command] ?? (command || 'Action')}`, result.message || 'Command failed.', result);
   }
   if (state.saveError) add('save', 'Changes not saved', state.saveError, state.saveError);
   if (state.pollError) add('poll', 'Refresh failed', state.pollError, state.pollError);

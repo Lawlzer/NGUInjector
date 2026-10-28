@@ -112,7 +112,7 @@ Iteration 4 fixture repair (execution pending): this checkout's `SimpleJSON.JSON
 
 The source-linked preset manifests compile `ResourceProjection.cs`, `ResourceAllocation.cs`, `DiggerAllocation.cs`, `ActivityPolicy.cs`, `SimpleJson.cs`, and `JsonFiles.cs`, and embed the actual registry as `NGUInjector.ActivityPolicies.json`. The normal production manifest includes these helpers plus game-dependent `ResourceProjectionCapture.cs`. Both paths use `ResourceProjection.NormalizeRaw`; no production normalization or manifest handoff remains pending. Compiled-adapter checks require a successful fresh production build.
 
-See [Automation Improvements](../../docs/AUTOMATION_IMPROVEMENTS.md) for the shared numeric/ownership boundaries and [completed verification](../../docs/AUTOMATION_IMPROVEMENTS.md#completed-verification) for recorded full-run results. Remaining work is in [temp.md](../../../temp.md). This documentation pass did not run a build, this fixture, numeric checks or live actions. Coverage described from current source is not evidence that the current checkout has passed; recorded results below retain their historical scope.
+See [Automation Improvements](../../docs/AUTOMATION_IMPROVEMENTS.md) for the shared numeric/ownership boundaries and [completed verification](../../docs/AUTOMATION_IMPROVEMENTS.md#completed-verification) for recorded full-run results. Remaining work is in [the WIP](../../../wip.md). Use `./verify.ps1 -Scope Native -Suite PresetIntegration` for current verification. Coverage described from source is not evidence that the current checkout has passed; recorded results below retain their historical scope.
 
 ## Shared Support Integration
 

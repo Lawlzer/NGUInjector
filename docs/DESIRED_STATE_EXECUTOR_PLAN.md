@@ -1,5 +1,12 @@
 # Desired-State Executor Plan
 
+> Historical, non-operative design record. Implementation statuses, durable replay
+> assumptions and old commands below are not current tasks or authorization.
+> [Current WIP](../../wip.md) and the newer [action/session contract](action-state-simplification-20261023.md)
+> override stale requirements/statuses. Use [Testing And Save Safety](testing.md)
+> and [agent workflow](agent-workflow.md) for current entrypoints and ownership.
+> Do not resume historical work or live operations from this document.
+
 ## Status And Goal
 
 Proposed end-state for a coordinated execution-layer refactor. This is a design,

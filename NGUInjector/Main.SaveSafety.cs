@@ -83,6 +83,7 @@ namespace NGUInjector
 
         private void ObserveSaveHighWater(SaveIdentity identity)
         {
+            if (SaveTestActive && !SaveTestCaptureAllowed) return;
             // Observation cannot be forgotten merely because its publication fails.
             if (_saveHighWater == null || identity.TotalPlaytimeSeconds > _saveHighWater.TotalPlaytimeSeconds)
             {
@@ -127,6 +128,7 @@ namespace NGUInjector
         // of years of backups on the Unity game thread. A command can request a full rescan.
         private void PumpSaveSafety()
         {
+            if (SaveTestActive) return;
             if (Character?.stats == null || string.IsNullOrEmpty(_dir) || _knownSaves == null) return;
             try
             {
@@ -167,6 +169,7 @@ namespace NGUInjector
 
         private void BeginSaveScan(bool force)
         {
+            if (SaveTestActive) throw new InvalidOperationException("Production save inspection is paused until the protected original is restored.");
             _saveScanPending.Clear();
             _saveScanComplete = false;
             _saveScanErrors.Clear();
@@ -250,6 +253,7 @@ namespace NGUInjector
 
         private JSONObject GetSaveSafetyRuntime()
         {
+            if (SaveTestActive) return GetActiveSaveTestSafetyRuntime();
             var result = new JSONObject();
             result["version"] = 1; result["testActive"] = false;
             if (_knownSaves == null || _saveScanPending == null || _saveScanErrors == null || _saveHighWaterHashes == null)
@@ -265,8 +269,7 @@ namespace NGUInjector
             result["scanComplete"] = _saveScanComplete;
             result["pendingFiles"] = _saveScanPending.Count;
             result["knownFiles"] = _knownSaves.Count;
-            result["liveFixtureTestingSupported"] = false;
-            result["liveFixtureBlocker"] = "Native autosaves, Steam Cloud/achievements, and automation checkpoints are not isolated. Destructive fixture loads are disabled.";
+            result["liveFixtureTestingSupported"] = true;
             var errors = new JSONArray();
             foreach (var error in _saveScanErrors.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
             {
@@ -297,6 +300,7 @@ namespace NGUInjector
 
         private SaveIdentity CaptureVerifiedLocalSave()
         {
+            if (!SaveTestCaptureAllowed) throw new InvalidOperationException("Fixture saves cannot enter production backups or playtime evidence.");
             var before = CurrentSaveIdentity();
             // Native export does not stamp lastTime. Stamp only the synchronous
             // capture so restoring it cannot double-count stale offline progress.
@@ -306,7 +310,7 @@ namespace NGUInjector
             finally { Character.lastTime = oldTime; }
             var bytes = new UTF8Encoding(false, true).GetBytes(encoded);
             var directory = Path.Combine(SaveSafetyDirectory, "backups");
-            var path = Path.Combine(directory, DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N") + ".txt");
+            var path = Path.GetFullPath(Path.Combine(directory, DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N") + ".txt"));
             var decoded = SaveSafetyCatalog.FromBytes(bytes, path, Character.getVersion());
             if (decoded.Rebirth != before.Rebirth || Math.Abs(decoded.TotalPlaytimeSeconds - before.TotalPlaytimeSeconds) > 0.001
                 || Math.Abs(decoded.RebirthSeconds - before.RebirthSeconds) > 0.001 || decoded.PlayerName != before.PlayerName)
@@ -335,6 +339,7 @@ namespace NGUInjector
 
         private void VerifySaveCandidatesForMutation()
         {
+            if (SaveTestActive) throw new InvalidOperationException("Production save mutation checks are paused during a fixture transaction.");
             // File dates only optimize display scans. A destructive action must
             // inspect actual bytes, including every nonselected candidate.
             BeginSaveScan(true);
@@ -411,6 +416,34 @@ namespace NGUInjector
             BeginSaveScan(true);
             data["saveSafety"] = GetSaveSafetyRuntime();
             return "Full native-save inspection requested. Wait for scanComplete before selecting a load.";
+        }
+
+        private static JSONObject GetActiveSaveTestSafetyRuntime()
+        {
+            var session = GetSaveTestRuntime();
+            var state = new JSONObject(); state["version"] = 1; state["testActive"] = true;
+            state["scanComplete"] = false; state["pendingFiles"] = 0; state["knownFiles"] = 1;
+            state["errors"] = new JSONArray(); state["ambiguousLongest"] = false;
+            state["liveFixtureTestingSupported"] = true;
+            state["longest"] = JsonFiles.ParseObject(session["restoreTarget"].ToString());
+            try
+            {
+                state["current"] = reference != null && Character?.stats != null
+                    ? SaveIdentityJson(reference.CurrentSaveIdentity())
+                    : JsonFiles.ParseObject(session["observed"].ToString());
+            }
+            catch { state["current"] = new JSONObject(); }
+            var recovery = session["phase"].Value == "recoveryRequired";
+            var current = state["current"]["totalPlaytimeSeconds"].Value;
+            var longest = state["longest"]["totalPlaytimeSeconds"].Value;
+            var behind = double.TryParse(current, NumberStyles.Float, CultureInfo.InvariantCulture, out var actual)
+                && double.TryParse(longest, NumberStyles.Float, CultureInfo.InvariantCulture, out var target) && actual + .001 < target;
+            state["status"] = recovery ? "recoveryRequired" : behind ? "behind" : "testing";
+            state["message"] = recovery ? "Save test requires restoration: " + session["error"].Value
+                : "Intentional save test in progress. The protected original must be restored before normal play resumes.";
+            state["testSessionId"] = session["sessionId"].Value;
+            state["fixtureGeneration"] = session["fixtureGeneration"].Value;
+            return state;
         }
     }
 }

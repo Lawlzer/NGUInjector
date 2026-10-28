@@ -145,8 +145,8 @@ public static partial class OwnershipChecks
         CheckPitSetupFailures();
         CheckNativePitMilestones();
         CheckNativePitMilestonePredicates();
-        CheckPitLedgerFaults();
-        Console.WriteLine("Money Pit: " + PitCases + " scenarios, " + (Checks - before) + " assertions (scripted external RNG; actual native feed/accounting and durable ledger).");
+        CheckPitSessionFaults();
+        Console.WriteLine("Money Pit: " + PitCases + " scenarios, " + (Checks - before) + " assertions (scripted external RNG; actual native feed/accounting and bounded session attempts).");
     }
 
     static void CheckPitTierBoundaries()

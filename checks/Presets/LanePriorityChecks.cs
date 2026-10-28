@@ -18,6 +18,8 @@ internal static partial class Program
     {
         var before = assertions;
         LaneResolverChecks(); LanePreemptionChecks(); LaneActivityCapChecks(); LaneUtilityChecks(); LaneReplayChecks();
+        LaneRitualStartupMarginChecks();
+        PurePlannerChecks();
         PresetExecutionChecks();
         Console.WriteLine("Lane priority numeric checks: " + (assertions - before));
     }
@@ -66,7 +68,8 @@ internal static partial class Program
         Check(released.Blood == 0 && released.MagicNgu == 1000 && released.MagicShares.SequenceEqual(new long[] { 250, 750, 0 }),
             "removing temporary higher demand recomputes current baseline rather than restoring stale amounts");
         r.MagicPriorities = new[] { "RIT", "NGU" }; r.Weights[2] = 0;
-        Check(Evaluate(s, r).Blood == 0 && Evaluate(s, r).MagicNgu == 1000, "zero activity weight remains an exclusion even when present in reviewed order");
+        Check(Evaluate(s, r).Blood == 101 && Evaluate(s, r).MagicNgu == 899,
+            "explicit reviewed ritual token authorizes funding independently of its zero objective weight");
         r.Weights[2] = 1; r.ResourcePrioritiesReviewed = false;
         var unreviewed = Evaluate(s, r);
         Check(unreviewed.Blood == 0 && unreviewed.MagicNgu == 1000, "unreviewed proposal retains legacy fixed magic fraction");
@@ -171,8 +174,9 @@ internal static partial class Program
             new SupportDigger { Id = 10, Maximum = 1, BaseDrain = 10, Growth = 2, ConsumesGold = true, PerLevel = 10 } };
         r.PlannedSupport = true;
         var supportedBlood = Evaluate(s, r);
-        Check(supportedBlood.MagicNgu == 0 && supportedBlood.Support.Diggers.Single().Id == 10 && supportedBlood.Metrics[2] > baseline.Metrics[2],
-            "planned support ranks actual funded blood ahead of the enormous but zero-funded Magic NGU objective");
+        Check(supportedBlood.MagicNgu == 0 && supportedBlood.Support.Diggers.Single().Id == 5
+            && supportedBlood.SetupScore > baseline.SetupScore,
+            "planned support follows the Magic NGU setup objective even when reviewed funding preempts it with blood");
         r.PlannedSupport = false;
         s.Diggers = new[] { digger };
         s.CurrentDiggers = new SupportDigger[0]; s.CurrentBeards = new int[0];
@@ -201,6 +205,94 @@ internal static partial class Program
             && afterApply.Blood == first.Blood && afterApply.MagicNgu == first.MagicNgu
             && afterApply.Support.Diggers.Select(x => x.Id + ":" + x.Level).SequenceEqual(first.Support.Diggers.Select(x => x.Id + ":" + x.Level)),
             "observing the selected gear and support after apply does not reverse the prospective lane decision");
+    }
+
+    private static PresetSnapshot RitualMarginSnapshot(double ritualCost, double tmCost)
+    {
+        var s = ActivitySnapshot();
+        s.Rituals[0].Coefficient = .01; s.Rituals[0].Cost = ritualCost;
+        foreach (var bar in new[] { s.TimeMachineEnergy, s.TimeMachineMagic })
+        { bar.Coefficient = 100; bar.LevelExponent = 0; bar.Target = 11; bar.CostCoefficient = tmCost / 50; }
+        return s;
+    }
+
+    private static void LaneRitualStartupMarginChecks()
+    {
+        var r = PriorityRequest(); r.Weights = ActivityRequest(2).Weights; r.BloodPercent = -1;
+        r.EnergyPriorities = new string[0]; r.MagicPriorities = new[] { "RIT", "TM" };
+        var s = RitualMarginSnapshot(1, 50); s.Gold = 51;
+        var boundary = Evaluate(s, r);
+        Check(boundary.Feasible && boundary.SetupEligible == true && boundary.SetupScore == 500 && boundary.Score == 500
+            && boundary.Blood == 101 && boundary.Activities.TimeMachineMagic == 0 && boundary.ActivityGoldSpent == 0,
+            "unpaid higher-priority RIT keeps its strict startup margin instead of failing when optional TM would spend the remaining fifty gold");
+        var ritualOnly = r.Copy(); ritualOnly.MagicPriorities = new[] { "RIT" };
+        var only = Evaluate(s, ritualOnly);
+        Check(only.Feasible && only.Blood == boundary.Blood && only.SetupScore == boundary.SetupScore && only.Score == boundary.Score,
+            "adding unaffordable optional TM cannot invalidate or reduce the earlier ritual's funded production");
+        var plan = LoadoutPresetPlanner.Plan(s, r); var onlyPlan = LoadoutPresetPlanner.Plan(s, ritualOnly);
+        SameReferences(plan, onlyPlan, "ritual margin optional fallback");
+        SameSetup(plan.Candidates[1], onlyPlan.Candidates[1], "ritual margin optional fallback");
+        Check(plan.Candidates[1].Feasible && plan.Candidates[1].SetupScore == onlyPlan.Candidates[1].SetupScore
+            && plan.Candidates[1].Blood == 101 && plan.Candidates[1].Activities.TimeMachineMagic == 0,
+            "strict startup protection leaves objective-only Plan selection and rank independent of the optional TM token");
+        s.Gold = 52;
+        var surplus = RefreshExecution(s, r, boundary);
+        Check(surplus.Feasible && surplus.Blood == 101 && surplus.Activities.TimeMachineMagic == 1 && surplus.ActivityGoldSpent == 50
+            && surplus.SetupScore == boundary.SetupScore, "one surplus gold funds optional TM without reacquiring the ritual setup");
+        s.Gold = 51;
+        var released = RefreshExecution(s, r, surplus);
+        Check(released.Feasible && released.Blood == 101 && released.Activities.TimeMachineMagic == 0 && released.SetupScore == boundary.SetupScore,
+            "funding refresh removes lower TM at the exact unpaid startup boundary while retaining RIT");
+        var pinned = LoadoutPresetPlanner.Evaluate(s, r, surplus.Items, LoadoutPresetPlanner.NormalizeWeights(r.Weights),
+            Enumerable.Repeat(1d, 14).ToArray(), surplus.Key, surplus.Label, surplus);
+        Check(!pinned.Feasible && pinned.SetupScore == surplus.SetupScore,
+            "exact replay still rejects previously acquired TM spending that loses the unpaid ritual margin");
+
+        foreach (var pair in new[] { new[] { 1d, 50 }, new[] { .125, .5 }, new[] { .1, .3 } })
+        {
+            s = RitualMarginSnapshot(pair[0], pair[1]);
+            var tmCost = 50 * s.TimeMachineMagic.CostCoefficient;
+            var exact = tmCost + s.Rituals[0].Cost;
+            foreach (var gold in new[] { Math.BitDecrement(exact), exact, Math.BitIncrement(exact) })
+            {
+                s.Gold = gold;
+                var c = Evaluate(s, r);
+                var fits = tmCost < gold - s.Rituals[0].Cost;
+                Check(c.Feasible && c.Blood == 101 && c.Activities.TimeMachineMagic == (fits ? 1 : 0)
+                    && c.ActivityGoldSpent == (fits ? tmCost : 0) && c.SetupScore == boundary.SetupScore,
+                    "unpaid ritual margin uses the exact double bound, including fractional costs and adjacent representable gold: "
+                    + pair[0] + "/" + pair[1] + "/" + gold.ToString("R"));
+            }
+            s.Gold = tmCost; s.Rituals[0].Paid = true;
+            var paid = Evaluate(s, r);
+            Check(paid.Feasible && paid.Blood == 101 && paid.Activities.TimeMachineMagic == 1 && paid.ActivityGoldSpent == tmCost,
+                "paid ritual reserves no liquid gold or strict startup margin: " + pair[0] + "/" + pair[1]);
+        }
+
+        s = RitualMarginSnapshot(1, 1); s.Gold = 66;
+        s.TimeMachineMagic.Coefficient = .0003; s.TimeMachineMagic.LevelExponent = 1;
+        s.TimeMachineMagic.Target = 12; s.TimeMachineMagic.CostCoefficient = 1;
+        var reduced = Evaluate(s, r);
+        Check(reduced.Feasible && reduced.Blood == 101 && reduced.Activities.TimeMachineMagic == 1
+            && reduced.ActivityGoldSpent == 50 && reduced.Metrics[6] == .001,
+            "lower TM funding reduces to a cheaper productive amount rather than exhausting the unpaid ritual margin: "
+            + reduced.Feasible + "/" + reduced.Blood + "/" + reduced.Activities.TimeMachineMagic + "/" + reduced.ActivityGoldSpent + "/" + reduced.Metrics[6]);
+
+        s = RitualMarginSnapshot(.125, Math.BitDecrement(.25)); s.Gold = 1.125;
+        s.TimeMachineEnergy.CostCoefficient = .015;
+        var magicCost = 50 * s.TimeMachineMagic.CostCoefficient;
+        Check(magicCost < .25 && .75 + magicCost == 1,
+            "rounding fixture has lower TM cost below the residual but aggregate activity spending rounds to the strict bound");
+        var withEnergy = r.Copy(); withEnergy.EnergyPriorities = new[] { "TM" };
+        var rounded = Evaluate(s, withEnergy);
+        Check(rounded.Feasible && rounded.Blood == 101 && rounded.Activities.TimeMachineEnergy == 1
+            && rounded.Activities.TimeMachineMagic == 0 && rounded.ActivityGoldSpent == .75,
+            "unpaid startup protection compares aggregate activity spending instead of merely decrementing residual gold");
+        var tmFirst = withEnergy.Copy(); tmFirst.MagicPriorities = new[] { "TM", "RIT" };
+        var earlierTm = Evaluate(s, tmFirst);
+        Check(earlierTm.Feasible && earlierTm.Blood == 0 && earlierTm.Activities.TimeMachineEnergy == 1
+            && earlierTm.Activities.TimeMachineMagic == 1 && earlierTm.ActivityGoldSpent == 1,
+            "opposite priority keeps earlier TM and skips unpaid RIT when rounded aggregate spending exhausts its margin");
     }
 
     private static void LaneReplayChecks()

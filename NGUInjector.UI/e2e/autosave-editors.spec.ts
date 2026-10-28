@@ -120,7 +120,7 @@ async function mountApp(page: Page, noPlans = false): Promise<void> {
   await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
   await page.clock.pauseAt(new Date('2026-01-01T00:00:01Z'));
   await page.addInitScript(({ noPlans }) => {
-    const base = { Version: 17, __externalUiRevision: 'a'.repeat(64), StageDurationSeconds: 1800, Stages: [{ Name: 'Training', Percent: 100, EnergyFocus: 5, MagicFocus: 6 }], RebirthHistory: [] };
+    const base = { Version: 18, __externalUiRevision: 'a'.repeat(64), StageDurationSeconds: 1800, Stages: [{ Name: 'Training', Percent: 100, EnergyFocus: 5, MagicFocus: 6 }], RebirthHistory: [] };
     const fixture: AppAutosaveHarness = window.__appAutosave = {
       answer: false, prompts: [], folders: [], writes: [], patches: [],
       plans: noPlans ? {} : { alpha: { ...base, Name: 'alpha', BloodSpaghettiGoalPercent: 35, IronPillSaveSeconds: 900 }, beta: { ...base, Name: 'beta', BloodSpaghettiGoalPercent: 10 } },
@@ -134,7 +134,7 @@ async function mountApp(page: Page, noPlans = false): Promise<void> {
         case 'get_ngui_state': {
           const dir = String(args.runtimeDir || 'C:\\AutosaveFixture');
           fixture.folders.push(dir);
-          return { runtime_dir: dir, marker_enabled: false, connected: false, protocol: { version: 3 }, ...await cas.settingsSnapshot(fixture.settings), plans: Object.keys(fixture.plans), profiles: [], logs: [], command_results: [], runtime: { externalUiEnabled: false, status: 'unloaded', updatedAt: new Date().toISOString(), startedAt: 'autosave-session', protocolVersion: 3, settingsCasVersion: 1, supportedCommands: [], planVersion: 17 } };
+          return { runtime_dir: dir, marker_enabled: false, connected: false, protocol: { version: 3 }, ...await cas.settingsSnapshot(fixture.settings), plans: Object.keys(fixture.plans), profiles: [], logs: [], command_results: [], runtime: { externalUiEnabled: false, status: 'unloaded', updatedAt: new Date().toISOString(), startedAt: 'autosave-session', protocolVersion: 3, settingsCasVersion: 1, supportedCommands: [], planVersion: 18 } };
         }
         case 'read_plan': return JSON.stringify(fixture.plans[String(args.name)]);
         case 'save_plan': {

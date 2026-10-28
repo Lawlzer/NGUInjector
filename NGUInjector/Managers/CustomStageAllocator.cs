@@ -367,6 +367,8 @@ namespace NGUInjector.Managers
             }
             if (!requirements.Intent.Authorized())
                 throw new InvalidOperationException("Stage resource authority changed before verification.");
+            if (verified && requirements.Intent.Energy && Main.reference.StageFightFundingContextMatches(resourceContextKey))
+                Main.reference.ObserveStageFightAugmentFunding(desired);
             foreach (var lanePlan in lanePlans)
             {
                 BlackBarAllocator.ObserveApplied(lanePlan);
@@ -494,7 +496,7 @@ namespace NGUInjector.Managers
                     if (energy ? !Main.Settings.ManageEnergy : !Main.Settings.ManageMagic)
                         return false;
 
-                    var focus = (CustomStageFocus) (energy ? stage.EnergyFocus : stage.MagicFocus);
+                    var focus = EffectiveStageFocus(stage, energy);
                     // Wandoos' AT phase and blood overlays must not hide a locked declared focus.
                     var primary = focus == CustomStageFocus.None ? priorities[0]
                         : BlackBarAllocator.DefaultPriorities(focus, energy).FirstOrDefault();
@@ -625,6 +627,7 @@ namespace NGUInjector.Managers
         private static bool StageBlocksWandoos(CustomPlanStage stage, int remainingSeconds, int durationSeconds)
         {
             if (stage == null) return false;
+            if (UsesLockedTimeMachineFallback(stage)) return false;
             var primary = ActivityPolicy.Current.PrimaryPriority(stage.EnergyPriorities, stage.EnergyFocus, true);
             // Primary generic AT means adventure training; a fallback AT must not turn
             // every ordinary focus into a Wandoos-free stage. Explicit paid bars do.
@@ -676,6 +679,8 @@ namespace NGUInjector.Managers
         internal static string[] EffectiveStagePriorities(CustomPlanStage stage, bool energy, int remainingSeconds, int durationSeconds, out bool wandoosAt, bool reserveBlood = false, bool catchUpBloodGoals = false)
         {
             wandoosAt = StageBlocksWandoos(stage, remainingSeconds, durationSeconds);
+            if (UsesLockedTimeMachineFallback(stage))
+                return energy ? new[] { "WAN" } : new[] { "RIT", "WAN" };
             var priorities = energy ? stage.EnergyPriorities : stage.MagicPriorities;
             var focus = (CustomStageFocus) (energy ? stage.EnergyFocus : stage.MagicFocus);
             if (priorities == null || priorities.Length == 0)
@@ -690,8 +695,9 @@ namespace NGUInjector.Managers
             if (energy || !reserveBlood && !BloodGoalsPrioritized(stage, catchUpBloodGoals)) return priorities;
 
             var overridden = new List<string>();
-            if (focus == CustomStageFocus.Wandoos && !wandoosAt) overridden.Add("WAN");
-            if (focus == CustomStageFocus.TimeMachine) overridden.Add("TM");
+            var explicitBloodPolicy = stage.UseWandoosWhenTimeMachineLocked && stage.MagicPriorities?.Length > 0;
+            if (!explicitBloodPolicy && focus == CustomStageFocus.Wandoos && !wandoosAt) overridden.Add("WAN");
+            if (!explicitBloodPolicy && focus == CustomStageFocus.TimeMachine) overridden.Add("TM");
             overridden.Add("RIT");
             foreach (var priority in priorities)
             {
@@ -701,6 +707,29 @@ namespace NGUInjector.Managers
                 overridden.Add(token);
             }
             return overridden.ToArray();
+        }
+
+        internal static bool UsesLockedTimeMachineFallback(CustomPlanStage stage)
+        {
+            if (stage?.UseWandoosWhenTimeMachineLocked != true) return false;
+            var c = Main.Character;
+            return c?.buttons?.brokenTimeMachine?.interactable != true
+                || c.challenges?.timeMachineChallenge?.inChallenge != false
+                || c.machine == null || c.timeMachineController == null;
+        }
+
+        internal static CustomStageFocus EffectiveStageFocus(CustomPlanStage stage, bool energy)
+        {
+            return UsesLockedTimeMachineFallback(stage)
+                ? energy ? CustomStageFocus.Wandoos : CustomStageFocus.BloodMagic
+                : (CustomStageFocus)(energy ? stage.EnergyFocus : stage.MagicFocus);
+        }
+
+        internal static int EffectiveStageGearGoal(CustomPlanStage stage)
+        {
+            // An uncontrolled gear lane remains uncontrolled even during fallback.
+            return stage.GearGoal >= 0 && UsesLockedTimeMachineFallback(stage)
+                ? (int)GearOptimizationGoal.Wandoos : stage.GearGoal;
         }
 
         internal static bool IsCasualEnergyNguStage(CustomPlanStage stage)
@@ -766,6 +795,13 @@ namespace NGUInjector.Managers
             _augmentTargetUsesUpgrade = false;
             _bloodTargetContextKey = null;
             _bloodTargetRitualIndex = -1;
+        }
+
+        // A verified native load replaced every allocation; the old cleanup receipt is obsolete.
+        internal static void ResetAfterVerifiedSaveTestLoad()
+        {
+            ResetResourceTargets();
+            _temporaryBloodAllocation = null;
         }
 
         internal static bool AdvancedTrainingStatsReached(CustomPlanStage stage)

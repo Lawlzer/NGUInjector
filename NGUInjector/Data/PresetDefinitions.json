@@ -54,27 +54,29 @@
     { "id": 11, "name": "EXP", "objectiveWeights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "minimumAdventureWeight": 0 }
   ],
   "presets": [
-    { "Id": "builtin_energyNgu", "Name": "Energy NGU", "Weights": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
-    { "Id": "builtin_magicNgu", "Name": "Magic NGU", "Weights": [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
-    { "Id": "builtin_blood", "Name": "Blood", "Weights": [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
-    { "Id": "builtin_adventureDynamic", "Name": "adventure-dynamic", "AdventureDynamicWeight": 1, "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
-    { "Id": "builtin_timeMachine", "Name": "Time Machine", "Weights": [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0] },
-    { "Id": "builtin_augments", "Name": "Augments", "Weights": [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0] },
-    { "Id": "builtin_wandoos", "Name": "Wandoos", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0] },
-    { "Id": "builtin_advancedTraining", "Name": "Advanced Training", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0] },
-    { "Id": "builtin_adventurePower", "Name": "Adventure Power", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0] },
-    { "Id": "builtin_adventureToughness", "Name": "Adventure Toughness", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1] },
-    { "Id": "builtin_balanced", "Name": "Balanced", "Weights": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] },
-    { "Id": "builtin_allNgu", "Name": "All NGU", "Weights": [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
-    { "Id": "builtin_augmentsBlood", "Name": "Augments + Blood", "Weights": [0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0] },
-    { "Id": "builtin_atAdventure", "Name": "AT Adventure", "Weights": [0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0], "AdvancedTrainingWeights": [1, 1, 0, 0, 0] },
-    { "Id": "builtin_atWandoos", "Name": "AT Wandoos", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0], "AdvancedTrainingWeights": [0, 0, 0, 1, 1] },
-    { "Id": "builtin_adventureStats", "Name": "Adventure Stats", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1] },
-    { "Id": "builtin_energyCap", "Name": "Energy Cap", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], "AutoUpdate": true, "SupportMode": "current" },
-    { "Id": "builtin_magicCap", "Name": "Magic Cap", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], "AutoUpdate": true, "SupportMode": "current" }
+    { "Id": "builtin_energyNgu", "Name": "Energy NGU", "Weights": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["NGU", "WAN", "TM", "AUG", "AT"], "MagicPriorities": ["NGU", "RIT", "WAN", "TM"] },
+    { "Id": "builtin_magicNgu", "Name": "Magic NGU", "Weights": [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["NGU", "WAN", "TM", "AUG", "AT"], "MagicPriorities": ["NGU", "RIT", "WAN", "TM"] },
+    { "Id": "builtin_blood", "Name": "Blood", "Weights": [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["NGU", "WAN", "TM", "AUG", "AT"], "MagicPriorities": ["RIT", "NGU", "WAN", "TM"] },
+    { "Id": "builtin_adventureDynamic", "Name": "adventure-dynamic", "AdventureDynamicWeight": 1, "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["NGU", "WAN", "TM", "AUG", "AT"], "MagicPriorities": ["NGU", "RIT", "WAN", "TM"] },
+    { "Id": "builtin_timeMachine", "Name": "Time Machine", "Weights": [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["TM", "NGU", "WAN", "AUG", "AT"], "MagicPriorities": ["TM", "RIT", "NGU", "WAN"] },
+    { "Id": "builtin_augments", "Name": "Augments", "Weights": [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["AUG", "NGU", "WAN", "TM", "AT"], "MagicPriorities": ["NGU", "RIT", "WAN", "TM"] },
+    { "Id": "builtin_wandoos", "Name": "Wandoos", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["WAN", "NGU", "TM", "AUG", "AT"], "MagicPriorities": ["WAN", "RIT", "NGU", "TM"] },
+    { "Id": "builtin_advancedTraining", "Name": "Advanced Training", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["AT", "NGU", "WAN", "TM", "AUG"], "MagicPriorities": ["NGU", "RIT", "WAN", "TM"] },
+    { "Id": "builtin_adventurePower", "Name": "Adventure Power", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["NGU", "WAN", "TM", "AUG", "AT"], "MagicPriorities": ["NGU", "RIT", "WAN", "TM"] },
+    { "Id": "builtin_adventureToughness", "Name": "Adventure Toughness", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["NGU", "WAN", "TM", "AUG", "AT"], "MagicPriorities": ["NGU", "RIT", "WAN", "TM"] },
+    { "Id": "builtin_allNgu", "Name": "All NGU", "Weights": [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["NGU", "WAN", "TM", "AUG", "AT"], "MagicPriorities": ["NGU", "RIT", "WAN", "TM"] },
+    { "Id": "builtin_augmentsBlood", "Name": "Augments + Blood", "Weights": [0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["AUG", "NGU", "WAN", "TM", "AT"], "MagicPriorities": ["RIT", "NGU", "WAN", "TM"] },
+    { "Id": "builtin_atAdventure", "Name": "AT Adventure", "Weights": [0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0], "AdvancedTrainingWeights": [1, 1, 0, 0, 0], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["AT", "NGU", "WAN", "TM", "AUG"], "MagicPriorities": ["RIT", "NGU", "WAN", "TM"] },
+    { "Id": "builtin_atWandoos", "Name": "AT Wandoos", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0], "AdvancedTrainingWeights": [0, 0, 0, 1, 1], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["AT", "WAN", "NGU", "TM", "AUG"], "MagicPriorities": ["RIT", "NGU", "TM"] },
+    { "Id": "builtin_adventureStats", "Name": "Adventure Stats", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1], "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["NGU", "WAN", "TM", "AUG", "AT"], "MagicPriorities": ["NGU", "RIT", "WAN", "TM"] },
+    { "Id": "builtin_energyCap", "Name": "Energy Cap", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0], "AutoUpdate": true, "SupportMode": "current", "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["NGU", "WAN", "TM", "AUG", "AT"], "MagicPriorities": ["NGU", "RIT", "WAN", "TM"] },
+    { "Id": "builtin_magicCap", "Name": "Magic Cap", "Weights": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], "AutoUpdate": true, "SupportMode": "current", "ResourcePrioritiesReviewed": true, "EnergyPriorities": ["NGU", "WAN", "TM", "AUG", "AT"], "MagicPriorities": ["NGU", "RIT", "WAN", "TM"] }
   ],
   "newPreset": {
     "Name": "All NGU",
-    "Weights": [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    "Weights": [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "ResourcePrioritiesReviewed": true,
+    "EnergyPriorities": ["NGU", "WAN", "TM", "AUG", "AT"],
+    "MagicPriorities": ["NGU", "RIT", "WAN", "TM"]
   }
 }

@@ -1,6 +1,6 @@
 # Automation Integration Review (Historical)
 
-Implementation follow-up: the original R01-R28 findings and subsequent R29-R33 fixes are implemented. See [Automation Improvements](AUTOMATION_IMPROVEMENTS.md) for current behavior, shared utilities and completed verification, and [temp.md](../../temp.md) for remaining work and decisions. The findings, source locations and test facts below describe the original review, not outstanding defects or new live-test evidence.
+Implementation follow-up: the original R01-R28 findings and subsequent R29-R33 fixes are implemented. See [Automation Improvements](AUTOMATION_IMPROVEMENTS.md) for the implementation overview, [current WIP](../../wip.md) for required closure/acceptance and [future work](future-work.md) for optional topics and decisions. Findings, source locations, old commands and test facts below describe the original review, not current tasks, live authorization or new verification. Use [Testing And Save Safety](testing.md) for public runner commands; the newer [action/session contract](action-state-simplification-20261023.md) supersedes historical replay/restore assumptions.
 
 Reviewed October 16, 2026 against the current working tree, including untracked planner/preset sources. This is a review report, not an implementation change. Production code, saved plans, settings and the running game were not changed for the review.
 

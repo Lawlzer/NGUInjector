@@ -11,6 +11,70 @@ namespace NGUInjector
     public class Loader
     {
         private static GameObject _load;
+        private static SaveTestHost _saveTestHost;
+
+        internal static void RetainSaveTestRecovery(Main adapter)
+        {
+            if (_saveTestHost == null)
+            {
+                var host = new GameObject("NGUInjector.SaveTestRecovery");
+                _saveTestHost = host.AddComponent<SaveTestHost>();
+                Object.DontDestroyOnLoad(host);
+            }
+            _saveTestHost.Adapter = adapter;
+        }
+
+        internal static bool IsSaveTestAdapter(Main adapter) => _saveTestHost != null
+            && ReferenceEquals(_saveTestHost.Adapter, adapter);
+
+        internal static void HoldSaveTestLease(Main adapter, FileStream lease)
+        {
+            RetainSaveTestRecovery(adapter);
+            if (_saveTestHost.Lease != null && !ReferenceEquals(_saveTestHost.Lease, lease))
+                throw new InvalidOperationException("Recovery host already holds a different injector lease.");
+            _saveTestHost.Lease = lease;
+        }
+
+        internal static FileStream AdoptSaveTestLease()
+        {
+            if (_saveTestHost == null) return null;
+            var lease = _saveTestHost.Lease;
+            _saveTestHost.Lease = null;
+            return lease;
+        }
+
+        internal static void ReplaceSaveTestMain(Main owner, bool supersedeFixture)
+        {
+            RetainSaveTestRecovery(owner);
+            var load = _load;
+            // Transfer the lease only after callbacks, writers and watchers have stopped.
+            try { owner.UnloadForSaveTest(supersedeFixture); }
+            finally
+            {
+                // Strict quiesce refusal retains the original object. A later cleanup
+                // failure must not leave a stopped object blocking explicit recovery Init.
+                if (owner.SaveTestOwnerStopped)
+                {
+                    _load = null;
+                    if (load != null)
+                    {
+                        load.SetActive(false);
+                        Object.Destroy(load);
+                    }
+                }
+            }
+        }
+
+        internal static void SaveTestStartupFailed(Main owner, Exception error)
+        {
+            owner.RecordSaveTestFailure(error);
+            ReplaceSaveTestMain(owner, true);
+        }
+
+        internal static void SaveTestMainReady(Main owner)
+        {
+            if (_saveTestHost != null) _saveTestHost.Adapter = owner;
+        }
         public static void Init()
         {
             SaveSafetyDependencies.Register();
@@ -32,6 +96,14 @@ namespace NGUInjector
             catch (Exception e)
             {
                 TraceStartup("Loader.Init failed: " + e);
+                if (Main.SaveTestActive && Main.reference != null)
+                    SaveTestStartupFailed(Main.reference, e);
+                else if (Main.SaveTestActive && _load != null)
+                {
+                    _load.SetActive(false);
+                    Object.Destroy(_load);
+                    _load = null;
+                }
                 throw;
             }
         }
@@ -52,6 +124,8 @@ namespace NGUInjector
 
         public static void Unload()
         {
+            if (Main.SaveTestActive)
+                throw new InvalidOperationException("Restore the protected original before unloading a save-test session.");
             _Unload();
         }
 
@@ -69,6 +143,19 @@ namespace NGUInjector
                 load.SetActive(false);
                 Object.Destroy(load);
             }
+        }
+    }
+
+    // The sole recovery pump delegates to the existing claim/result transport, never a second executor.
+    internal sealed class SaveTestHost : MonoBehaviour
+    {
+        internal Main Adapter;
+        internal FileStream Lease;
+        private void Update()
+        {
+            if (!Main.SaveTestActive || ReferenceEquals(Adapter, null)) return;
+            try { Adapter.PumpSaveTestRecovery(); }
+            catch (Exception error) { Loader.TraceStartup("Save-test recovery pump failed: " + error); }
         }
     }
 }

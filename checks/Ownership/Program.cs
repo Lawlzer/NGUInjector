@@ -27,7 +27,7 @@ public static partial class OwnershipChecks
     {
         try
         {
-            var selectors = new[] { "manual-preset-handoff", "money-pit", "yggdrasil", "fruit-lanes", "magic-focus", "gold-recovery", "harvest-recovery" };
+            var selectors = new[] { "manual-preset-handoff", "money-pit", "yggdrasil", "fruit-lanes", "magic-focus", "gold-recovery", "harvest-recovery", "inventory-rescan" };
             if (args.Length < 2 || args.Length > 3 || args.Length == 3 && !selectors.Contains(args[2]))
                 throw new ArgumentException("OwnershipChecks <built injector DLL> <game Managed directory> [" + string.Join("|", selectors) + "]");
             Root = Path.Combine(Path.GetTempPath(), "opencode", "OwnershipChecks-" + Guid.NewGuid().ToString("N"));
@@ -52,6 +52,7 @@ public static partial class OwnershipChecks
             if (selector == null || selector == "fruit-lanes" || selector == "yggdrasil") CheckFruitResourceLanes();
             if (selector == null || selector == "yggdrasil") CheckYggdrasilRegressions();
             if (selector == null || selector == "harvest-recovery" || selector == "yggdrasil") CheckYggRestorationRecovery();
+            if (selector == null || selector == "inventory-rescan") CheckInventoryRescans();
             Console.WriteLine("PASS: " + Checks + " Ownership assertions / " + Scenarios + " scenarios; compiled authority, native finite leaves, offline only.");
             return 0;
         }
@@ -93,6 +94,7 @@ public static partial class OwnershipChecks
             native.Name = "OwnershipNativeSwapHead";
             var facade = new MethodDefinition("swapHead", native.Attributes, a.MainModule.TypeSystem.Void);
             facade.Body.GetILProcessor().Emit(OpCodes.Ret); inventory.Methods.Add(facade);
+            ConfigureInventoryRescanGameFixture(a.MainModule);
             var result = Path.Combine(Root, "game-input.dll"); a.Write(result); return result;
         }
     }
@@ -104,6 +106,7 @@ public static partial class OwnershipChecks
             Console.WriteLine("Injector MVID=" + a.MainModule.Mvid);
             NativeSettingsJsonBoundary.Configure(a);
             SubstitutePitInputs(a.MainModule); ConfigureSupportText(a.MainModule);
+            ConfigureInventoryRescanPluginFixture(a.MainModule);
             var main = a.MainModule.GetType("NGUInjector.Main");
             var focus = main.Methods.Single(x => x.Name == "FocusSetupCurrent"); var il = focus.Body.GetILProcessor();
             foreach (var ret in focus.Body.Instructions.Where(x => x.OpCode == OpCodes.Ret).ToArray())
@@ -140,8 +143,8 @@ public static partial class OwnershipChecks
 
     static void Setup()
     {
-        // A fresh native world and durable directory per scenario, not a ledger reset
-        // within a timeline. Static managers no longer carry restoration authority.
+        // A fresh native world and temporary directory per scenario. Static managers
+        // carry no restoration authority between worlds.
         var directory = Path.Combine(Root, "world-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);
         S(typeof(Program), "Temp", directory); P("Setup"); Program.NativeGearSwapped = null;
         S(MainType, "OutputWriter", null); S(MainType, "PitSpinWriter", null);

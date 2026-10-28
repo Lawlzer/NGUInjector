@@ -99,7 +99,10 @@ namespace NGUInjector
             internal TextBox EnergyPriorities;
             internal TextBox MagicPriorities;
             internal NumericUpDown BlackBarLookaheadSeconds;
-            internal CheckBox FightOnEntry;
+            internal CheckBox FightScheduleEnabled;
+            internal ComboBox FightAnchor;
+            internal NumericUpDown FightDelaySeconds;
+            internal NumericUpDown FightIntervalSeconds;
             internal Label DragHandle;
             internal Label Details;
             internal Label Duration;
@@ -565,9 +568,10 @@ namespace NGUInjector
             _customPlanSelector = NewComboBox(260);
             _customPlanSelector.SelectedIndexChanged += CustomPlanSelector_SelectedIndexChanged;
             planPanel.Controls.Add(_customPlanSelector);
-            planPanel.Controls.Add(NewSmallButton("24h", (sender, args) => CustomUseBuiltInPlan_Click("24hr", true)));
-            planPanel.Controls.Add(NewSmallButton("1h / 3m", (sender, args) => CustomUseBuiltInPlan_Click("1h-3m-rebirth", true)));
-            planPanel.Controls.Add(NewSmallButton("Infinite", (sender, args) => CustomUseBuiltInPlan_Click("infinite", false)));
+            planPanel.Controls.Add(NewSmallButton("24h NGU", (sender, args) => CustomUseBuiltInPlan_Click("24hr", true)));
+            planPanel.Controls.Add(NewSmallButton("15m NUMBER", (sender, args) => CustomUseBuiltInPlan_Click("15m-NUMBER-increase", true)));
+            planPanel.Controls.Add(NewSmallButton("30m NUMBER", (sender, args) => CustomUseBuiltInPlan_Click("30m-NUMBER-increase", true)));
+            planPanel.Controls.Add(NewSmallButton("1h1m NUMBER", (sender, args) => CustomUseBuiltInPlan_Click("1h-1m-NUMBER-increase", true)));
             planPanel.Controls.Add(NewSmallButton("New", CustomPlanNew_Click));
             planPanel.Controls.Add(NewSmallButton("Copy", CustomPlanCopy_Click));
             planPanel.Controls.Add(NewSmallButton("Delete", CustomPlanDelete_Click));
@@ -1674,7 +1678,8 @@ namespace NGUInjector
             var current = Main.Settings.CustomPlanFile;
             var result = MessageBox.Show($"Delete custom plan '{current}'?", "Delete Custom Plan", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
             if (result != DialogResult.Yes) return;
-            Main.Settings.CustomPlanFile = Main.CustomPlanStore.DeletePlan(current);
+            try { Main.Settings.CustomPlanFile = Main.CustomPlanStore.DeleteExternalPlan(current); }
+            catch (Exception error) { SetCustomStatus(error.Message); }
         }
 
         private void CustomGoalPresetNew_Click(object sender, EventArgs e)
@@ -2060,9 +2065,6 @@ namespace NGUInjector
                 CustomStageRow_Changed(sender, args);
             };
             action.Controls.Add(row.Preset);
-            row.FightOnEntry = new CheckBox {Text = "Fight on entry", AutoSize = true, Checked = stage.FightOnEntry};
-            row.FightOnEntry.CheckedChanged += CustomStageRow_Changed;
-            action.Controls.Add(row.FightOnEntry);
             row.Details = new Label
             {
                 AutoSize = true,
@@ -2174,6 +2176,46 @@ namespace NGUInjector
                 Text = "Comma-separated tokens, highest priority first; blank uses preset defaults. Both: WAN, TM, NGU. Energy: NGU-0..8, AUG, AUG-0..13, AT, AT-0..4. Magic: NGU-0..6, RIT, RIT-0..7. Generic NGU follows the plan's positive energy/magic weights with capped redistribution; zero excludes a target. Edit weights in the desktop controller's Misc page. Explicit NGU-n targets remain ordered. AUG/RIT use pinned optimizer targets; AT uses unfinished stage P/T targets. Custom orders and lookahead are retained when changing presets."
             };
             layout.Controls.Add(priorityHelp, 1, 6);
+
+            var fight = NewInlineFlowPanel();
+            row.FightScheduleEnabled = new CheckBox {Text = "Enabled", AutoSize = true, Checked = stage.FightSchedule != null};
+            fight.Controls.Add(row.FightScheduleEnabled);
+            fight.Controls.Add(NewInlineLabel("Anchor"));
+            row.FightAnchor = NewComboBox(240);
+            BindCombo(row.FightAnchor, new Dictionary<int, string>
+            {
+                {0, "Stage entry"}, {1, "First verified Augments funding"}
+            }.ToList(), stage.FightSchedule?.Anchor ?? 0, null);
+            row.FightAnchor.Enabled = row.FightScheduleEnabled.Checked;
+            row.FightAnchor.AccessibleName = "Fight schedule anchor";
+            row.FightAnchor.SelectedIndexChanged += CustomStageRow_Changed;
+            fight.Controls.Add(row.FightAnchor);
+            fight.Controls.Add(NewInlineLabel("Delay (s)"));
+            row.FightDelaySeconds = new NumericUpDown
+            {
+                Minimum = 0, Maximum = int.MaxValue, Width = 100,
+                Value = stage.FightSchedule?.DelaySeconds ?? 0,
+                Enabled = row.FightScheduleEnabled.Checked, AccessibleName = "Fight delay seconds"
+            };
+            row.FightDelaySeconds.ValueChanged += CustomStageRow_Changed;
+            fight.Controls.Add(row.FightDelaySeconds);
+            fight.Controls.Add(NewInlineLabel("Repeat (s, 0 = once)"));
+            row.FightIntervalSeconds = new NumericUpDown
+            {
+                Minimum = 0, Maximum = int.MaxValue, Width = 100,
+                Value = stage.FightSchedule?.IntervalSeconds ?? 0,
+                Enabled = row.FightScheduleEnabled.Checked, AccessibleName = "Fight repeat interval seconds"
+            };
+            row.FightIntervalSeconds.ValueChanged += CustomStageRow_Changed;
+            fight.Controls.Add(row.FightIntervalSeconds);
+            row.FightScheduleEnabled.AccessibleName = "Enable stage fight schedule";
+            row.FightScheduleEnabled.CheckedChanged += (sender, args) =>
+            {
+                row.FightAnchor.Enabled = row.FightDelaySeconds.Enabled = row.FightIntervalSeconds.Enabled = row.FightScheduleEnabled.Checked;
+                CustomStageRow_Changed(sender, args);
+            };
+            layout.Controls.Add(NewLabel("Fight"), 0, 7);
+            layout.Controls.Add(fight, 1, 7);
             row.Container.Controls.Add(layout);
             row.DeleteButton.Enabled = count > 1;
             row.Container.Tag = row;
@@ -2265,6 +2307,7 @@ namespace NGUInjector
                 DurationUnit = stage.DurationUnit,
                 EnergyFocus = stage.EnergyFocus,
                 MagicFocus = stage.MagicFocus,
+                UseWandoosWhenTimeMachineLocked = stage.UseWandoosWhenTimeMachineLocked,
                 ExecutionMode = stage.ExecutionMode,
                 PresetId = stage.PresetId,
                 EnergyPriorities = stage.EnergyPriorities == null ? null : (string[]) stage.EnergyPriorities.Clone(),
@@ -2272,7 +2315,14 @@ namespace NGUInjector
                 BlackBarLookaheadSeconds = stage.BlackBarLookaheadSeconds,
                 GearGoal = stage.GearGoal,
                 AdventureDynamicWeight = stage.AdventureDynamicWeight,
-                FightOnEntry = stage.FightOnEntry,
+                FightSchedule = stage.FightSchedule == null ? null : new CustomFightSchedule
+                {
+                    Id = stage.FightSchedule.Id,
+                    Anchor = stage.FightSchedule.Anchor,
+                    DelaySeconds = stage.FightSchedule.DelaySeconds,
+                    IntervalSeconds = stage.FightSchedule.IntervalSeconds,
+                    SourceJson = stage.FightSchedule.SourceJson == null ? null : JsonFiles.ParseObject(stage.FightSchedule.SourceJson.ToString())
+                },
                 CompletionMode = stage.CompletionMode,
                 TargetAdvancedTrainingPower = stage.TargetAdvancedTrainingPower,
                 TargetAdvancedTrainingToughness = stage.TargetAdvancedTrainingToughness
@@ -2585,7 +2635,14 @@ namespace NGUInjector
                 }
                 stage.DurationSeconds = decimal.ToInt32(row.FixedSeconds.Value);
                 stage.BlackBarLookaheadSeconds = decimal.ToInt32(row.BlackBarLookaheadSeconds.Value);
-                stage.FightOnEntry = row.FightOnEntry.Checked;
+                if (row.FightScheduleEnabled.Checked)
+                {
+                    stage.FightSchedule = stage.FightSchedule ?? new CustomFightSchedule();
+                    stage.FightSchedule.Anchor = ReadComboValue(row.FightAnchor, 0);
+                    stage.FightSchedule.DelaySeconds = decimal.ToInt32(row.FightDelaySeconds.Value);
+                    stage.FightSchedule.IntervalSeconds = decimal.ToInt32(row.FightIntervalSeconds.Value);
+                }
+                else stage.FightSchedule = null;
 
                 if (!TryReadStagePriorities(row.EnergyPriorities.Text, true, out stage.EnergyPriorities, out var priorityError)
                     || !TryReadStagePriorities(row.MagicPriorities.Text, false, out stage.MagicPriorities, out priorityError))

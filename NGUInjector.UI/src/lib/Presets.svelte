@@ -7,7 +7,7 @@
   import { presetZones } from './options';
   import PriorityPicker from './PriorityPicker.svelte';
   import { beardNames, beardOptions, defaultPresetBeards, diggerNames, dynamicPresetReady, focusEfficiency, newPreset, normalizePreset, objectiveKeys, objectiveLabels, globalPresetArgs, presetBeards, presetDiggerWeights, presetFields, presetMetric, presetNumberInput, globalPresetRows, globalPresetsReady, globalPreviewMatches, relativeProduction, resultRows, setPresetBeard, validateGlobalLibrary } from './presets';
-  import { proposedResourcePriorities, resourceLaneOptions, resourceLanePrioritiesReady } from './presets';
+  import { proposedResourcePriorities, resourceAllocationNotice, resourceLaneOptions, resourceLanePrioritiesReady } from './presets';
 
   export let state: UiState;
   export let onchange: (library: JsonObject) => void;
@@ -41,7 +41,8 @@
   $: dynamic = Number(selected?.AdventureDynamicWeight) > 0;
   $: reviewedLanes = selected?.ResourcePrioritiesReviewed === true;
   $: laneReady = resourceLanePrioritiesReady(state.snapshot, selected);
-  $: trainingEnabled = Array.isArray(selected?.Weights) && Number(selected.Weights[objectiveKeys.indexOf('advancedTraining')]) > 0;
+  $: allocationNotice = selected ? resourceAllocationNotice(selected) : '';
+  $: trainingEnabled = Array.isArray(selected?.Weights) && Number(selected.Weights[objectiveKeys.indexOf('advancedTraining')]) > 0 || reviewedLanes && Array.isArray(selected?.EnergyPriorities) && selected.EnergyPriorities.includes('AT');
   $: trainingInvalid = !Array.isArray(selected?.AdvancedTrainingWeights) || selected.AdvancedTrainingWeights.length !== 5 || selected.AdvancedTrainingWeights.some(weight => typeof weight !== 'number' || !Number.isInteger(weight) || weight < 0 || weight > 2147483647);
   $: beards = selected ? presetBeards(selected) : null;
   $: orderedBeards = beardOptions.map(beard => {
@@ -218,12 +219,13 @@
     <article class="card setup" aria-label="Preset settings" bind:this={setup}>
       {#if selected}
         <h2>Setup</h2>
+        {#if allocationNotice}<p class="notice allocation-notice" role="note" aria-label="Resource allocation">{allocationNotice}</p>{/if}
         <div class="preset-header">
           <label>Preset name<input value={String(selected.Name ?? '')} disabled={editDisabled} maxlength="100" on:input={event => edit('Name', text(event))} /></label>
           <label class="toggle-row"><input type="checkbox" aria-label="Auto-update preset" checked={selected.AutoUpdate !== false} disabled={editDisabled} on:change={event => edit('AutoUpdate', event.currentTarget.checked)} /><span>Auto-update on equip</span></label>
         </div>
         <section class="goals-editor" aria-label="Preset goals">
-          <h3>Goals</h3>
+          <h3>Gear goals</h3>
           <table class="editor-table goal-table">
             <caption class="sr-only">Goal weights</caption>
             <thead><tr><th scope="col">Goal</th><th scope="col">Weight</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
@@ -243,16 +245,16 @@
             </section>
           {:else if trainingInvalid}<button type="button" class="ghost reset-training" disabled={editDisabled} on:click={() => edit('AdvancedTrainingWeights', [...definitions.defaults.AdvancedTrainingWeights])}>Reset AT ratios</button>{/if}
         </section>
-        <section class="lane-editor" aria-label="Resource funding">
-          <div class="support-heading"><h3>{reviewedLanes ? 'Resource lane order' : 'Proposed lane order'}</h3>{#if !reviewedLanes}<span class="muted">Legacy proportional allocation</span>{/if}</div>
-          <p class="muted">Goal weights score shared gear. Each lane funds to useful cap in order.</p>
+        <section class="lane-editor" aria-label="Resource priorities">
+          <div class="support-heading"><h3>{reviewedLanes ? 'Resource priorities' : 'Proposed resource priorities'}</h3>{#if !reviewedLanes}<span class="muted">Legacy proportional allocation</span>{/if}</div>
+          <p class="muted">Priority #1 funds to its useful cap; only leftovers go to #2 and later priorities.</p>
           <div class="support-grid">
             {#each [true, false] as energy}
               {@const key = energy ? 'EnergyPriorities' : 'MagicPriorities'}
-              <PriorityPicker label={energy ? 'Energy funding' : 'Magic funding'} value={reviewedLanes ? selected[key] : proposedResourcePriorities(selected, energy)} options={resourceLaneOptions(selected, energy)} defaultLabel="No activity" helper="" disabled={editDisabled || !reviewedLanes} onchange={value => edit(key, value)} />
+              <PriorityPicker label={energy ? 'Energy priorities' : 'Magic priorities'} value={reviewedLanes ? selected[key] : proposedResourcePriorities(selected, energy)} options={resourceLaneOptions(selected, energy)} defaultLabel="No activity" helper="" disabled={editDisabled || !reviewedLanes} onchange={value => edit(key, value)} />
             {/each}
           </div>
-          {#if !reviewedLanes}<button type="button" disabled={editDisabled || !!validation} on:click={reviewLanes}>Review &amp; enable lane order</button>{/if}
+          {#if !reviewedLanes}<button type="button" disabled={editDisabled || !!validation} on:click={reviewLanes}>Review &amp; enable priorities</button>{/if}
         </section>
         <div class="support-heading support-mode"><h3>Beards &amp; diggers</h3><select aria-label="Support mode" value={String(selected.SupportMode)} disabled={editDisabled} on:change={event => edit('SupportMode', text(event))}><option value="current">Keep current</option><option value="planned">Optimize support</option></select></div>
         {#if selected.SupportMode === 'planned' && beards}
@@ -290,7 +292,7 @@
         <div class="preview-action"><button type="button" class="primary" disabled={state.busy || !saved || !!validation || !args || !previewReady} on:click={onpreview}>{state.busy ? 'Working...' : 'Preview preset'}</button><button type="button" title="Pauses the plan and auto-rebirth." disabled={state.busy || !saved || !!validation || !args || !equipReady || !dynamicReady || !laneReady} on:click={() => selected && onequip(String(selected.Id))}>Equip preset</button></div>
         {#if !previewReady}<p class="muted" role="status">Preview unavailable. Connect to a compatible injector.</p>{/if}
         {#if !dynamicReady}<p class="notice" role="status">Update the injector to use Dynamic adventure.</p>{/if}
-        {#if !laneReady}<p class="notice" role="status">Update the injector to use reviewed lane order.</p>{/if}
+        {#if !laneReady}<p class="notice" role="status">Update the injector to use reviewed resource priorities.</p>{/if}
       {:else}<h2>Presets unavailable</h2><p class="muted">Connect to the injector or reload the library.</p>{/if}
     </article>
     {/if}
@@ -370,6 +372,7 @@
   .library > .notice { margin-top: .75rem; }
   .workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
   .results { display: grid; gap: 1rem; min-width: 0; }
+  .allocation-notice { margin-top: .8rem; }
   .preset-header { display: flex; align-items: end; flex-wrap: wrap; gap: 1rem 2rem; margin: .8rem 0 1.5rem; }
   .preset-header > label:first-child { flex: 1 1 220px; max-width: 32rem; }
   .preset-header .toggle-row { padding-bottom: .65rem; }

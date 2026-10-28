@@ -229,6 +229,7 @@ public static partial class Program
             typeof(Program).GetMethod("ConfigurePresetInterruptionFixture", All)?.Invoke(null, new object[] { game });
             typeof(Program).GetMethod("ConfigureAdventureWeightGameFixture", All)?.Invoke(null, new object[] { game });
             typeof(Program).GetMethod("ConfigureFiniteActionGameFixture", All)?.Invoke(null, new object[] { game });
+            typeof(Program).GetMethod("ConfigureRepeatablePurchaseGameFixture", All)?.Invoke(null, new object[] { game });
             using (var bytes = new MemoryStream()) { game.Write(bytes); return Assembly.Load(bytes.ToArray()); }
         }
     }
@@ -933,11 +934,10 @@ public static partial class Program
         Equal(1, Convert.ToInt32(Get(w, "os")), "fresh unlocked OS selected only at execution"); Equal(bootup, Get(Get(w, "bootupTime"), "totalseconds"), "fresh OS change preserves actual bootup");
         CallMain("CancelCombatPrep", Parse("{\"runId\":\"" + Get(run, "Id") + "\"}"));
         Equal(1, Convert.ToInt32(Get(w, "os")), "OS is never restored on cancellation");
-        Equal(true, File.Exists(Path.Combine((string)Get(MainType, "_dir"), "combat-prep-os.json")), "OS decision is durably recorded outside settings/plans");
-        Set(MainInstance, "_combatPrepOsEpoch", null); Set(MainInstance, "_combatPrepOsPinDurable", false);
+        Equal(false, File.Exists(Path.Combine((string)Get(MainType, "_dir"), "combat-prep-os.json")), "native OS choice creates no action-history sidecar");
+        Equal(true, ReferenceEquals(Get(run, "Capture"), Get(MainInstance, "_combatPrepOsEpoch")), "same session retains only its acquired OS context");
         preview = Preview(10);
-        Equal(true, Get(MainInstance, "_combatPrepOsPinDurable"), "same-epoch durable OS decision restores without rewriting metadata");
-        foreach (var row in (IEnumerable) Get(Json(preview, "candidates"), "Children")) Equal("1", JsonValue(row, "os"), "once-per-rebirth OS pin survives cancellation and zero dumps");
+        foreach (var row in (IEnumerable) Get(Json(preview, "candidates"), "Children")) Equal("1", JsonValue(row, "os"), "same-session OS pin survives cancellation and zero dumps");
     }
 
     private static void CheckNguRemainders()
@@ -1179,7 +1179,7 @@ public static partial class Program
             var before = Swaps; FailRefreshAtSwap = before + 1; RefreshFailureInterference = interference;
             Exception failure = null;
             try { StartServerPolicy(capture, Phase("AT", "at-current", 10)); } catch (Exception error) { failure = error; }
-            Equal(null, failure, "accepted phase retains its acquired selection for shared bounded continuation: " + interference);
+            Equal(interference == "none", failure == null, "only an owned known-partial phase remains resumable: " + interference + "; " + failure);
             Equal(true, FailedApplicationMap != null, "failure is injected after a real data swap: " + interference);
             var failedHead = ((Array) FailedApplicationMap).Cast<object>().Single(x => (int) Get(x, "slot") == -1);
             var failedChest = ((Array) FailedApplicationMap).Cast<object>().Single(x => (int) Get(x, "slot") == -2);
@@ -1208,6 +1208,10 @@ public static partial class Program
                 Equal(before + 1, Swaps, "unsafe failure never attempts rollback swaps: " + interference);
                 Equal(true, Get(run, "BlockedReason") != null, "unsafe acquisition cannot silently reacquire ownership: " + interference);
                 Equal(true, CallMain("CombatPrepGearMatches", FailedApplicationMap), "interfered map is retained: " + interference);
+                Equal(false, Get(MainInstance, "CombatPrepRunActive"), "foreign acquisition cancels its bounded preparation: " + interference);
+                Set(run, "LastRefresh", -1d); CallMain("TickCombatPrep");
+                Equal(before + 1, Swaps, "later tick cannot retry the cancelled foreign acquisition: " + interference);
+                Equal(-1, Get(run, "AppliedResourcePhase"), "cancelled foreign acquisition never funds a phase: " + interference);
             }
         }
     }
@@ -1696,6 +1700,8 @@ public static partial class Program
             capture = CallMain("CaptureCombatPrep", .03, .03, null); run = StartServerPolicy(capture, Phase("AT", "current", 60));
             var claim = BeginFixtureClaim(domain, "nuke-pause-setup-interference"); var writes = ResourceCommittedWrites;
             Set(run, "LastRefresh", -1d); CallMain("TickCombatPrep");
+            var phase = ((Array)Get(Get(run, "Policy"), "Phases")).GetValue((int)Get(run, "PhaseIndex"));
+            Equal(false, CallMain("CombatPrepRequirementsVerified", run, phase), domain + " claim denies current phase prerequisites");
             Equal(false, Get(run, "SetupVerified"), domain + " claim withholds dependent setup proof");
             Equal(-1, Get(run, "AppliedResourcePhase"), domain + " claim withholds resource credit");
             Equal(writes, ResourceCommittedWrites, domain + " claim preserves funded prerequisites");

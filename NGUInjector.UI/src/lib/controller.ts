@@ -1,7 +1,7 @@
 import { get, writable } from 'svelte/store';
 import { ask } from '@tauri-apps/plugin-dialog';
 import * as api from './api';
-import { assertPlanMetadata, canCommand, diffObject, equal, freshEdits, freshPlan, heartbeat, mergePatch, object, pendingPlanEdits, planDeletionReason, pollResult, validateAugmentArgs, validateCombatPrepArgs, validateMaxItopodPushArgs, validateName, validatePlan, validateSettings } from './model';
+import { assertFightScheduleReadback, assertPlanMetadata, canCommand, diffObject, equal, freshEdits, freshPlan, heartbeat, mergePatch, object, pendingPlanEdits, planCapabilitiesReady, planDeletionReason, pollResult, validateAugmentArgs, validateCombatPrepArgs, validateMaxItopodPushArgs, validateName, validatePlan, validateSettings } from './model';
 import type { JsonObject, JsonValue, NguiState } from './api';
 import { commandLabels } from './options';
 import { matchingPlanProgress } from './stage-bar';
@@ -93,6 +93,7 @@ export function createController(backend = api, confirm = (message: string) => a
   let libraryRevision = 0;
   let libraryContext = 0;
   let libraryAttempted = false;
+  let initialPlanAttempted = false;
   const libraryKeyRevisions = new Map<string, number>();
   let combatPrepRevision = 0;
   let nguWeightsRevision = 0;
@@ -277,7 +278,7 @@ export function createController(backend = api, confirm = (message: string) => a
       for (const key of ['_customPlanFile', '_useCustomRebirthPlan', '_autoRebirth', ...nguWeightKeys]) if (key in previous.settings) flags[key] = previous.settings[key];
       next = { ...next, runtime: previous.runtime, settings: { ...next.settings, ...flags } };
     }
-    if (!sameSession) { acknowledgedRuntimeAt = null; acknowledgedRuntimeRevision = null; invalidateCombatPrep(); update({ combatPrepUncertainRunId: '', loadoutPresetPreview: null, loadoutPresetCandidateKey: '' }); }
+    if (!sameSession) { initialPlanAttempted = false; acknowledgedRuntimeAt = null; acknowledgedRuntimeRevision = null; invalidateCombatPrep(); update({ combatPrepUncertainRunId: '', loadoutPresetPreview: null, loadoutPresetCandidateKey: '' }); }
     update({ snapshot: withAcknowledgedFlags(next), now: Date.now(), ...(!sameSession ? { pendingQuickGoal: null } : {}) });
   }
 
@@ -382,6 +383,7 @@ export function createController(backend = api, confirm = (message: string) => a
 
   async function refresh(quiet = false, force = false, loadInitialPlan = true): Promise<void> {
     if (quiet && !force && current().refreshing) return;
+    if (!quiet) initialPlanAttempted = false;
     const request = ++refreshId;
     const context = epoch;
     const dir = current().runtimeDir;
@@ -411,9 +413,16 @@ export function createController(backend = api, confirm = (message: string) => a
       backend.storeRuntimeDir(next.runtime_dir);
       // A native plan read may wait on Unity. Keep heartbeat polling free while that read is pending.
       update({ refreshing: false });
-      if (!libraryAttempted && !current().presetLibrary && !current().presetLibraryLoading && (next.runtime.globalPresetsVersion === 2 || next.protocol.globalPresetsVersion === 2)) await loadPresetLibrary();
-      if (loadInitialPlan && !current().planName && next.plans.length && !current().busy) {
+      const readable = () => {
+        const snapshot = current().snapshot;
+        const lifecycle = object(snapshot?.runtime.execution).lifecycle;
+        return snapshot?.runtime.status !== 'starting' && (!snapshot?.connected || lifecycle === undefined || lifecycle === 'Running');
+      };
+      if (!libraryAttempted && !current().presetLibrary && !current().presetLibraryLoading && (next.runtime.globalPresetsVersion === 2 || next.protocol.globalPresetsVersion === 2) && readable()) await loadPresetLibrary();
+      if (loadInitialPlan && !initialPlanAttempted && !current().planName && next.plans.length && !current().busy && readable()) {
         const configured = String(next.settings._customPlanFile ?? '');
+        // A failed read stays visible until explicit retry, not requeued on every heartbeat.
+        initialPlanAttempted = true;
         await loadPlan(next.plans.includes(configured) ? configured : next.plans[0]);
       }
     } catch (err) {
@@ -579,16 +588,17 @@ export function createController(backend = api, confirm = (message: string) => a
     if (!ids.size) return;
     const session = state.snapshot?.runtime.startedAt;
     const library = normalizePresetLibrary(await backend.readPresetLibrary(state.runtimeDir));
-    if (state.runtimeDir !== current().runtimeDir || !equal(session, current().snapshot?.runtime.startedAt) || !canCommand(current().snapshot, command)) throw new Error('Injector session changed while checking preset lane order. Refresh before retrying.');
+    if (state.runtimeDir !== current().runtimeDir || !equal(session, current().snapshot?.runtime.startedAt) || !canCommand(current().snapshot, command)) throw new Error('Injector session changed while checking preset resource priorities. Refresh before retrying.');
     for (const preset of globalPresetRows(library).filter(row => ids.has(String(row.Id)))) {
-      if (!resourceLanePrioritiesReady(current().snapshot, preset)) throw new Error('Reviewed lane order requires runtime.resourceLanePrioritiesVersion === 1. Update the injector before running this plan.');
-      if (preset.ResourcePrioritiesReviewed === true && (typeof session !== 'string' || !session.trim() || current().snapshot?.runtime.globalPresetsVersion !== 2 || current().snapshot?.runtime.globalNguWeightsVersion !== 1)) throw new Error('Reviewed lane order requires a fresh identified injector session with global preset and NGU support.');
+      if (!resourceLanePrioritiesReady(current().snapshot, preset)) throw new Error('Reviewed resource priorities require runtime.resourceLanePrioritiesVersion === 2. Update the injector before running this plan.');
+      if (preset.ResourcePrioritiesReviewed === true && (typeof session !== 'string' || !session.trim() || current().snapshot?.runtime.globalPresetsVersion !== 2 || current().snapshot?.runtime.globalNguWeightsVersion !== 1)) throw new Error('Reviewed resource priorities require a fresh identified injector session with global preset and NGU support.');
     }
   }
 
   async function checkPlanExecutionPatch(patch: JsonObject): Promise<void> {
     const state = current();
     if (!heartbeat(state.snapshot).connected || !('_customPlanFile' in patch) && patch._useCustomRebirthPlan !== true && patch._autoRebirth !== true) return;
+    if (!planCapabilitiesReady(state.snapshot)) throw new Error('Update and reconnect the injector for fight schedules before selecting or running plans.');
     const name = patch._customPlanFile ?? object(state.snapshot?.runtime.settings).customPlanFile ?? state.snapshot?.settings._customPlanFile;
     if (typeof name !== 'string' || !name) return;
     const plan = await readCurrentPlan(state.runtimeDir, name);
@@ -630,6 +640,7 @@ export function createController(backend = api, confirm = (message: string) => a
       if (!equal(session, current().snapshot?.runtime.startedAt)) throw new Error('Injector session changed while saving the plan. Edits retained; reload before retrying.');
       const saved = await readCurrentPlan(runtimeDir, planName);
       validatePlan(saved);
+      assertFightScheduleReadback(payload, saved);
       if (!(key in saved)) throw new Error('Saved field is missing from the normalized plan. Edits retained.');
       const changed = sentRevision !== planKeyRevisions[key];
       const base = { ...planBase, [key]: payload[key] };
@@ -695,7 +706,7 @@ export function createController(backend = api, confirm = (message: string) => a
     const plan = await backend.readPlan(dir, name);
     if (context !== epoch || dir !== current().runtimeDir) throw new Error('Plan read was superseded by a runtime-folder change. Refresh and retry.');
     if (connected && (!canCommand(current().snapshot, 'readPlan') || !equal(session, current().snapshot?.runtime.startedAt))) throw new Error('Injector session changed or became unready while reading the plan. Previous editor retained; refresh and retry.');
-    return api.stripNguOverrides(plan);
+    return api.stripNguOverrides(api.requireCanonicalPlan(plan));
   }
 
   async function loadPlan(name: string): Promise<void> {
@@ -735,12 +746,12 @@ export function createController(backend = api, confirm = (message: string) => a
         throw err;
       }
       ++epoch;
-      // Advance committed fields, but retain editor metadata until validated read-back.
+      // Do not acknowledge a save until readback proves schedules were retained.
       const committed = mergePatch(sent, pendingPlanEdits(sent, payload));
-      const draft = mergePatch(committed, pendingPlanEdits(sent, current().plan!));
-      update({ planBase: api.cloneObject(committed), plan: draft, planDirty: !equal(committed, draft), status: `Saved '${planName}'.` });
       const saved = await readCurrentPlan(runtimeDir, planName);
-      const rebased = freshPlan(committed, current().plan!, saved);
+      assertFightScheduleReadback(payload, saved);
+      const draft = mergePatch(committed, pendingPlanEdits(sent, current().plan!));
+      const rebased = freshPlan(committed, draft, saved);
       update({ planBase: api.cloneObject(saved), plan: rebased, planDirty: !equal(saved, rebased), status: `Saved plan '${planName}'.` });
       await refresh(true, true);
     }, true);
@@ -763,6 +774,7 @@ export function createController(backend = api, confirm = (message: string) => a
       if (revision !== patchRevision || previousPlan !== current().plan || previousLibraryRevision !== libraryRevision) throw new Error('Edits were made while switching folders. Current folder and new edits retained; retry the switch.');
       ++libraryContext;
       libraryAttempted = false;
+      initialPlanAttempted = false;
       libraryKeyRevisions.clear();
       update({ presetLibrary: null, presetLibraryBase: null, presetLibraryDirty: false, presetLibraryLoading: false });
       keyRevisions = {};
@@ -915,7 +927,7 @@ export function createController(backend = api, confirm = (message: string) => a
     const state = current();
     if (!presetsReady(state.snapshot, command) || state.snapshot?.runtime_dir !== state.runtimeDir) throw new Error('Connect to a fresh injector advertising loadoutPresetsVersion 2, globalNguWeightsVersion 1, and preset commands.');
     if (!dynamicPresetReady(state.snapshot, object(args.preset))) throw new Error('Dynamic adventure requires runtime.adventureDynamicPresetsVersion === 1.');
-    if (!resourceLanePrioritiesReady(state.snapshot, object(args.preset))) throw new Error('Reviewed lane order requires runtime.resourceLanePrioritiesVersion === 1.');
+    if (!resourceLanePrioritiesReady(state.snapshot, object(args.preset))) throw new Error('Reviewed resource priorities require runtime.resourceLanePrioritiesVersion === 2.');
     const submitted = { ...args }; delete submitted.candidateKey; delete submitted.previewId;
     if (command === 'applyLoadoutPreset') {
       if (!previewMatches(state.loadoutPresetPreview, submitted, state.runtimeDir, state.snapshot?.runtime.startedAt)) throw new Error('No matching latest preview. Refresh preview before applying.');
@@ -946,7 +958,7 @@ export function createController(backend = api, confirm = (message: string) => a
     const submitted = { ...args }; delete submitted.candidateKey; delete submitted.previewId;
     if (!equal(submitted, globalPresetArgs(String(args.presetId), state.presetLibraryBase))) throw new Error('Global library revision changed. Refresh preview.');
     if (!dynamicPresetReady(state.snapshot, globalPresetRows(state.presetLibraryBase).find(row => row.Id === args.presetId))) throw new Error('Dynamic adventure requires runtime.adventureDynamicPresetsVersion === 1.');
-    if (!resourceLanePrioritiesReady(state.snapshot, globalPresetRows(state.presetLibraryBase).find(row => row.Id === args.presetId))) throw new Error('Reviewed lane order requires runtime.resourceLanePrioritiesVersion === 1.');
+    if (!resourceLanePrioritiesReady(state.snapshot, globalPresetRows(state.presetLibraryBase).find(row => row.Id === args.presetId))) throw new Error('Reviewed resource priorities require runtime.resourceLanePrioritiesVersion === 2.');
     if (command === 'applyGlobalPreset') {
       if (args.presetId !== state.loadoutPresetSelectedId || !globalPreviewMatches(state.loadoutPresetPreview, submitted, state.runtimeDir, state.snapshot?.runtime.startedAt, !state.presetLibraryDirty)) throw new Error('No matching latest preview. Refresh preview before applying.');
       if (args.previewId !== state.loadoutPresetPreview!.result.previewId) throw new Error('Preview token does not match the latest preview.');
@@ -1036,9 +1048,11 @@ export function createController(backend = api, confirm = (message: string) => a
         freshPlan(base, current().plan!, plan);
         await checkPlanResourceLanes(plan, 'applySettingsPatch');
         if (autoRebirth === true && plan.AutoRebirthEnabled !== true) {
+          const expected = plan;
           const saved = await backend.savePlan(current().runtimeDir, current().planName, { ...plan, AutoRebirthEnabled: true });
           if (saved.success !== true) throw new Error('Could not enable rebirth for this plan. The plan was not started.');
           plan = await readCurrentPlan(current().runtimeDir, current().planName);
+          assertFightScheduleReadback(expected, plan);
           validatePlan(plan);
           if (plan.AutoRebirthEnabled !== true) throw new Error('Normalized plan did not enable rebirth. The plan was not started.');
         }
@@ -1082,6 +1096,7 @@ export function createController(backend = api, confirm = (message: string) => a
       const created = await backend.createPlan(current().runtimeDir, name, source);
       ++epoch;
       const plan = await readCurrentPlan(current().runtimeDir, created);
+      if (source) assertFightScheduleReadback(source, plan);
       autosavePlan = false;
       saveErrors.plan = '';
       update({ saveError: saveErrorText() });

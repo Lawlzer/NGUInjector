@@ -1,34 +1,19 @@
-param(
-    [switch]$Dev,
-    [switch]$Build
-)
-
-$ErrorActionPreference = 'Stop'
-$UiDir = Join-Path $PSScriptRoot 'NGUInjector.UI'
-$Executable = Join-Path $UiDir 'src-tauri\target\release\nguinjector-ui.exe'
-
-if (-not (Test-Path -LiteralPath $UiDir -PathType Container)) {
-    throw "UI project not found: $UiDir"
-}
-
-if ($Dev -or $Build -or -not (Test-Path -LiteralPath $Executable)) {
-    Push-Location -LiteralPath $UiDir
-    try {
-        if (-not (Test-Path -LiteralPath 'node_modules')) {
-            & npm ci
-            if ($LASTEXITCODE -ne 0) { throw 'UI dependency installation failed.' }
-        }
-        if ($Dev) {
-            & npm run tauri -- dev
-            if ($LASTEXITCODE -ne 0) { throw 'Tauri development session failed.' }
-            return
-        }
-        & npm run tauri -- build --no-bundle
-        if ($LASTEXITCODE -ne 0) { throw 'Tauri build failed.' }
-    } finally {
-        Pop-Location
+#requires -Version 7.0
+[CmdletBinding()]
+param([switch]$Legacy)
+dynamicparam {
+    # The preserved legacy game launcher calls this wrapper internally.
+    $fromLegacy = @(Get-PSCallStack | Where-Object ScriptName -eq (Join-Path $PSScriptRoot 'start-ngu-and-script.legacy.ps1')).Count -gt 0
+    $target = if ($Legacy -or $fromLegacy) { Join-Path $PSScriptRoot 'start-ui.legacy.ps1' }
+        else { Join-Path $PSScriptRoot '../NGUInjector-rewrite/start-ui.ps1' }
+    $parameters = [Management.Automation.RuntimeDefinedParameterDictionary]::new()
+    foreach ($parameter in (Get-Command $target).Parameters.Values) {
+        if ($parameter.Name -in [Management.Automation.PSCmdlet]::CommonParameters -or $parameter.Name -in [Management.Automation.PSCmdlet]::OptionalCommonParameters) { continue }
+        $parameters.Add($parameter.Name, [Management.Automation.RuntimeDefinedParameter]::new($parameter.Name, $parameter.ParameterType, $parameter.Attributes))
     }
+    $parameters
 }
-
-# Opening the controller never restarts the game, injects a DLL, or runs an automation action.
-Start-Process -FilePath $Executable -WorkingDirectory $UiDir
+end {
+    $forward = @{} + $PSBoundParameters; $forward.Remove('Legacy')
+    & $target @forward
+}

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using NGUInjector.Managers;
 using SimpleJSON;
@@ -22,25 +21,10 @@ namespace NGUInjector
             _reviewedExactSetupPending = null;
         }
 
-        // Durable tombstone, not deletion: stopped/superseded intent must not be
-        // offered as an active acquisition after a later restart.
         private void ClearPersistedExecutionSelection(string kind)
         {
-            if (string.IsNullOrEmpty(_dir)) return;
-            var path = kind == "dashboard" ? StandaloneSelectionPath : ExecutionSetupPath(kind);
-            if (!File.Exists(path)) return;
-            var saved = JsonFiles.ParseObject(File.ReadAllText(path));
-            saved["active"] = false;
-            JsonFiles.WriteAtomic(path, saved.ToString(2));
-            _executionExactPending?.Remove(kind);
+            _executionSelections?.Remove(kind);
             if (kind == "dashboard") _standaloneSelectedPolicy = _standaloneSelectionIssue = null;
-        }
-
-        private string ExecutionSetupPath(string kind)
-        {
-            if (string.IsNullOrEmpty(kind) || kind.Length > 64 || kind.Any(x => !char.IsLetterOrDigit(x) && x != '-'))
-                throw new FormatException("Invalid execution selection kind.");
-            return Path.Combine(_dir, "execution-" + kind + "-selection.json");
         }
 
         private void ApplyProbeSupportSelection(int[] beards, SupportDiggerLevel[] diggers)
@@ -77,8 +61,6 @@ namespace NGUInjector
 
         private void ToggleQuickExecutionClaim()
         {
-            EnsureExecutionExactLoaded();
-            if (_executionExactPending.ContainsKey("quick")) throw new InvalidOperationException("Review the retained Quick selection before toggling it.");
             if (_quickExecutionClaim != null)
             {
                 var ending = _quickExecutionClaim;
@@ -136,7 +118,7 @@ namespace NGUInjector
                 Recall = GearRecallFootprint.None, Budget = 1d, EnforceSupportBudget = false,
                 Authorized = () => ReferenceEquals(_quickExecutionClaim, claim), RouteRetirementAuthorized = () => false,
                 MaterialValid = () => !gear.Where((x, i) => LoadoutPresetPrimitiveKey(x.equipment) != material[i]).Any() };
-            var persisted = false;
+            var retained = false;
             try
             {
                 SetExecutionReturnBaseline(claim, new SelectedSetupRequirements { Gear = original, ControlsGear = ids.Length != 0,
@@ -146,31 +128,30 @@ namespace NGUInjector
                     RouteRetirementAuthorized = () => false });
                 _quickExecutionClaim = claim;
                 PersistExecutionSetupSelection("quick", definition, setup);
-                persisted = true;
+                retained = true;
                 ApplyExecutionClaim(claim, setup);
             }
             catch
             {
-                if (!persisted) { _quickExecutionClaim = null; EndExecutionClaim(claim, false); }
+                if (!retained) { _quickExecutionClaim = null; EndExecutionClaim(claim, false); }
                 // A failed/partial actuator retains its claim and exact selection for
                 // explicit release; it must not turn a retry into a new acquisition.
                 throw;
             }
         }
 
-        // Semantic exact-setup producer hook. Call before native mutation. Original
-        // definitions/paused relationship survive independently of session evidence.
+        // Semantic producer hook used by live foreign-setup review only. No intent
+        // or return authority for these transient attempts crosses a restart.
         private void PersistExecutionSetupSelection(string kind, string definition, SelectedSetupRequirements setup)
         {
-            var saved = ExportExecutionSetupSelection(kind, definition, setup);
-            if (kind == "quick" && _quickExecutionClaim?.ExplicitReturnBaseline != null)
-                saved["returnBaseline"] = ExportExecutionSetupSelection("quick-return", definition, _quickExecutionClaim.ExplicitReturnBaseline);
-            JsonFiles.WriteAtomic(ExecutionSetupPath(kind), saved.ToString(2));
+            if (kind != "focus" && kind != "quick" && kind != "manual" && kind != "manual-gear")
+                throw new InvalidOperationException("Unsupported live selection kind: " + kind);
+            if (_executionSelections == null) _executionSelections = new Dictionary<string, JSONObject>(StringComparer.Ordinal);
+            _executionSelections[kind] = ExportExecutionSetupSelection(kind, definition, setup);
         }
 
         private JSONObject ExportExecutionSetupSelection(string kind, string definition, SelectedSetupRequirements setup)
         {
-            if (string.IsNullOrEmpty(_dir)) throw new IOException("Execution selection directory is unavailable.");
             var saved = new JSONObject(); saved["version"] = 2; saved["schema"] = "selected-exact-setup-v2"; saved["active"] = true;
             saved["kind"] = kind; saved["definition"] = definition; saved["owner"] = setup.Owner;
             saved["acquisition"] = setup.Acquisition; saved["controlsGear"] = setup.ControlsGear;
@@ -218,7 +199,6 @@ namespace NGUInjector
                 commitments["atTargets"] = targets;
                 commitments["resourceDomains"] = (int)setup.Recall & 7;
             }
-            else if (kind == "fight-prep") commitments = ExportFightPreparationCommitment();
             saved["commitments"] = commitments;
             return saved;
         }

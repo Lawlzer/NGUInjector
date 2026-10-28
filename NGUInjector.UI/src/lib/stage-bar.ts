@@ -1,6 +1,6 @@
 import { isObject, planRevisionField, type JsonObject } from './api';
 import { longTarget, numeric, stages, validatePriorities } from './model';
-import { parsePlanProgress, type PlanProgressView } from './plan-progress';
+import { parsePlanProgress, planProgressDuration, type PlanProgressView } from './plan-progress';
 import { fixedSeconds, scheduleTiming } from './stage-duration';
 
 /** Matches runtime stage positions to the editor's ordered stages, not the whole config.
@@ -10,7 +10,7 @@ export function matchingPlanProgress(plan: JsonObject, name: string, data: JsonO
   const view = parsePlanProgress(data, connected);
   if (dirty || view.showWaitingPlanProgress || !isObject(plan)) return null;
   if (!name || typeof data.planName !== 'string' || data.planName.toLowerCase() !== name.toLowerCase()) return null;
-  if (plan.Version !== 17 || view.planVersion !== '17') return null;
+  if (plan.Version !== 18 || view.planVersion !== '18') return null;
   if (Object.prototype.hasOwnProperty.call(data, 'planRevision') &&
       (typeof data.planRevision !== 'string' || !data.planRevision || data.planRevision !== plan[planRevisionField])) return null;
 
@@ -78,5 +78,25 @@ export function matchingPlanProgress(plan: JsonObject, name: string, data: JsonO
     return matches ? view : null;
   } catch {
     return null;
+  }
+}
+
+export function matchingFightStatus(plan: JsonObject, data: JsonObject, mapped: PlanProgressView | null): string {
+  if (!mapped || mapped.status === 'disabled' || mapped.activeStageIndex === null || !mapped.stageEntry) return '';
+  const row = Array.isArray(plan.Stages) ? plan.Stages[mapped.activeStageIndex] : null;
+  const schedule = isObject(row) ? row.FightSchedule : null;
+  const fight = data.fightSchedule;
+  if (!isObject(schedule) || typeof schedule.Id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(schedule.Id) || !isObject(fight) || fight.stageEntry !== mapped.stageEntry || fight.scheduleId !== schedule.Id || typeof fight.reason !== 'string') return '';
+  for (const key of ['nextFightAtSeconds', 'remainingSeconds']) {
+    if (fight[key] !== null && (typeof fight[key] !== 'number' || !Number.isFinite(fight[key]) || fight[key] < 0)) return '';
+  }
+  switch (fight.state) {
+    case 'waiting-anchor': return `Fight waiting${fight.reason ? `: ${fight.reason}` : ''}`;
+    case 'waiting': return `Fight waiting${fight.reason ? `: ${fight.reason}` : ''}`;
+    case 'scheduled': return typeof fight.remainingSeconds === 'number' ? `Next fight in ${planProgressDuration(fight.remainingSeconds)}` : '';
+    case 'fighting': return 'Fighting';
+    case 'completed': return 'Fights completed';
+    case 'disabled': return 'Fights disabled';
+    default: return '';
   }
 }

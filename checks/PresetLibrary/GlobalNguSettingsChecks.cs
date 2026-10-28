@@ -75,10 +75,11 @@ namespace NGUInjector
                 assert(persisted["future"].Value == "9007199254740993" && persisted["_energyNguWeights"].Children.Select(value => value.AsInt).SequenceEqual(energy)
                     && persisted["_magicNguWeights"].Children.Select(value => value.AsInt).SequenceEqual(magic), "migration atomically persists globals and unknown settings tokens");
                 var store = new CustomPlanStore(plans);
-                var repaired = JsonFiles.ParseObject(File.ReadAllText(planPath));
-                assert(repaired["Version"].AsInt == 17 && !repaired.Linq.Any(field => field.Key == "EnergyNguWeights" || field.Key == "MagicNguWeights" || field.Key == "NguGoal"), "only subsequent built-in repair strips the source at version 17");
+                var backupPath = Path.Combine(directory, "retired-custom-plans-number-v1", "1h-3m-rebirth.json");
+                assert(!File.Exists(planPath) && planBytes.SequenceEqual(File.ReadAllBytes(backupPath)), "subsequent catalog retirement archives the exact legacy source after global migration");
                 settings = new SavedSettings(directory);
-                assert(settings.LoadSettings() && settings.EnergyNguWeights.SequenceEqual(energy) && settings.MagicNguWeights.SequenceEqual(magic), "restart retains migrated settings after source arrays disappear");
+                assert(settings.LoadSettings() && settings.CustomPlanFile == "24hr" && !settings.UseCustomRebirthPlan
+                    && settings.EnergyNguWeights.SequenceEqual(energy) && settings.MagicNguWeights.SequenceEqual(magic), "restart retains migrated global settings and safe selection after legacy source retirement");
             }
         }
 
@@ -220,7 +221,7 @@ namespace NGUInjector
             external["GoalPresets"][0]["MagicNguWeights"] = raw["GoalPresets"][0]["MagicNguWeights"];
             store.SaveExternalPlan("legacy", external, external[CustomPlanStore.ExternalUiRevisionField].Value);
             var saved = JsonFiles.ParseObject(File.ReadAllText(path));
-            assert(saved["Version"].AsInt == 17 && !saved.Linq.Any(field => field.Key == "NguGoal" || field.Key == "EnergyNguWeights" || field.Key == "MagicNguWeights")
+            assert(saved["Version"].AsInt == 18 && !saved.Linq.Any(field => field.Key == "NguGoal" || field.Key == "EnergyNguWeights" || field.Key == "MagicNguWeights")
                 && !saved["LoadoutPresets"][0].Linq.Any(field => field.Key == "EnergyNguWeights" || field.Key == "MagicNguWeights")
                 && !saved["GoalPresets"][0].Linq.Any(field => field.Key == "EnergyNguWeights" || field.Key == "MagicNguWeights"), "save strips reintroduced retired ratios without bumping plan version");
             assert(saved["future"].Value == "1.2300e+004" && saved["LoadoutPresets"][0]["future"].Value == "9007199254740993"

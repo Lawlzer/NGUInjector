@@ -101,6 +101,18 @@ namespace NGUInjector
                 && selection.Owner == _customStageEquipmentKey && selection.Context == _customStageKey;
         }
 
+        // Retained live evidence may retire a predecessor, never apply its expired baseline.
+        private bool InlineStageRetirementObservationMatches(InlineStageSelection selection)
+        {
+            return selection != null && ReferenceEquals(selection, _inlineStageSelection)
+                && ReferenceEquals(reference, this) && !_unloaded && selection.Epoch.Matches()
+                && Settings?.UseCustomRebirthPlan == true && !_customRequestedFocusGoal.HasValue
+                && Settings.CustomPlanFile == selection.PlanFile && _protectedPlanFile == selection.PlanFile
+                && _protectedGeneration == selection.Generation && _protectedScheduler != null
+                && selection.Blocked == null && selection.Observed != null && selection.Baseline.MaterialValid()
+                && selection.ClaimIdentity == InlineStageClaimIdentity() && InlineStageObservationMatches(selection);
+        }
+
         private bool InlineStageEntryMatches(InlineStageSelection selection)
         {
             return selection != null && ReferenceEquals(selection, _inlineStageSelection)
@@ -121,7 +133,7 @@ namespace NGUInjector
 
         private static bool InlineStagePolicyMatches(InlineStageSelection selection, CustomEquipmentSetup policy, int fightScoreMode)
         {
-            return selection.GearGoal == policy.Stage.GearGoal && selection.FightScoreMode == fightScoreMode
+            return selection.GearGoal == CustomStageAllocator.EffectiveStageGearGoal(policy.Stage) && selection.FightScoreMode == fightScoreMode
                 && selection.Policy.Beards.SequenceEqual(policy.Beards)
                 && selection.Policy.Diggers.Select(x => x.Id + ":" + x.Weight).SequenceEqual(policy.Diggers.Select(x => x.Id + ":" + x.Weight));
         }
@@ -170,7 +182,8 @@ namespace NGUInjector
                     }
                 }
                 var policy = SetupForStage(runtime.Stage);
-                var gearChanged = !current || selection.GearGoal != runtime.Stage.GearGoal || selection.FightScoreMode != plan.FightScoreMode;
+                var gearGoal = CustomStageAllocator.EffectiveStageGearGoal(runtime.Stage);
+                var gearChanged = !current || selection.GearGoal != gearGoal || selection.FightScoreMode != plan.FightScoreMode;
                 var policyChanged = !current || !InlineStagePolicyMatches(selection, policy, plan.FightScoreMode);
                 if (policyChanged)
                 {
@@ -178,11 +191,33 @@ namespace NGUInjector
                         throw new InvalidOperationException("Resource authority is unresolved; coupled inline setup changes are withheld.");
                     // Explicit setup edits replace intent, not the scheduler entry. Support-only
                     // edits retain selected gear; generic invalidation never authorizes a search.
-                    var gear = !gearChanged ? selection.Baseline.Gear : runtime.Stage.GearGoal < 0 ? null
-                        : SelectSetupGear((GearOptimizationGoal)runtime.Stage.GearGoal, (FightScoreMode)plan.FightScoreMode, true);
+                    var gear = !gearChanged ? selection.Baseline.Gear : gearGoal < 0 ? null
+                        : SelectSetupGear((GearOptimizationGoal)gearGoal, (FightScoreMode)plan.FightScoreMode, true);
+                    if (selection != null && Character.adventure != null && Character.adventure.zone != -1)
+                    {
+                        // Consume the old observation while it is still installed. Publishing
+                        // the successor first would invalidate this retirement-only witness.
+                        var predecessor = selection;
+                        var entry = ExecutionPersistenceEntry; var stage = _customStageKey;
+                        var retirement = BeginExecutionClaim("inline-handoff", Guid.NewGuid().ToString("N"), ExecutionDomain.Route,
+                            () => ReferenceEquals(predecessor, _inlineStageSelection) && entry == ExecutionPersistenceEntry && stage == _customStageKey);
+                        try
+                        {
+                            var witness = CaptureExecutionBaselineRouteRetirement(retirement);
+                            ApplyExecutionClaim(retirement, new SelectedSetupRequirements { ControlsGear = false,
+                                Support = CaptureSupportState().Selection, ChangeSupport = false, RetireRoute = true,
+                                Authorized = () => ExecutionClaimCurrent(retirement) && witness(),
+                                RouteRetirementAuthorized = witness });
+                            if (Character.adventure.zone != -1) throw new InvalidOperationException("Inline predecessor retirement is unverified.");
+                        }
+                        finally
+                        {
+                            if (!EndExecutionClaim(retirement, false)) throw new InvalidOperationException("Inline retirement authority requires review.");
+                        }
+                    }
                     selection = new InlineStageSelection { Owner = _customStageEquipmentKey, Context = _customStageKey,
                         Acquisition = Guid.NewGuid().ToString("N"), Policy = policy, PlanFile = _protectedPlanFile,
-                        GearGoal = runtime.Stage.GearGoal, FightScoreMode = plan.FightScoreMode,
+                        GearGoal = gearGoal, FightScoreMode = plan.FightScoreMode,
                         Observed = current ? selection.Observed : null, ObservedMaterial = current ? selection.ObservedMaterial : null,
                         Generation = _protectedGeneration, Entry = _protectedScheduler.Entry, Cycle = _protectedScheduler.Cycle };
                     selection.Material = gear?.Select(x => LoadoutPresetPrimitiveKey(x.equipment)).ToArray();

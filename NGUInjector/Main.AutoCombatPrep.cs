@@ -17,6 +17,7 @@ namespace NGUInjector
         private double _automaticRecoveryRetryAt;
         private string _automaticAcquisitionRetryEntry;
         private double _automaticAcquisitionRetryAt;
+        private bool _automaticStageAcquiring;
 
         private string AutomaticRecoveryEntry => _protectedPlanFile + ":" + _protectedGeneration + ":" + _protectedScheduler.Entry.ToString(CultureInfo.InvariantCulture);
         private bool AutomaticContinuationPending => _protectedScheduler != null
@@ -39,6 +40,12 @@ namespace NGUInjector
         private void ServiceAutomaticRecovery()
         {
             if (!ReferenceEquals(reference, this) || _unloaded) return;
+            // Clean cleanup still leaves an interrupted entry, never permission for fresh paid prep.
+            if (_protectedScheduler != null && _automaticCancelledEntry == AutomaticRecoveryEntry)
+            {
+                _automaticSafeResourcesEntry = AutomaticRecoveryEntry;
+                _automaticCancelledEntry = null;
+            }
             if (CombatPrepRunActive && !_resourceReconciliationRunning) { ReconcileCustomResources(); return; }
             if (CombatPrepRunActive) AdvanceCombatPrep();
             if (CombatPrepRunActive || !CombatPrepCleanupRecoveryRequired || _protectedScheduler == null
@@ -47,10 +54,7 @@ namespace NGUInjector
             if (_automaticRecoveryRetryEntry == entry && CombatPrepClock < _automaticRecoveryRetryAt) return;
             _automaticRecoveryRetryEntry = entry; _automaticRecoveryRetryAt = CombatPrepClock + 1;
             // A successful earlier checkpoint is not evidence that THIS marker transition was saved.
-            if (!TryCommitProtectedEntryChange(scheduler => {
-                scheduler.AutoCleanupRecoveryRequired = false;
-                if (_automaticCancelledEntry == entry) scheduler.CompleteAutomaticEntry(Character.rebirthTime.totalseconds);
-            }))
+            if (!TryCommitProtectedEntryChange(scheduler => scheduler.AutoCleanupRecoveryRequired = false))
             {
                 SetResourceExecution(ResourceExecutionState.Failed, entry,
                     "Automatic recovery checkpoint could not be saved; check runtime directory permissions or file locks. Retrying automatically.");
@@ -73,6 +77,12 @@ namespace NGUInjector
             _automaticStageSetupEntry = entry;
             if (CombatPrepClock - _automaticStageSetupStarted < _protectedScheduler.ExpectedEndSeconds - _protectedScheduler.EnteredAt)
                 return true;
+            if (_automaticSafeResourcesEntry == AutomaticRecoveryEntry
+                && Character.rebirthTime.totalseconds < _protectedScheduler.ExpectedEndSeconds)
+            {
+                SetCustomAutomationStatus("Automatic safe-background continuation is waiting for its original deadline; no fresh preparation budget was acquired.");
+                return false;
+            }
             CompleteAutomaticEntryDurably();
             SetCustomAutomationStatus("Scheduled Augments + Wandoos original elapsed budget exhausted during entry setup; no fresh run acquired.");
             return false;
@@ -199,7 +209,12 @@ namespace NGUInjector
 
         private void StartAutomaticCombatPrep(CustomPlan plan, CustomStageRuntime runtime)
         {
-            if (!ReferenceEquals(reference, this) || _unloaded || _protectedScheduler == null || _protectedScheduler.Finished) return;
+            if (_automaticStageAcquiring || !ReferenceEquals(reference, this) || _unloaded || _protectedScheduler == null || _protectedScheduler.Finished) return;
+            if (_automaticCancelledEntry == AutomaticRecoveryEntry)
+            {
+                _automaticSafeResourcesEntry = AutomaticRecoveryEntry;
+                _automaticCancelledEntry = null;
+            }
             if (_automaticAcquisitionRetryEntry == AutomaticRecoveryEntry && CombatPrepClock < _automaticAcquisitionRetryAt)
             {
                 SetResourceExecution(ResourceExecutionState.Failed, AutomaticRecoveryEntry,
@@ -213,7 +228,7 @@ namespace NGUInjector
             }
             if (!AutomaticStageSetupBudgetAvailable(runtime)) return;
             // Both quick and ordinary dispatch use this guard; waiting spends only elapsed budget.
-            if (ManualAdventureOwnsEquipment || Controller.midDrag)
+            if (ManualAdventureOwnsEquipment || Controller.midDrag || ExecutionOwnsDomain(ExecutionDomain.FiniteAction))
             {
                 SuspendProtectedStageProgress();
                 SetCustomAutomationStatus("Scheduled Augments + Wandoos waiting for equipment ownership; its elapsed deadline is unchanged.");
@@ -234,11 +249,13 @@ namespace NGUInjector
                 DeadlineRebirthSeconds = _protectedScheduler.ExpectedEndSeconds
             };
             if (!AutomaticCombatPrepOwnerMatches(run)) return;
+            // Fruit reservation/release may re-enter dispatch before this run is published.
+            _automaticStageAcquiring = true;
             try
             {
                 var blocker = CombatPrepStartBlocker(run);
                 if (blocker != null) throw new InvalidOperationException(blocker);
-                if (TryRunCustomStageEntryFight(plan, runtime)) return;
+                if (ServiceStageFightSchedule(plan)) return;
                 // Preserve AutoActivateFruits before capture without applying an ordinary stage's gear/support policy.
                 if (!TryActivateCustomFruits(plan, null, out var fruitActivation))
                 {
@@ -326,6 +343,7 @@ namespace NGUInjector
                 }
                 LogError("Scheduled combat prep", error);
             }
+            finally { _automaticStageAcquiring = false; }
         }
 
         private void ReplanAutomaticCombatPrep(CombatPrepRun run, string reason)

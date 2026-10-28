@@ -12,8 +12,9 @@ From the repository root:
 .\start-ui.ps1          # Builds the native executable if missing, then opens it
 .\start-ui.ps1 -Dev     # Vite + Tauri hot reload
 .\start-ui.ps1 -Build   # Rebuild the native executable before opening
-.\verify-ui.ps1
-.\verify-ui.ps1 -BrowserTests -IncludeInjector -GameFolder "C:\path\to\NGU IDLE"
+.\verify.ps1 -Scope UI
+# All offline scopes, including compiled native checks:
+.\verify.ps1 -GameFolder "C:\path\to\NGU IDLE"
 ```
 
 Or from this folder:
@@ -40,6 +41,15 @@ The default path deliberately matches the existing injector, even if Windows red
 If a refresh cannot read `runtime.json` because another process has it locked (Windows error 32), the UI automatically retries every five seconds until the read succeeds. The retry message clears on recovery, unsaved edits are retained, and writes/game commands are not replayed.
 
 ## Features
+
+Plan schema **18** adds [stage fight schedules](../docs/stage-fight-schedules.md),
+replacing Fight on entry. Enable Fights in a stage, choose Stage entry or Augments
+started, set First fight after, and optionally Repeat every. For fights at 3m and
+6m, use a 3m first delay and 3m repeat. Timing edits apply next entry/restart;
+turning Fights off stops future admissions. This requires the updated injector's
+`fightScheduleVersion: 1` capability; update the UI and injector together.
+The schema-17 descriptions below document the preceding timing migration; the
+current canonical plan version is 18 with those timing semantics unchanged.
 
 - Injector errors: a full-width alert above navigation on every tab combines startup errors, caught automation errors, explicit execution failures/review blockers, failed commands, and UI read/save failures. Normal waiting, spawn/cooldown, and unverified observations are not alarms. Each error shows its actual context/reason, optional repeat count, and closed Details; Logs and existing selection-review/save-retry controls provide explicit recovery. Nothing is dismissed, applied, or replayed by viewing errors or refreshing. Disconnected/stale telemetry retains reported faults and marks current automation status unknown.
 - Dashboard: heartbeat, active plan/focus, loop progress, command results, and one full-width, bar-driven plan editor.
@@ -86,6 +96,8 @@ Plans store **Active preset** as `ActivePresetId` under **Gear settings**. Stand
 Migration imports old per-plan `LoadoutPresets` and supported historical goal/stage definitions into the global library using durable collision-safe `MigrationReceipts`. The selected legacy plan's NGU weights migrate once into global settings before retired ratios are removed; imported presets do not own copies. Retained `LoadoutPresets`, `GoalPresets` and `ActiveGoalPresetIndex` are historical provenance, not a second editable preset authority; plan saves reject changes to them except normalization of retired NGU fields. Receipts prevent deleted imports from being resurrected by those arrays. Migration issues identify unsupported rows or rows requiring explicit conversion; resemblance to a standard tuple is not proof of allocation equivalence.
 
 See [weighted loadouts](../docs/loadout-presets.md), [frontend contracts](../docs/frontend-global-presets.md) and [activity models and limits](../docs/preset-activities.md) for execution/safety details.
+
+**Gear goals** select gear/support independently of **Energy priorities** and **Magic priorities**. Resource priorities fund useful caps in order, with only leftovers passed to later activities; zero gear-goal weights do not disable explicitly configured activities. Misc NGU ratios and zero exclusions still apply. Every fresh preset has reviewed fallback chains, and otherwise unused Energy/Magic start with NGUs without adding production goals. A notice at the top of the selected preset explains that case. AT ratios are editable for allocation-only AT as well as an AT gear goal. Reviewed execution requires `resourceLanePrioritiesVersion: 2`; inactive legacy proposals do not activate themselves. Untouched saved built-ins receive only the three priority fields through an exact-match injector migration, while custom edits, explicit priority choices and deleted rows are preserved. Balanced is no longer created in new libraries; saved definitions and plan references are retained.
 
 ### Global NGU Allocation
 
@@ -135,7 +147,7 @@ for deferral, safe replanning, and recovery behavior.
 
 Automatic **Augments + Wandoos** stages show **Actual activity time**, not forecast allocations: AT, Augments and Wandoos are always listed, with **Not visited** for recorded inactive zeros; NGU and Background appear only when visited or active. **Now: activity / duration** shows the active activity's accumulated time in the current run. The compact breakdown sits under the live summary, moving into the matching current stage's selected panel to avoid a duplicate. Unavailable, invalid or mismatched telemetry displays **Activity timing not recorded** in automatic stage panels, never invented zeros. The same breakdown is available in Advanced's planner runtime, including its last terminal run.
 
-These are exclusive phase wall-times **including phase setup**, not fixed-stage training credit. Parallel Wandoos/NGU work is attributed to the owning phase, not separately added. Entry preparation, replanning and cleanup are excluded, so the activity sum need not equal the total elapsed stage budget. Counters survive replans and freeze at terminal/cleanup. Scope is only the current or last injector run, held in memory: no persistence, offline credit, cross-session totals or cumulative loop/stage history. Stage attribution first passes the existing fresh heartbeat, ordered-stage and reported-revision gate, then requires scheduled ownership, matching plan name, zero-based stage index and exact stage-entry token plus a nonempty run ID. Old/manual runs and previous loop entries are never attached to a new entry; after the scheduler advances, inspect the last-run receipt in Advanced instead.
+These are exclusive phase wall-times **including phase setup**, not fixed-stage training credit. Parallel Wandoos/NGU work is attributed to the owning phase, not separately added. Entry preparation and cleanup are excluded, so the activity sum need not equal the total elapsed stage budget. Counters survive replans and freeze at terminal/cleanup. Scope is only the current or last injector run, held in memory: no persistence, offline credit, cross-session totals or cumulative loop/stage history. Stage attribution first passes the existing fresh heartbeat, ordered-stage and reported-revision gate, then requires scheduled ownership, matching plan name, zero-based stage index and exact stage-entry token plus a nonempty run ID. Old/manual runs and previous loop entries are never attached to a new entry; after the scheduler advances, inspect the last-run receipt in Advanced instead.
 
 The additive schema-1 combat-prep fields are `activityTimingScope: "run"`, `activityTimingSemantics: "exclusive-phase-wall-time-including-setup"` and `activityTimes`, always five `{ kind, elapsedSeconds, active }` records in canonical `AT`, `Augments`, `Wandoos`, `NGU`, `Background` order. Seconds must be finite and nonnegative; duplicate/missing/unknown/out-of-order rows, malformed booleans/numbers or multiple active rows invalidate the breakdown. Cleanup, terminal and stale telemetry never shows **Now** or an active timing badge. Rendering/polling issues no game commands.
 
@@ -225,6 +237,8 @@ Plan reads are normalized by the C# implementation when connected. Each read inc
 
 Unknown stored fields are preserved. Plan and global-library JSON cross native IPC as text and use lossless parsing so unknown large numbers are not rounded by JavaScript. Settings use key patches; unknown settings keys are retained but cannot be changed by an older injector. Runtime history and migration receipts remain backend-owned; historical plan preset arrays remain provenance, not a parallel editable library.
 
+Built-in plan shortcuts and deletion protection cover only `24hr` (**24h NGU**), `15m-NUMBER-increase` (**15m NUMBER**), `30m-NUMBER-increase` (**30m NUMBER**), and `1h-1m-NUMBER-increase` (**1h1m NUMBER**). Existing `default`, `infinite`, and `1h-3m-rebirth` files remain ordinary plans. Offline deletion of the paused selected plan switches to the existing `24hr` file; if it is missing or unreadable, deletion fails without changing selection or removing the plan. Rust does not create a generic plan under the daily plan's name. Optional plan `RebirthPrepStartSeconds` accepts nonnegative Int32 seconds; optional stage `UseWandoosWhenTimeMachineLocked` accepts booleans. Omission remains omission, and unknown surrounding fields are retained.
+
 Data stays in the existing folder:
 
 ```text
@@ -246,9 +260,13 @@ Claim receipts intentionally remain to prevent replay. Do not delete receipts or
 
 `src/lib/injector-errors.ts` is a read-only projection, independent of the selected editor plan. Additive `runtime.automationErrors` entries use `{context, message, details, firstSeenAt, lastSeenAt, count}`; the backend bounds/aggregates this history and owns its lifetime. The UI shows its entries until the backend removes them. Unknown entry fields remain available in Details, and absent older fields do not cause errors or settings writes.
 
+The backend retains up to the 16 most recently occurring distinct context/message pairs for the current injector session, within a 32 KiB serialized UTF-8 budget, with exact repeat counts, first/last UTC timestamps, and bounded diagnostic stacks. New injector startup clears this exception history; ordinary success does not imply an earlier exception was repaired. Full stacks remain in `logs/inject.log`. A failing runtime section publishes `available:false`, `status:"error"`, and its actual reason while healthy sections continue to publish. `resourceAllocation.blocked:true` distinguishes a real allocation refusal from an ordinary `Waiting` state.
+
 Active domain failures use the existing `runtime.execution.domains` map: `{[domain]: {state, reason?, waitingReason?, ...}}`. `Failed`, `Error`, `Blocked`, and `NeedsUser` are alarms (case-insensitive); `reason` takes precedence over the existing `waitingReason`. Other states, including `Observed`, `Waiting`, `Quiesced`, and `Uncontrolled`, do not establish a failure. The backend must publish an explicit fault state for active route/gear/native/resource failures rather than relying on `verified:false`, mismatched observations, or a free-form waiting reason. Existing `resourceAllocation.state` `Failed`/`NeedsUser`, active stage `presetStatus`, cleanup recovery, infeasible selected support, and `executionReview.reviewRequired` are also surfaced. Ordinary Iron Pill eligibility blockers are not execution faults.
 
 UI state-read failures remain separate from save/action failures and clear only after a successful state read. Command request failures retain one entry per command (up to 16) for this folder/controller session; only an explicitly successful repeat of that command clears the local entry. Backend failed-command receipts remain visible as historical failures even after other commands succeed. Refresh never retries a write or game action. The existing runtime-file-lock read retry remains unchanged.
+
+When published, `runtime.execution.lifecycle` must be `Running` for ordinary commands; the injector's `status`, `unload`, and `restoreSaveTest` exceptions still require a fresh supported bridge. Older bridges that omit lifecycle retain their existing capability/heartbeat checks. Automatic initial plan/library reads wait through startup or a connected non-running lifecycle without creating command failures. A failed initial plan read stays visible without heartbeat retries; explicit Refresh or a new folder/injector session permits another attempt. Persisted failed receipts are labelled **Earlier command failed**, with their original ID/timestamp in Details, not presented as evidence of a current execution fault. UI preflight cannot eliminate lifecycle changes before Unity executes a queued read; any backend admission change belongs to the injector, including review of the preset migration performed by normalized plan reads.
 
 ## Development Boundaries
 
@@ -266,17 +284,22 @@ WinForms is retained for fallback and older controls. This replaces the active c
 
 ## Verify
 
+From the repository root, use the public offline runner:
+
 ```powershell
-npm run check
-npm test
-npm run build
-cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-cargo test --manifest-path src-tauri/Cargo.toml --locked
-cargo check --manifest-path src-tauri/Cargo.toml --locked
-npm run test:ui
+.\verify.ps1 -Scope UI
+.\verify.ps1 -Scope Source
+# Requires NGU_IDLE_DIR, or an explicit -GameFolder:
+.\verify.ps1 -Scope Native -Suite PresetIntegration
 ```
 
-Browser smoke tests use mocked native IPC, not a live game. For their first run, install Chromium with `npx playwright install chromium`. Live Unity actions and WebView integration require a separate manual smoke test with a disposable save; automated checks do not alter the game.
+UI scope includes Svelte/TypeScript checks, frontend tests/build, Rust formatting/tests/check and desktop/mobile browser coverage. Source scope runs the source-linked C# checks; Native builds production and selected fixture dependencies in one incremental MSBuild invocation, then runs separate programs. These scopes are not one assembly or a combined release pass. The helpers under `checks/verification/` are internal, not public runner alternatives.
+
+Browser smoke tests use mocked native IPC, not a live game. For their first run, install Chromium with `npx playwright install chromium`. Live Unity actions and WebView integration require separate authorized acceptance with a compatible deployed backend; no actual live transaction is certified here. See [Testing And Save Safety](../docs/testing.md) for reports, fail-fast ownership, `-DeferReason`/`-HandoffNote`, game modes and native restore safety. Do not run direct development builds against an active verifier or assume unchanged endpoint hashes prove a coherent source snapshot.
+
+Fixtures using the shared reviewed preset catalog must advertise `runtime.resourceLanePrioritiesVersion: 2` for successful plan/stage/Quick actions; missing or older capability is a safety rejection, not a command failure in the mock. Error assertions should target the intended named alert and visible summary, not assume the whole page or alert contains only the raw message.
+
+Browser setup must await the loaded plan/library and idle controls, not just a visible card. In paused-clock tests, await the refreshed capability/state in the UI before advancing autosave timers; native IPC/import/hash readback still runs asynchronously outside that clock. Do not compensate with action retries, longer timeouts, or heartbeat retries of failed initial reads.
 
 The native WebView2 failure was confirmed in an isolated offline app using Windows `SendInput` and UI Automation: mouse pointer events arrived, but HTML5 `dragstart` never fired. The old mouse path waited for that event and therefore never started reordering. Unified pointer capture with native HTML dragging disabled fixes this dependency; native-app testing saved both the reordered plan and its updated repeat index. Chromium tests alone do not establish native WebView2 behavior.
 
@@ -286,15 +309,9 @@ The browser suites run desktop and mobile projects and cover the bar-first Dashb
 
 This documentation cleanup did not run builds, numeric/native fixtures, browser tests or live actions. Historical numeric/native reports remain in their check READMEs and [recorded verification](../docs/AUTOMATION_IMPROVEMENTS.md#completed-verification); they are not validation of current global Equip, cache or stage-inheritance behavior. Live evidence remains separately scoped in [Phase Support Live Verification](../docs/PHASE_SUPPORT_LIVE_VERIFICATION.md).
 
-Timing checks distinguish pure scheduling from actual application. `checks/ProtectedTiming` covers the source-linked engine; `ProtectedApplicationChecks` covers allocator receipts. Compiled `ProtectedTimingIntegrationChecks` exercises the full production coordinator/allocation/application-commit pipeline, including actual next-stage allocation for 10s/4s, 10s/2s, mixed fixed/flex/fixed/AT, and manual transitions. Coverage includes durable manual history/restore, stale-entry/revision and busy-state guards, checkpoint failure rollback with no deferred override, terminal skip without another fight, failure/lock/unmanaged credit freezes, stable entry actions, and the durable rebirth gate. Merely selecting the next row is not proof that it was applied. See [checks/README.md](../checks/README.md) for commands and offline boundaries; test totals are reported by each run rather than fixed here.
+Timing checks distinguish pure scheduling from actual application. `checks/ProtectedTiming` covers the source-linked engine; `ProtectedApplicationChecks` covers allocator receipts. Compiled `ProtectedTimingIntegrationChecks` exercises the full production coordinator/allocation/application-commit pipeline, including actual next-stage allocation for 10s/4s, 10s/2s, mixed fixed/flex/fixed/AT, and manual transitions. Coverage includes durable manual history/restore, stale-entry/revision and busy-state guards, checkpoint failure rollback with no deferred override, terminal skip without another fight, failure/lock/unmanaged credit freezes, stable entry actions, and the durable rebirth gate. Merely selecting the next row is not proof that it was applied. See [Testing And Save Safety](../docs/testing.md) for current commands and offline boundaries; test totals are reported by each run rather than fixed here.
 
-The root verification tool also runs the package-free C# bridge suite:
-
-```powershell
-dotnet run --project checks/ExternalUi/ExternalUiChecks.csproj
-```
-
-That suite links the real bridge, lifecycle, settings, and plan-persistence sources. Unity/game-action boundaries are stubbed; see `checks/ExternalUi/README.md` for the limits of those assertions.
+`verify.ps1 -Scope Source` includes the package-free C# bridge suite. It links the real bridge, lifecycle, settings and plan-persistence sources. Unity/game-action boundaries are stubbed; see `checks/ExternalUi/README.md` for the limits of those assertions.
 
 ## Blood Goal Estimates
 

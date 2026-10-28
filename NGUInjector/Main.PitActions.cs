@@ -8,6 +8,8 @@ namespace NGUInjector
 {
     internal partial class Main
     {
+        private object _pitAttemptModel, _spinAttemptModel;
+        private string _pitAttemptOpportunity, _spinAttemptOpportunity;
         private sealed class PitFeedAction : FiniteAction
         {
             internal MoneyPitManager.RewardPreview Reward;
@@ -42,25 +44,32 @@ namespace NGUInjector
 
         internal string RequestMoneyPit()
         {
+            if (CustomBossFightActive()) return "Money Pit waiting for the current native boss fight to stop.";
+            var pit = Character.pit;
             if (Character.pit.pitTime.totalseconds < Character.pitController.currentPitTime()) return "Money Pit skipped: pit is not ready.";
-            var reserve = Math.Max(200000d, Settings.MoneyPitThreshold);
-            if (Character.realGold <= reserve) return "Money Pit skipped: gold is below reserve.";
-            PurchaseActionDiggers(true, reserve);
-            if (Character.realGold <= reserve) return "Money Pit skipped: upgrades used available gold.";
+            var minimumFeedGold = Math.Max(200000d, Settings.MoneyPitThreshold);
+            if (Character.realGold <= minimumFeedGold) return "Money Pit skipped: gold is below the feed minimum.";
             var reward = MoneyPitManager.PreviewReward();
             var id = ActionIdentity("pit-feed", "money-pit", ActionNumber(Character.pit.tossCount));
+            if (ReferenceEquals(_pitAttemptModel, pit) && _pitAttemptOpportunity == id.Key)
+                return "Money Pit skipped: this native feed opportunity was already attempted.";
             var needsBlood = Character.realGold >= 1e50 && Settings.ManageMagic && Character.wishes.wishes[4].level > 0;
             var domains = ExecutionDomain.FiniteAction | ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route
                 | ExecutionDomain.Inventory | ExecutionDomain.NativeSettings | (needsBlood ? ExecutionDomain.Magic : 0);
+            if (ExecutionOwnsDomain(domains)) return "Money Pit waiting for current execution ownership.";
             ExecutionClaim claim = null;
+            var reconcile = false;
             try
             {
-                claim = BeginExecutionClaim(id.Owner, id.Acquisition, domains, () => true);
+                claim = BeginExecutionClaim(id.Owner, id.Acquisition, domains, () => !CustomBossFightActive());
+                if (Character.adventure.zone != -1 && !CaptureExecutionBaselineRouteRetirement(claim)())
+                    return "Money Pit waiting for the current adventure owner.";
                 var original = LoadoutManager.CaptureExactLoadout();
                 var gear = reward.LevelsEquipment ? MoneyPitLoadout.Select(original,
                     original.Concat(Character.inventory.GetConvertedInventory().Where(x => x.slot < Controller.curSpaces())),
                     reward.AllEquipment ? original.Select(x => x.slot).ToArray() : reward.RandomSlots) : original;
                 var support = needsBlood ? SelectActionSupport(CaptureSupportState().Selection.Beards, 10) : CaptureSupportState().Selection;
+                reconcile = true;
                 var setup = AcquireFiniteActionSetup(claim, gear, support, reward.LevelsEquipment, needsBlood);
                 if (!FiniteActionSetupVerified(claim, setup)) return "Money Pit waiting for verified selected setup.";
                 if (needsBlood)
@@ -77,18 +86,19 @@ namespace NGUInjector
                 var reviseMaterial = CapturePitMaterialRevision(gear, reward, action);
                 var grant = ResolveExecutionGrant(id.Owner, id.Acquisition, domains, () => ExecutionClaimCurrent(claim), claim);
                 var outcome = RunFiniteAction(action, grant);
+                if (outcome.Invoked) { _pitAttemptModel = pit; _pitAttemptOpportunity = id.Key; }
                 if (outcome.Committed && outcome.AuthorityCurrent && claim.Epoch.Matches())
                 {
                     reviseMaterial();
                     ObserveExecutionClaimProgress(setup, gear);
                 }
                 if (!outcome.Verified) return "Money Pit: " + (outcome.Reason ?? outcome.Disposition.ToString());
-                // Presentation is deliberately outside the irreversible leaf/result persistence.
+                // Presentation follows retirement of this native opportunity.
                 var message = "Money Pit Reward: " + Character.pitController.pitText.text;
                 LogPitSpin(message);
                 return message;
             }
-            finally { if (claim != null) EndExecutionClaim(claim); }
+            finally { if (claim != null) EndExecutionClaim(claim, reconcile); }
         }
 
         private Action CapturePitMaterialRevision(ih[] gear, MoneyPitManager.RewardPreview reward, FiniteAction action)
@@ -161,10 +171,14 @@ namespace NGUInjector
 
         internal string RequestDailySpin()
         {
+            var daily = Character.daily;
             var opportunity = ActionNumber((long)Math.Round(Character.totalPlaytime.totalseconds - Character.daily.spinTime.totalseconds));
             var id = ActionIdentity("daily-spin", "daily-spin", opportunity);
+            if (ReferenceEquals(_spinAttemptModel, daily) && _spinAttemptOpportunity == id.Key)
+                return "Daily Spin: this native opportunity was already attempted.";
             var action = new DailySpinAction { Identity = id, Footprint = ExecutionDomain.FiniteAction };
             var result = RunFiniteAction(action, ResolveExecutionGrant(id.Owner, id.Acquisition, action.Footprint, () => true));
+            if (result.Invoked) { _spinAttemptModel = daily; _spinAttemptOpportunity = id.Key; }
             if (!result.Verified) return "Daily Spin: " + (result.Reason ?? result.Disposition.ToString());
             var message = "Daily Spin Reward: " + Character.dailyController.outcomeText.text;
             LogPitSpin(message); return message;

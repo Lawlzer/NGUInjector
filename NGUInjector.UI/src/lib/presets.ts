@@ -23,13 +23,20 @@ export type ResourceLanePriorities = {
   MagicPriorities?: null;
 };
 export function resourceLanePrioritiesReady(snapshot: NguiState | null, preset: JsonObject | undefined): boolean {
-  return preset?.ResourcePrioritiesReviewed !== true || snapshot?.runtime.resourceLanePrioritiesVersion === 1;
+  return preset?.ResourcePrioritiesReviewed !== true || snapshot?.runtime.resourceLanePrioritiesVersion === 2;
 }
-export function resourceLaneOptions(row: JsonObject, energy: boolean): PriorityOption[] {
+export function resourceLaneOptions(_row: JsonObject, energy: boolean): PriorityOption[] {
   const indices = energy ? [0, 6, 7, 8, 9] : [1, 2, 6, 8];
-  const saved = row[energy ? 'EnergyPriorities' : 'MagicPriorities'];
-  return (energy ? energyLaneTokens : magicLaneTokens).flatMap((value, i) => (Array.isArray(row.Weights) && Number(row.Weights[indices[i]]) > 0) || (Array.isArray(saved) && saved.includes(value))
-    ? [{ value, label: objectiveLabels[indices[i]], group: 'Activities' }] : []);
+  return (energy ? energyLaneTokens : magicLaneTokens).map((value, i) => ({ value, label: objectiveLabels[indices[i]], group: 'Activities' }));
+}
+export function resourceAllocationNotice(row: JsonObject): string {
+  if (row.ResourcePrioritiesReviewed !== true) return '';
+  const pools = [
+    { name: 'Energy', priorities: row.EnergyPriorities, indices: [0, 6, 7, 8, 9] },
+    { name: 'Magic', priorities: row.MagicPriorities, indices: [1, 2, 6, 8] }
+  ].filter(pool => Array.isArray(pool.priorities) && pool.priorities[0] === 'NGU' && !pool.indices.some(i => Array.isArray(row.Weights) && Number(row.Weights[i]) > 0));
+  if (!pools.length) return '';
+  return `This preset does not optimize ${pools.map(pool => pool.name).join('/')} production. ${pools.map(pool => pool.name).join(' and ')} prioritize${pools.length === 1 ? 's' : ''} NGUs using your Misc settings.`;
 }
 export function proposedResourcePriorities(row: JsonObject, energy: boolean): string[] {
   const indices = energy ? [0, 6, 7, 8, 9] : [1, 2, 6, 8];
@@ -164,7 +171,7 @@ export function validatePreset(row: JsonObject): void {
   for (const [key, tokens] of [['EnergyPriorities', energyLaneTokens], ['MagicPriorities', magicLaneTokens]] as const) {
     const values = row[key];
     if (values === null && !row.ResourcePrioritiesReviewed) continue;
-    if (!Array.isArray(values) || values.length > tokens.length || new Set(values).size !== values.length || values.some(value => typeof value !== 'string' || !(tokens as readonly string[]).includes(value))) throw new Error(`${key} must contain unique uppercase activity tokens${row.ResourcePrioritiesReviewed ? ' (reviewed lanes require both arrays)' : ' or null'}.`);
+    if (!Array.isArray(values) || values.length > tokens.length || new Set(values).size !== values.length || values.some(value => typeof value !== 'string' || !(tokens as readonly string[]).includes(value))) throw new Error(`${key} must contain unique uppercase activity tokens${row.ResourcePrioritiesReviewed ? ' (reviewed priorities require both arrays)' : ' or null'}.`);
   }
   if (row.AdvancedTrainingWeights !== undefined) {
     const weights = row.AdvancedTrainingWeights;

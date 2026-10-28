@@ -10,12 +10,14 @@ namespace NGUInjector.CustomPlans
 {
     internal class CustomPlanStore
     {
-        private const string DefaultPlanName = "default";
         private const string TwentyFourHourPlanName = "24hr";
+        private const string FifteenMinuteNumberPlanName = "15m-NUMBER-increase";
+        private const string ThirtyMinuteNumberPlanName = "30m-NUMBER-increase";
+        private const string OneHourOneMinuteNumberPlanName = "1h-1m-NUMBER-increase";
         private const string OneHourThreeMinuteRebirthPlanName = "1h-3m-rebirth";
         private const string InfinitePlanName = "infinite";
         private const int MaxRebirthHistoryEntries = 20;
-        internal const int CurrentPlanVersion = 17;
+        internal const int CurrentPlanVersion = 18;
         internal const string ExternalUiRevisionField = "__externalUiRevision";
         private static readonly Encoding PlanEncoding = new UTF8Encoding(false, true);
         private readonly string _plansDir;
@@ -27,6 +29,7 @@ namespace NGUInjector.CustomPlans
             Directory.CreateDirectory(_plansDir);
             PresetLibrary = new PresetLibraryStore(Path.GetDirectoryName(Path.GetFullPath(_plansDir)), _plansDir);
             EnsureBuiltInPlans();
+            RetireObsoleteBuiltIns();
         }
 
         internal string[] ListPlanNames()
@@ -47,32 +50,24 @@ namespace NGUInjector.CustomPlans
         internal string EnsureDefaultPlan()
         {
             EnsureBuiltInPlans();
-            return DefaultPlanName;
+            return TwentyFourHourPlanName;
         }
 
         private void EnsureBuiltInPlans()
         {
-            var path = GetPlanPath(DefaultPlanName);
-            if (!File.Exists(path))
-            {
-                Save(DefaultPlanName, new CustomPlan {Name = DefaultPlanName});
-            }
-
             EnsurePlan(TwentyFourHourPlanName, CustomPlan.TwentyFourHourPlan());
-            EnsurePlan(OneHourThreeMinuteRebirthPlanName, CustomPlan.OneHourThreeMinuteRebirthPlan());
-            EnsurePlan(InfinitePlanName, CustomPlan.InfinitePlan());
+            EnsurePlan(FifteenMinuteNumberPlanName, CustomPlan.NumberIncreasePlan(FifteenMinuteNumberPlanName, 900, 900));
+            EnsurePlan(ThirtyMinuteNumberPlanName, CustomPlan.NumberIncreasePlan(ThirtyMinuteNumberPlanName, 1800, 1800));
+            EnsurePlan(OneHourOneMinuteNumberPlanName, CustomPlan.NumberIncreasePlan(OneHourOneMinuteNumberPlanName, 3660, 3600));
         }
 
         private void EnsurePlan(string planName, CustomPlan plan)
         {
             if (File.Exists(GetPlanPath(planName)))
-            {
-                RepairBuiltInPlanIfNeeded(planName);
                 return;
-            }
 
             plan.Name = planName;
-            if (planName == TwentyFourHourPlanName || planName == InfinitePlanName)
+            if (planName == TwentyFourHourPlanName)
             {
                 var seconds = new[] {3600, 1800, 1800, 10800};
                 for (var i = 0; i < seconds.Length; i++)
@@ -84,6 +79,60 @@ namespace NGUInjector.CustomPlans
                 plan.Stages[4].Percent = 1;
             }
             Save(planName, plan);
+        }
+
+        private void RetireObsoleteBuiltIns()
+        {
+            lock (PresetLibraryStore.SyncRoot)
+            {
+                var runtimeDir = Path.GetDirectoryName(Path.GetFullPath(_plansDir));
+                var backupDir = Path.Combine(runtimeDir, "retired-custom-plans-number-v1");
+                var completed = Path.Combine(backupDir, "completed.json");
+                if (File.Exists(completed)) return;
+                Directory.CreateDirectory(backupDir);
+                var obsolete = new[] {"default", InfinitePlanName, OneHourThreeMinuteRebirthPlanName};
+                // A moved archive is a per-file receipt, even if initialization stopped before completion.
+                var paths = obsolete.Select(GetPlanPath).Where(path => File.Exists(path)
+                    && !File.Exists(Path.Combine(backupDir, Path.GetFileName(path)) + ".retired")).ToList();
+                var settingsPath = Path.Combine(runtimeDir, "settings.json");
+                var settings = File.Exists(settingsPath) ? JsonFiles.ParseObject(File.ReadAllText(settingsPath)) : null;
+                var selected = ReadString(settings, "_customPlanFile", string.Empty);
+                var replaceSelection = obsolete.Contains(selected, StringComparer.OrdinalIgnoreCase);
+                if (replaceSelection) paths.Add(settingsPath);
+                foreach (var path in paths)
+                {
+                    var backup = Path.Combine(backupDir, Path.GetFileName(path));
+                    if (!File.Exists(backup)) File.Copy(path, backup);
+                    if (!File.ReadAllBytes(path).SequenceEqual(File.ReadAllBytes(backup)))
+                        throw new IOException("Custom plan retirement backup differs from '" + path + "'; originals were retained.");
+                }
+                if (replaceSelection)
+                {
+                    // Persist fallback before moving any legacy selection; settings CAS failure leaves plans intact.
+                    if (Main.Settings != null && string.Equals(Main.Settings.CustomPlanFile, selected, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var patch = new JSONObject();
+                        patch["_customPlanFile"] = TwentyFourHourPlanName;
+                        Main.Settings.ApplyPatch(patch);
+                    }
+                    else
+                    {
+                        settings["_customPlanFile"] = TwentyFourHourPlanName;
+                        JsonFiles.WriteAtomic(settingsPath, settings.ToString(4));
+                    }
+                    paths.Remove(settingsPath);
+                }
+                foreach (var path in paths)
+                {
+                    var backup = Path.Combine(backupDir, Path.GetFileName(path));
+                    var retired = backup + ".retired";
+                    // Move the current pathname without overwrite; never delete a possibly replaced pathname.
+                    File.Move(path, retired);
+                    if (!File.ReadAllBytes(retired).SequenceEqual(File.ReadAllBytes(backup)))
+                        throw new IOException("Custom plan changed during retirement; both versions were preserved in '" + backupDir + "'.");
+                }
+                JsonFiles.WriteAtomic(completed, "{\"Version\":1}");
+            }
         }
 
         internal CustomPlan Load(string planName)
@@ -121,6 +170,8 @@ namespace NGUInjector.CustomPlans
         internal string DeletePlan(string planName)
         {
             planName = NormalizePlanName(planName);
+            if (BuiltInTemplate(planName) != null)
+                throw new InvalidOperationException("Built-in plans cannot be deleted; copy one to make a removable plan.");
             var plans = ListPlanNames();
             if (plans.Length <= 1)
                 return plans[0];
@@ -130,13 +181,13 @@ namespace NGUInjector.CustomPlans
                 File.Delete(path);
                 Main.reference?.ForgetStageProgress(planName);
             }
-            return ListPlanNames().FirstOrDefault() ?? EnsureDefaultPlan();
+            return EnsureDefaultPlan();
         }
 
         internal string DeleteExternalPlan(string planName)
         {
             ValidateExternalPlanName(planName);
-            if (string.Equals(planName, DefaultPlanName, StringComparison.OrdinalIgnoreCase) || BuiltInTemplate(planName) != null)
+            if (BuiltInTemplate(planName) != null)
                 throw new InvalidOperationException("Built-in plans cannot be deleted; copy one to make a removable plan.");
             var selected = Main.Settings != null && string.Equals(Main.Settings.CustomPlanFile, planName, StringComparison.OrdinalIgnoreCase);
             if (selected && Main.Settings.UseCustomRebirthPlan)
@@ -176,12 +227,28 @@ namespace NGUInjector.CustomPlans
                 var serialized = SerializePlan(plan);
                 var previous = File.Exists(path) ? File.ReadAllText(path) : null;
                 var changed = previous != serialized;
+                var scheduleOnly = false;
+                if (changed && previous != null)
+                {
+                    try
+                    {
+                        var before = JsonFiles.ParseObject(SerializePlan(ReadForPresetMigration(previous.TrimStart('\uFEFF'), planName)));
+                        var after = JsonFiles.ParseObject(serialized);
+                        foreach (var root in new[] { before, after })
+                            foreach (var stage in root["Stages"].AsArray.Children) stage.Remove("FightSchedule");
+                        scheduleOnly = before.ToString() == after.ToString();
+                    }
+                    catch (FormatException) { /* Replacing invalid input requires full invalidation. */ }
+                }
                 JsonFiles.WriteAtomic(path, serialized);
                 plan.RuntimeRevision = JsonFiles.ComputeRevision(PlanEncoding.GetBytes(serialized));
                 if (previous == null)
                     Main.reference?.ForgetStageProgress(planName);
                 if (changed && string.Equals(Main.Settings?.CustomPlanFile, planName, StringComparison.OrdinalIgnoreCase))
-                    Main.reference?.InvalidateCustomRuntimePlanCache();
+                {
+                    if (scheduleOnly) Main.reference?.InvalidateCustomFightSchedulePlanCache();
+                    else Main.reference?.InvalidateCustomRuntimePlanCache();
+                }
             }
         }
 
@@ -265,13 +332,13 @@ namespace NGUInjector.CustomPlans
         {
             if (string.IsNullOrWhiteSpace(planName))
             {
-                return DefaultPlanName;
+                return TwentyFourHourPlanName;
             }
 
             var invalid = Path.GetInvalidFileNameChars();
             var chars = planName.Trim().Select(c => invalid.Contains(c) ? '_' : c).ToArray();
             var safe = new string(chars).Trim(' ', '.');
-            return string.IsNullOrWhiteSpace(safe) ? DefaultPlanName : safe;
+            return string.IsNullOrWhiteSpace(safe) ? TwentyFourHourPlanName : safe;
         }
 
         private string GetPlanPath(string planName)
@@ -298,33 +365,10 @@ namespace NGUInjector.CustomPlans
             return DeserializePlan(SerializePlan(source));
         }
 
-        private void RepairBuiltInPlanIfNeeded(string planName)
-        {
-            var template = BuiltInTemplate(planName);
-            if (template == null)
-                return;
-
-            var path = GetPlanPath(planName);
-            var source = JsonFiles.ParseObject(File.ReadAllText(path));
-            if (!string.IsNullOrEmpty(ReadString(source, "ActivePresetId", string.Empty))
-                || GetExistingNode(source, "Stages")?.Children.Any(stage => !string.IsNullOrEmpty(ReadString(stage, "PresetId", string.Empty))) == true)
-                return;
-            if (!PlanMissingSerializedArray(path, "Stages") && !BuiltInGoalPresetNeedsRepair(path, planName, template))
-                return;
-
-            var plan = Load(planName);
-            if (BuiltInGoalPresetNeedsRepair(path, planName, template))
-            {
-                plan.GoalPresets = template.GoalPresets;
-                plan.ActiveGoalPresetIndex = template.ActiveGoalPresetIndex;
-                plan.GearGoal = template.GearGoal;
-            }
-
-            Save(planName, plan);
-        }
-
         private static string SerializePlan(CustomPlan plan)
         {
+            ValidatePlanVersion(plan.Version);
+            plan.ValidateFightSchedules();
             var root = JsonFiles.ParseObject(plan.SourceJson?.ToString() ?? "{}");
             root.Remove(ExternalUiRevisionField);
             root.Remove("NguGoal");
@@ -379,6 +423,9 @@ namespace NGUInjector.CustomPlans
                 preset.Remove("MagicNguWeights");
             }
             root["PrepRequireMaxedFruit"] = plan.PrepRequireMaxedFruit;
+            if (plan.RebirthPrepStartSeconds < 0)
+                throw new FormatException("RebirthPrepStartSeconds must be a nonnegative whole Int32 number.");
+            root["RebirthPrepStartSeconds"] = plan.RebirthPrepStartSeconds;
             root["RebirthHistory"] = SerializeHistory(plan.RebirthHistory);
             return root.ToString(4);
         }
@@ -396,7 +443,9 @@ namespace NGUInjector.CustomPlans
             plan.RebirthHistory = null;
 
             // Versionless documents predate the weights schema, unlike newly constructed models.
-            plan.Version = ReadInt(root, "Version", 15);
+            var version = GetExistingNode(root, "Version");
+            plan.Version = ReferenceEquals(version, null) ? 15 : ReadNonnegativeInt(version, "Version");
+            ValidatePlanVersion(plan.Version);
             plan.Name = ReadString(root, "Name", plan.Name);
             plan.ActivePresetId = ReadPresetReference(root, "ActivePresetId");
             var issues = GetExistingNode(root, "PresetMigrationIssues");
@@ -407,6 +456,11 @@ namespace NGUInjector.CustomPlans
                 plan.PresetMigrationIssues = issues.Children.Select(issue => issue.Value).ToArray();
             }
             var builtIn = BuiltInTemplate(plan.Name);
+            // These retired names still identify shipped documents with omitted arrays/defaults.
+            if (builtIn == null && string.Equals(plan.Name, InfinitePlanName, StringComparison.OrdinalIgnoreCase))
+                builtIn = CustomPlan.InfinitePlan();
+            if (builtIn == null && string.Equals(plan.Name, OneHourThreeMinuteRebirthPlanName, StringComparison.OrdinalIgnoreCase))
+                builtIn = CustomPlan.OneHourThreeMinuteRebirthPlan();
             plan.AutoRebirthEnabled = ReadBool(root, "AutoRebirthEnabled", builtIn?.AutoRebirthEnabled ?? plan.AutoRebirthEnabled);
             var autoIronPill = GetExistingNode(root, "AutoIronPillEnabled");
             if (!ReferenceEquals(autoIronPill, null) && !autoIronPill.IsBoolean)
@@ -448,6 +502,8 @@ namespace NGUInjector.CustomPlans
             plan.FightScoreMode = ReadInt(root, "FightScoreMode", plan.FightScoreMode);
             plan.ActiveGoalPresetIndex = ReadInt(root, "ActiveGoalPresetIndex", plan.ActiveGoalPresetIndex);
             plan.PrepRequireMaxedFruit = ReadBool(root, "PrepRequireMaxedFruit", plan.PrepRequireMaxedFruit);
+            var prepStart = GetExistingNode(root, "RebirthPrepStartSeconds");
+            plan.RebirthPrepStartSeconds = ReferenceEquals(prepStart, null) ? 0 : ReadNonnegativeInt(prepStart, "RebirthPrepStartSeconds");
 
             var stagesNode = GetExistingNode(root, "Stages");
             if (stagesNode != null && stagesNode.IsArray && stagesNode.Count > 0)
@@ -486,6 +542,7 @@ namespace NGUInjector.CustomPlans
                 plan.LoadoutPresets = loadoutPresetsNode.Children.Select(CustomLoadoutPreset.Parse).ToArray();
             }
             ValidateLoadoutPresets(plan.LoadoutPresets);
+            plan.ValidateFightSchedules();
             return plan;
         }
 
@@ -529,7 +586,7 @@ namespace NGUInjector.CustomPlans
 
         private static int ReadNonnegativeInt(JSONNode entry, string key)
         {
-            if (!entry.IsNumber)
+            if (ReferenceEquals(entry, null) || !entry.IsNumber)
                 throw new FormatException(key + " must be nonnegative whole Int32 numbers.");
 
             // Check the exact JSON token, not a rounded double (including tiny fractions).
@@ -601,13 +658,26 @@ namespace NGUInjector.CustomPlans
                 item["DurationUnit"] = stage.DurationUnit;
                 item["EnergyFocus"] = stage.EnergyFocus;
                 item["MagicFocus"] = stage.MagicFocus;
+                item["UseWandoosWhenTimeMachineLocked"] = stage.UseWandoosWhenTimeMachineLocked;
                 item["ExecutionMode"] = stage.ExecutionMode;
                 item["EnergyPriorities"] = SerializePriorities(stage.EnergyPriorities);
                 item["MagicPriorities"] = SerializePriorities(stage.MagicPriorities);
                 item["BlackBarLookaheadSeconds"] = stage.BlackBarLookaheadSeconds;
                 item["GearGoal"] = stage.GearGoal;
                 item["AdventureDynamicWeight"] = stage.AdventureDynamicWeight;
-                item["FightOnEntry"] = stage.FightOnEntry;
+                item.Remove("FightOnEntry");
+                item["FightSchedule"] = JSONNull.CreateOrGet();
+                if (stage.FightSchedule != null)
+                {
+                    var schedule = stage.FightSchedule;
+                    schedule.Validate();
+                    var fight = JsonFiles.ParseObject(schedule.SourceJson?.ToString() ?? "{}");
+                    fight["Id"] = schedule.Id;
+                    fight["Anchor"] = schedule.Anchor;
+                    fight["DelaySeconds"] = schedule.DelaySeconds;
+                    fight["IntervalSeconds"] = schedule.IntervalSeconds;
+                    item["FightSchedule"] = fight;
+                }
                 item["CompletionMode"] = stage.CompletionMode;
                 item["TargetAdvancedTrainingPower"] = stage.TargetAdvancedTrainingPower.ToString(CultureInfo.InvariantCulture);
                 item["TargetAdvancedTrainingToughness"] = stage.TargetAdvancedTrainingToughness.ToString(CultureInfo.InvariantCulture);
@@ -617,7 +687,7 @@ namespace NGUInjector.CustomPlans
             return array;
         }
 
-        private static CustomPlanStage DeserializeStage(JSONNode node)
+        private static CustomPlanStage DeserializeStage(JSONNode node, int index)
         {
             if (node == null || !node.IsObject)
                 return null;
@@ -637,6 +707,10 @@ namespace NGUInjector.CustomPlans
             stage.DurationUnit = ReferenceEquals(unit, null) ? "%" : unit.Value;
             stage.EnergyFocus = ReadInt(node, "EnergyFocus", stage.EnergyFocus);
             stage.MagicFocus = ReadInt(node, "MagicFocus", stage.MagicFocus);
+            var lockedTimeMachineFallback = GetExistingNode(node, "UseWandoosWhenTimeMachineLocked");
+            if (!ReferenceEquals(lockedTimeMachineFallback, null) && !lockedTimeMachineFallback.IsBoolean)
+                throw new FormatException("Stage UseWandoosWhenTimeMachineLocked must be a boolean.");
+            stage.UseWandoosWhenTimeMachineLocked = !ReferenceEquals(lockedTimeMachineFallback, null) && lockedTimeMachineFallback.AsBool;
             var execution = GetExistingNode(node, "ExecutionMode");
             if (!ReferenceEquals(execution, null) && (!execution.IsNumber || execution.AsDouble != 0 && execution.AsDouble != 1))
                 throw new FormatException("Stage ExecutionMode must be 0 (Standard) or 1 (AutoAugmentsWandoos).");
@@ -650,10 +724,34 @@ namespace NGUInjector.CustomPlans
                 throw new FormatException("Stage AdventureDynamicWeight must be a finite number between 0 and 1000000.");
             stage.AdventureDynamicWeight = ReferenceEquals(adventureDynamicWeight, null) ? 0d : adventureDynamicWeight.AsDouble;
             ValidateAdventureDynamicWeight(stage);
-            var fightOnEntry = GetExistingNode(node, "FightOnEntry");
-            if (!ReferenceEquals(fightOnEntry, null) && !fightOnEntry.IsBoolean)
+            var legacy = GetExistingNode(node, "FightOnEntry");
+            if (!ReferenceEquals(legacy, null) && !legacy.IsBoolean)
                 throw new FormatException("Stage FightOnEntry must be a boolean.");
-            stage.FightOnEntry = !ReferenceEquals(fightOnEntry, null) && fightOnEntry.AsBool;
+            var fight = GetExistingNode(node, "FightSchedule");
+            if (!ReferenceEquals(fight, null))
+            {
+                if (!fight.IsNull)
+                {
+                    if (!fight.IsObject) throw new FormatException("Stage FightSchedule must be an object or null.");
+                    var id = GetExistingNode(fight, "Id");
+                    if (ReferenceEquals(id, null) || !id.IsString)
+                        throw new FormatException("FightSchedule.Id must be a string.");
+                    stage.FightSchedule = new CustomFightSchedule
+                    {
+                        SourceJson = fight.AsObject,
+                        Id = id.Value,
+                        Anchor = ReadNonnegativeInt(GetExistingNode(fight, "Anchor"), "FightSchedule.Anchor"),
+                        DelaySeconds = ReadNonnegativeInt(GetExistingNode(fight, "DelaySeconds"), "FightSchedule.DelaySeconds"),
+                        IntervalSeconds = ReadNonnegativeInt(GetExistingNode(fight, "IntervalSeconds"), "FightSchedule.IntervalSeconds")
+                    };
+                    stage.FightSchedule.Validate();
+                }
+            }
+            else
+            {
+                if (!ReferenceEquals(legacy, null) && legacy.AsBool)
+                    stage.FightSchedule = new CustomFightSchedule {Id = "legacy-entry-v1-" + index.ToString(CultureInfo.InvariantCulture)};
+            }
             stage.CompletionMode = ReadInt(node, "CompletionMode", stage.CompletionMode);
             stage.TargetAdvancedTrainingPower = ReadLong(node, "TargetAdvancedTrainingPower", stage.TargetAdvancedTrainingPower);
             stage.TargetAdvancedTrainingToughness = ReadLong(node, "TargetAdvancedTrainingToughness", stage.TargetAdvancedTrainingToughness);
@@ -756,43 +854,6 @@ namespace NGUInjector.CustomPlans
             };
         }
 
-        private static bool PlanMissingSerializedArray(string path, string fieldName)
-        {
-            try
-            {
-                var root = JSON.Parse(File.ReadAllText(path));
-                var node = GetExistingNode(root, fieldName);
-                return node == null || !node.IsArray || node.Count == 0;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static bool BuiltInGoalPresetNeedsRepair(string path, string planName, CustomPlan template)
-        {
-            if (!string.Equals(planName, OneHourThreeMinuteRebirthPlanName, StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            try
-            {
-                var root = JSON.Parse(File.ReadAllText(path));
-                if (!string.IsNullOrEmpty(ReadString(root, "ActivePresetId", string.Empty)))
-                    return false;
-                var presets = GetExistingNode(root, "GoalPresets");
-                if (presets == null || !presets.IsArray || presets.Count == 0)
-                    return true;
-
-                // A different saved goal is a user choice, not evidence of a broken built-in.
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
         private static JSONNode GetExistingNode(JSONNode root, string key)
         {
             if (root == null || !root.IsObject)
@@ -876,17 +937,28 @@ namespace NGUInjector.CustomPlans
             if (string.Equals(planName, TwentyFourHourPlanName, StringComparison.OrdinalIgnoreCase))
                 return CustomPlan.TwentyFourHourPlan();
 
-            if (string.Equals(planName, OneHourThreeMinuteRebirthPlanName, StringComparison.OrdinalIgnoreCase))
-                return CustomPlan.OneHourThreeMinuteRebirthPlan();
-
-            if (string.Equals(planName, InfinitePlanName, StringComparison.OrdinalIgnoreCase))
-                return CustomPlan.InfinitePlan();
+            if (string.Equals(planName, FifteenMinuteNumberPlanName, StringComparison.OrdinalIgnoreCase))
+                return CustomPlan.NumberIncreasePlan(FifteenMinuteNumberPlanName, 900, 900);
+            if (string.Equals(planName, ThirtyMinuteNumberPlanName, StringComparison.OrdinalIgnoreCase))
+                return CustomPlan.NumberIncreasePlan(ThirtyMinuteNumberPlanName, 1800, 1800);
+            if (string.Equals(planName, OneHourOneMinuteNumberPlanName, StringComparison.OrdinalIgnoreCase))
+                return CustomPlan.NumberIncreasePlan(OneHourOneMinuteNumberPlanName, 3660, 3600);
 
             return null;
         }
 
+        private static void ValidatePlanVersion(int version)
+        {
+            if (version > CurrentPlanVersion)
+                throw new FormatException("Plan version " + version + " is newer than supported version " + CurrentPlanVersion + ".");
+        }
+
         private static void NormalizePlan(CustomPlan plan, string fallbackName)
         {
+            ValidatePlanVersion(plan.Version);
+            plan.ValidateFightSchedules();
+            if (plan.RebirthPrepStartSeconds < 0)
+                throw new FormatException("RebirthPrepStartSeconds must be a nonnegative whole Int32 number.");
             ValidateBloodOverrides(plan);
             ValidateLoadoutPresets(plan.LoadoutPresets);
             if (plan.GoalPresets == null || plan.GoalPresets.Length == 0)

@@ -95,7 +95,7 @@ namespace NGUInjector
                 foreach (var change in new[] {"character", "rebirth", "ritual"})
                     ChangedEpochOrRitualIsNotRecalled(change);
                 ResetRetainsUnmanagedCleanup();
-                RejectedReleaseRetainsBorrowEvidence();
+                GearClaimDoesNotBlockMagicRelease();
                 foreach (var manualReuse in new[] {false, true})
                     ThrowingCleanupIsIdempotent(manualReuse);
                 ThrowingAllocationRetainsCleanupReceipt();
@@ -293,19 +293,20 @@ namespace NGUInjector
             MagicConserved(c, "post-commit rendering failure and retry conserve the complete magic pool");
         }
 
-        private static void RejectedReleaseRetainsBorrowEvidence()
+        private static void GearClaimDoesNotBlockMagicRelease()
         {
             var c = StartEmptyDemand(out var stage); Main.IronPillBloodReserved = false;
-            LoadoutManager.CurrentLock = LockType.Gold;
+            var claim = Main.reference.BeginExecutionClaim("gold-check", "pill-release", Main.ExecutionDomain.Gear, () => true);
             try
             {
                 Apply(stage);
-                Equal(MutationDisposition.AppliedVerified, CustomStageAllocator.LastStageResourceOutcome.Disposition, "a gear-only lock cannot block an independently authorized Magic return");
+                Equal(MutationDisposition.AppliedVerified, CustomStageAllocator.LastStageResourceOutcome.Disposition, "a gear-only claim cannot block an independently authorized Magic return");
                 Equal(0L, c.bloodMagic.ritual[7].magic, "exact authorized release zeroes only the borrowed target");
                 Equal(1000L, c.magic.idleMagic, "exact release credits the performed return once");
                 Equal(false, CustomStageAllocator.LastStageApplicationSucceeded, "independent resource service does not fabricate full coupled-setup credit");
+                Equal(true, Main.reference.ExecutionOwnsDomain(Main.ExecutionDomain.Gear), "Magic release does not retire another domain's owner");
             }
-            finally { LoadoutManager.CurrentLock = LockType.None; }
+            finally { Main.reference.EndExecutionClaim(claim, reconcile: false); }
             Apply(stage);
             Equal(0L, c.bloodMagic.ritual[7].magic, "readmitted release finishes the exact still-owned difference");
             Equal(1000L, c.magic.idleMagic, "readmitted release returns the borrow exactly once");

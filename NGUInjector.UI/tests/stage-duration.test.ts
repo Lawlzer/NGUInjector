@@ -5,7 +5,7 @@ import { changeStageTiming, editDurationText, editFlexWeight, fixedSeconds, form
 
 const rows = (value: JsonObject) => value.Stages as JsonObject[];
 const plan = (): JsonObject => ({
-  Version: 17, StageDurationSeconds: 1200, StageLoopStartIndex: 1,
+  Version: 18, StageDurationSeconds: 1200, StageLoopStartIndex: 1,
   Stages: [{ CompletionMode: 1, DurationSeconds: 999 }, { DurationSeconds: 100 }, { Percent: 35 }, { Percent: 50 }, { Percent: 15 }, { DurationSeconds: 100 }]
 });
 

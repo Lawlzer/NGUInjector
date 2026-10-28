@@ -29,7 +29,8 @@ namespace NGUInjector
             "applySettingsPatch", "savePlan", "focusGoal", "stopFocus", "optimizeGear", "previewGear",
             "createPlan", "deletePlan", "readPlan", "previewAugments", "allocateAugments",
             "manualFightPrep", "manualRebirth", "safeProbe", "probeCommands", "precacheLoadouts",
-            "resetRebirthPrep", "reloadSettings", "quickSave", "captureLocalSave", "scanSaves", "loadLongestSave", "status", "unload", "setPlanStage",
+            "resetRebirthPrep", "reloadSettings", "quickSave", "captureLocalSave", "scanSaves", "loadLongestSave",
+            "startSaveTest", "loadSaveTestFixture", "setSaveTestStage", "restoreSaveTest", "status", "unload", "setPlanStage",
             "startMaxItopodPush", "cancelMaxItopodPush", "previewCombatPrep", "startCombatPrep", "cancelCombatPrep",
             "previewLoadoutPreset", "applyLoadoutPreset", "readPresetLibrary", "savePresetLibrary",
             "previewGlobalPreset", "applyGlobalPreset", "equipGlobalPreset", "previewExecutionRebind", "applyExecutionRebind", "previewExecutionRestart"
@@ -39,30 +40,6 @@ namespace NGUInjector
         private static JSONObject _externalUiLastRuntimeSnapshot;
         private string _currentExecutionCommandId;
         internal string CurrentExecutionCommandId => _currentExecutionCommandId;
-
-        private void PersistExecutionCommandAcceptance(string id, string command, bool completed)
-        {
-            var saved = new JSONObject(); saved["version"] = 1; saved["commandId"] = id;
-            saved["command"] = command; saved["state"] = completed ? "accepted" : "admitted";
-            saved["plan"] = Settings?.CustomPlanFile ?? ""; saved["entry"] = ExecutionPersistenceEntry ?? "";
-            saved["acceptedAt"] = DateTime.UtcNow.ToString("o");
-            if (completed)
-            {
-                var selections = new JSONArray();
-                foreach (var path in Directory.EnumerateFiles(_dir, "execution-*-selection.json"))
-                {
-                    var selection = JsonFiles.ParseObject(File.ReadAllText(path));
-                    if (!selection["active"].IsBoolean || selection["active"].AsBool) selections.Add(selection);
-                }
-                saved["selectedCommitments"] = selections;
-                var process = ExportAcceptedExecutionProcess();
-                if (process["id"].IsNull || string.IsNullOrEmpty(process["id"].Value)) process["id"] = id;
-                saved["process"] = process;
-            }
-            // A failed acceptance publication is NOT permission to replay the claimed
-            // command. Preview tokens remain only in the original audited request.
-            JsonFiles.WriteAtomic(Path.Combine(_externalUiClaimsDir, id + ".accepted.json"), saved.ToString(2));
-        }
 
         internal static bool ExternalUiEnabled { get; private set; }
 
@@ -189,21 +166,19 @@ namespace NGUInjector
                 var expiresAt = ReadExternalUiTimestamp(root["expiresAt"], deadline);
                 if (createdAt > now.AddSeconds(30) || now >= deadline || now >= expiresAt)
                     throw new InvalidOperationException("Command expired or has a future creation timestamp.");
+                if (!SaveTestCommandCreatedAtAllowed(command, createdAt) || !SaveTestCommandAllowed(command, root["args"]))
+                    throw new InvalidOperationException("Save testing owns this session; stale or ordinary mutations were rejected without replay.");
                 var args = root["args"];
                 if (args != null && !args.IsNull && !args.IsObject)
                     throw new FormatException("Command args must be an object or null.");
 
                 JSONNode data;
-                var asynchronous = new[] { "focusGoal", "manualFightPrep", "manualRebirth", "startCombatPrep", "startMaxItopodPush",
-                    "equipGlobalPreset", "applyGlobalPreset", "applyLoadoutPreset" }.Contains(command);
-                if (asynchronous) PersistExecutionCommandAcceptance(id, command, false);
                 string message;
                 _currentExecutionCommandId = id;
                 try { message = ExecuteExternalUiCommand(command, args, out data); }
                 finally { _currentExecutionCommandId = null; }
                 // Existing action handlers sometimes return LogError instead of throwing.
                 var success = message == null || !message.StartsWith("ERROR in ", StringComparison.Ordinal);
-                if (asynchronous && success) PersistExecutionCommandAcceptance(id, command, true);
                 data = AttachExternalUiRuntime(data);
                 WriteExternalUiCommandResult(id, command, success, message, data);
             }
@@ -217,9 +192,12 @@ namespace NGUInjector
         private string ExecuteExternalUiCommand(string command, JSONNode args, out JSONNode data)
         {
             data = null;
-            if (!_started || _unloaded || _injectorLease == null || !ReferenceEquals(reference, this))
+            var saveTestRecovery = IsSaveTestRecoveryAdapter(command);
+            if ((!_started || _unloaded || _injectorLease == null || !ReferenceEquals(reference, this)) && !saveTestRecovery)
                 throw new InvalidOperationException("Injector is not ready: startup is incomplete, failed, or unloaded.");
-            if (_executionLifecycle != ExecutionLifecycle.Running && command != "status" && command != "unload")
+            if (!SaveTestCommandAllowed(command, args))
+                throw new InvalidOperationException("Restore the protected original before ordinary injector mutations.");
+            if (_executionLifecycle != ExecutionLifecycle.Running && command != "status" && command != "unload" && command != "restoreSaveTest")
                 throw new InvalidOperationException("Execution is quiesced; ordinary commands are not admitted.");
             if (command == "focusGoal" || command == "stopFocus" || command == "optimizeGear" || command == "allocateAugments"
                 || command == "startMaxItopodPush" || command == "resetRebirthPrep"
@@ -227,6 +205,11 @@ namespace NGUInjector
                 RequireCombatPrepIdle();
             switch (command)
             {
+                case "startSaveTest":
+                case "loadSaveTestFixture":
+                case "setSaveTestStage":
+                case "restoreSaveTest":
+                    return ExecuteSaveTestCommand(command, args, out data);
                 case "captureLocalSave":
                 case "scanSaves":
                 case "loadLongestSave":
@@ -478,9 +461,9 @@ namespace NGUInjector
                 if (data != null) root["data"] = data;
                 WriteJsonAtomic(Path.Combine(_externalUiCommandResultsDir, id + ".json"), root);
             }
-            catch
+            catch (Exception error)
             {
-                // Command result reporting must not interrupt the injector.
+                LogError("Command result reporting: " + command, error);
             }
         }
 
@@ -538,37 +521,54 @@ namespace NGUInjector
             root["settingsCasVersion"] = 1;
             root["planVersion"] = NGUInjector.CustomPlans.CustomPlanStore.CurrentPlanVersion;
             root["stageTimingVersion"] = 1;
+            root["fightScheduleVersion"] = 1;
             root["stageOverridesV1"] = true;
             root["updatedAt"] = DateTime.Now.ToString("o");
             root["status"] = reference?._startupError != null ? "failed" : reference != null && reference._unloaded ? "unloaded"
                 : reference == null || !reference._started ? "starting" : "running";
+            root["startupError"] = reference?._startupError ?? string.Empty;
             root["customStatus"] = GetCustomAutomationStatus();
             root["activeFocusGoal"] = reference?.GetActiveCustomFocusGoal()?.ToString() ?? string.Empty;
             root["appliedFocusGoal"] = reference?.GetAppliedCustomFocusGoal() ?? string.Empty;
             root["focusStatus"] = reference?.GetCustomFocusStatus() ?? "idle";
-            root["resourceAllocation"] = reference?.GetResourceCoordinationRuntime();
-            root["executionReview"] = reference?.GetExecutionPersistenceRuntime() ?? new JSONObject();
-            root["execution"] = reference?.GetExecutionStateRuntime() ?? new JSONObject();
-            root["saveSafety"] = reference?.GetSaveSafetyRuntime() ?? new JSONObject();
-            root["planProgress"] = reference?.GetCustomPlanProgress() ?? UnavailableCustomPlanProgress();
-            root["nguAllocation"] = reference?.GetCustomNguRuntime() ?? new JSONObject();
+            root["resourceAllocation"] = ReadExternalUiRuntimePart("Resource allocation", () => reference?.GetResourceCoordinationRuntime());
+            root["executionReview"] = ReadExternalUiRuntimePart("Selection review", () => reference?.GetExecutionPersistenceRuntime());
+            root["execution"] = ReadExternalUiRuntimePart("Execution", () => reference?.GetExecutionStateRuntime());
+            root["saveSafety"] = ReadExternalUiRuntimePart("Save safety", () => SaveTestActive ? GetActiveSaveTestSafetyRuntime() : reference?.GetSaveSafetyRuntime());
+            root["saveTestSession"] = ReadExternalUiRuntimePart("Save test", () => GetSaveTestRuntime());
+            root["planProgress"] = ReadExternalUiRuntimePart("Plan progress", () => reference?.GetCustomPlanProgress() ?? UnavailableCustomPlanProgress());
+            root["nguAllocation"] = ReadExternalUiRuntimePart("NGU allocation", () => reference?.GetCustomNguRuntime());
             root["bossPushRunning"] = reference != null && reference.BossPushRunning;
-            root["maxItopodPush"] = reference?.GetMaxItopodPushRuntime() ?? new JSONObject();
-            root["manualTitan"] = reference?.GetManualTitanRuntime() ?? new JSONObject();
-            root["manualAdventureOverlay"] = reference?.GetManualAdventureOverlayRuntime() ?? new JSONObject();
-            root["adventureRules"] = reference?.GetAdventureRulesRuntime() ?? new JSONObject();
-            root["combatPrep"] = reference?.GetCombatPrepRuntime() ?? new JSONObject();
+            root["maxItopodPush"] = ReadExternalUiRuntimePart("ITOPOD push", () => reference?.GetMaxItopodPushRuntime());
+            root["manualTitan"] = ReadExternalUiRuntimePart("Manual titan", () => reference?.GetManualTitanRuntime());
+            root["manualAdventureOverlay"] = ReadExternalUiRuntimePart("Manual adventure", () => reference?.GetManualAdventureOverlayRuntime());
+            root["adventureRules"] = ReadExternalUiRuntimePart("Adventure rules", () => reference?.GetAdventureRulesRuntime());
+            root["combatPrep"] = ReadExternalUiRuntimePart("Combat preparation", () => reference?.GetCombatPrepRuntime());
             root["loadoutPresetsVersion"] = 2;
             root["globalPresetsVersion"] = 2;
             root["adventureDynamicPresetsVersion"] = 1;
             root["globalNguWeightsVersion"] = 1;
-            root["resourceLanePrioritiesVersion"] = 1;
+            root["resourceLanePrioritiesVersion"] = 2;
             root["planBloodMagicVersion"] = 1;
-            root["loadoutPreset"] = reference?.GetLoadoutPresetRuntime() ?? new JSONObject();
+            root["loadoutPreset"] = ReadExternalUiRuntimePart("Preset", () => reference?.GetLoadoutPresetRuntime());
             root["equipmentBoosts"] = GetEquipmentBoostsRuntime();
             WriteExternalUiSettingsState(root, false);
             WriteExternalUiCharacterState(root);
+            root["automationErrors"] = AutomationErrorLog.Snapshot();
             return root;
+        }
+
+        private static JSONNode ReadExternalUiRuntimePart(string context, Func<JSONNode> read)
+        {
+            try { return read() ?? new JSONObject(); }
+            catch (Exception error)
+            {
+                LogError(context + " status", error);
+                var result = new JSONObject(); result["available"] = false;
+                result["status"] = "error";
+                result["reason"] = error.Message.Length <= 1024 ? error.Message : error.Message.Substring(0, 1024);
+                return result;
+            }
         }
 
         // Fast publication reuses metadata/estimates from the heartbeat, never runs gear/probes.

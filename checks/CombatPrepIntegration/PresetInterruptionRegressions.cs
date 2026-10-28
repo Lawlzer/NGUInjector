@@ -241,7 +241,7 @@ public static partial class Program
         ((List<Action>)Get(run, "RestoreTargets")).Add(() => { throw new InvalidOperationException("fixture borrowed return failure before handoff"); });
         CallMain("EndCombatPrep", "cancelled", Get(MainType, "CombatPrepOwnerPausedReason"), true);
         Set(run, "CleanupLastAttempt", (double)Get(MainType, "CombatPrepClock") + 100);
-        var store = Get(MainType, "CustomPlanStore"); CallMain("Unload");
+        var store = Get(MainType, "CustomPlanStore"); var oldCoordinator = MainInstance; CallMain("Unload");
         MainInstance = Blank(MainType); Set(MainInstance, "_combatPrepEndedRuns", new HashSet<string>());
         Set(MainInstance, "_customIronPillPrepStartedAt", -1d);
         Set(MainType, "reference", MainInstance); Set(MainType, "Character", Character); Set(MainType, "Controller", Controller);
@@ -249,7 +249,10 @@ public static partial class Program
         CallMain("InitializeProtectedStageProgress", plan);
         args = PrepareInterruptionPreset();
         Equal(null, Get(MainInstance, "_combatPrepRun"), "recovery-only fixture has no live run to cancel");
-        Equal(true, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "orphan marker awaits guarded current-intent service");
+        Equal(false, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "restart discards orphan cleanup authority before current-intent service");
+        var native = Resources(); Invoke(oldCoordinator, "TickCombatPrep");
+        Equal(native, Resources(), "superseded coordinator retires callbacks without native cleanup");
+        Equal(0, ((IList)Get(run, "RestoreTargets")).Count, "retired borrowed callbacks cannot survive into the new coordinator");
         var recalls = Recalls; var swaps = Swaps;
         var currentEntry = entry;
         EquipInterruptionPreset(args);

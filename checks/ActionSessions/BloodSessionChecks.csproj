@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>CS0649;CS0414;CS8981</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="BloodSessionChecks.cs" />
+    <Compile Include="BloodBoundary.cs" />
+    <Compile Include="../../NGUInjector/Main.BloodActionWindows.cs" Link="Production/Main.BloodActionWindows.cs" />
+    <Compile Include="../../NGUInjector/Main.FruitBloodActions.cs" Link="Production/Main.FruitBloodActions.cs" />
+    <Compile Include="../../NGUInjector/Main.BloodActions.cs" Link="Production/Main.BloodActions.cs" />
+    <Compile Include="../../NGUInjector/Main.FiniteActions.cs" Link="Production/Main.FiniteActions.cs" />
+    <Compile Include="../../NGUInjector/FiniteActionIdentity.cs" Link="Production/FiniteActionIdentity.cs" />
+    <Compile Include="../../NGUInjector/Managers/IronPillAutomation.cs" Link="Production/IronPillAutomation.cs" />
+    <Compile Include="../../NGUInjector/SimpleJson.cs" Link="Production/SimpleJson.cs" />
+    <Compile Include="../../NGUInjector/JsonFiles.cs" Link="Production/JsonFiles.cs" />
+  </ItemGroup>
+</Project>

@@ -19,7 +19,8 @@ export function combatPrepDraftError(draft: CombatPrepDraft): string {
   try { combatPrepArgs(draft); return ''; } catch (err) { return (err as Error).message; }
 }
 export function combatPrepReady(snapshot: NguiState | null, dir: string, command: string, now = Date.now()): boolean {
-  return !!dir && snapshot?.runtime_dir === dir && typeof snapshot.runtime.startedAt === 'string' && !!snapshot.runtime.startedAt.trim() && canCommand(snapshot, command, now);
+  const runtime = object(snapshot?.runtime.combatPrep);
+  return runtime.available !== false && runtime.status !== 'error' && !!dir && snapshot?.runtime_dir === dir && typeof snapshot.runtime.startedAt === 'string' && !!snapshot.runtime.startedAt.trim() && canCommand(snapshot, command, now);
 }
 export const combatRows = (value: JsonValue | undefined): JsonObject[] => Array.isArray(value) ? value.filter(isObject) : [];
 export function readCombatPrepPreview(result: JsonObject, args: JsonObject, protocol?: JsonObject): JsonObject {

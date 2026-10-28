@@ -15,11 +15,11 @@ const plan = (row: JsonObject): JsonObject => ({ Version: 14, __externalUiRevisi
 
 describe('automatic activity timing', () => {
   function fixture() {
-    const value: JsonObject = { ...plan({ ...stage(), ExecutionMode: 1 }), Version: 17, StageLoopStartIndex: -1 };
+    const value: JsonObject = { ...plan({ ...stage(), ExecutionMode: 1 }), Version: 18, StageLoopStartIndex: -1 };
     const runtime: JsonObject = { schemaVersion: 1, owner: 'scheduled', planName: 'test', stageIndex: 0, stageEntry: 'generation:2', runId: 'run-one', active: true, status: 'running',
       activityTimingScope: 'run', activityTimingSemantics: 'exclusive-phase-wall-time-including-setup',
       activityTimes: activityKinds.map((kind, index) => ({ kind, elapsedSeconds: [61, 125, 0, 0, 0][index], active: kind === 'Augments' })) };
-    const progress: JsonObject = { available: true, status: 'running', planName: 'test', planVersion: 17, planRevision: 'a'.repeat(64), schedulerMode: 'stages', activeStageIndex: 0,
+    const progress: JsonObject = { available: true, status: 'running', planName: 'test', planVersion: 18, planRevision: 'a'.repeat(64), schedulerMode: 'stages', activeStageIndex: 0,
       stageEntry: 'generation:2', stageElapsedSeconds: 210, stageProgress: .7, repeating: false, loopStartIndex: -1, combatPrep: runtime,
       stages: [{ index: 0, executionMode: 1, completionMode: 0, timingKind: 'elapsed', durationSeconds: 300, configuredDurationSeconds: 300, flexWeight: 10, energyFocus: 1, magicFocus: 1, gearGoal: 5, configuredEnergyPriorities: ['NGU-8', 'TM'], configuredMagicPriorities: ['RIT-7'], state: 'current' }] };
     return { value, runtime, progress };
@@ -216,8 +216,9 @@ describe('automatic stage execution mode', () => {
     expect(body).toContain('title="Results are not guaranteed optimal."');
     expect(body).not.toContain('unused but kept for switching back');
     for (const control of ['Focus preset', 'Energy focus', 'Magic focus', 'Energy priorities', 'Magic priorities']) expect(body).not.toContain(`aria-label="${control}"`);
-    expect(body).toContain('aria-label="Fight on entry"');
-    expect(body).toContain('Entry preparation consumes the total elapsed budget.');
+    expect(body).toContain('aria-label="Fights enabled"');
+    expect(body).toContain('Time and remaining shares are total elapsed budgets, including AT, planning and setup.');
+    expect(body).toContain('aria-label="Start from"');
     expect(stringifyJson(value)).toBe(before);
     const standard = render(StageEditor, { props: { plan: plan(stage()), onchange: () => {} } }).body;
     expect(standard).toContain('aria-label="Energy priorities"');
@@ -225,15 +226,15 @@ describe('automatic stage execution mode', () => {
   });
 
   it('reports automatic runtime budgets rather than preserved standard allocation fields', () => {
-    const data: JsonObject = { available: true, status: 'running', planName: 'test', planVersion: 17, schedulerMode: 'stages', activeStageIndex: 0, stageProgress: .1, stageElapsedSeconds: 30,
+    const data: JsonObject = { available: true, status: 'running', planName: 'test', planVersion: 18, schedulerMode: 'stages', activeStageIndex: 0, stageProgress: .1, stageElapsedSeconds: 30,
       stages: [{ index: 0, executionMode: 1, completionMode: 0, timingKind: 'elapsed', durationSeconds: 300, energyFocus: 1, magicFocus: 1, gearGoal: 5, state: 'current' }] };
     const view = parsePlanProgress(data, true);
     expect(view.stages[0]).toMatchObject({ name: automaticStageLabel, automatic: true, timingKind: 'elapsed', completionMode: 'Total elapsed budget', gear: 'Automatic phase gear' });
     expect(stageHistoryDetails(view.stages[0])).toContain('Total elapsed budget (includes AT, planning and setup)');
   });
   it.each([false, true])('keeps controls conservative until the backend clears cleanup with recovery marker %s', cleanupRecoveryRequired => {
-    const value = { ...plan({ ...stage(), ExecutionMode: 1 }), Version: 17, StageLoopStartIndex: -1 };
-    const progress: JsonObject = { available: true, status: 'running', planName: 'test', planVersion: 17, schedulerMode: 'stages', activeStageIndex: 0, stageProgress: 1, scheduleComplete: true, stageEntry: 'entry', repeating: false, loopStartIndex: -1,
+    const value = { ...plan({ ...stage(), ExecutionMode: 1 }), Version: 18, StageLoopStartIndex: -1 };
+    const progress: JsonObject = { available: true, status: 'running', planName: 'test', planVersion: 18, schedulerMode: 'stages', activeStageIndex: 0, stageProgress: 1, scheduleComplete: true, stageEntry: 'entry', repeating: false, loopStartIndex: -1,
       cleanupRecoveryRequired, reason: 'Checkpoint write failed: file locked. Retrying automatically.',
       combatPrep: { schemaVersion: 1, active: !cleanupRecoveryRequired, status: 'failed', cleanupPending: !cleanupRecoveryRequired, cleanupRecoveryRequired },
       stages: [{ index: 0, executionMode: 1, completionMode: 0, timingKind: 'elapsed', durationSeconds: 300, configuredDurationSeconds: 300, flexWeight: 10, energyFocus: 1, magicFocus: 1, gearGoal: 5, configuredEnergyPriorities: ['NGU-8', 'TM'], configuredMagicPriorities: ['RIT-7'], state: 'current' }] };

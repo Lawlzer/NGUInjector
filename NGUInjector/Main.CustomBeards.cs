@@ -47,6 +47,7 @@ namespace NGUInjector
             {
                 if (Settings == null || Character?.rebirthTime == null)
                     return;
+                if (CustomBossFightActive()) return;
 
                 if (ManualAdventureOverlayActive && ManualAdventureSupportOverridesActive) return;
                 if (!Settings.ManualAdventureEnabled) ResetManualAdventureOverlay();

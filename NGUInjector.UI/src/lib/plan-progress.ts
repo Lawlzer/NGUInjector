@@ -78,7 +78,7 @@ export function parsePlanProgress(data: JsonObject, connected: boolean): PlanPro
   const rows = data.stages;
   // A partial/malformed stage list must not silently renumber editor navigation or the current marker.
   if (!Array.isArray(rows) || !rows.length || rows.some((row, i) => !isObject(row) || row.index !== i)) return waiting;
-  if ((data.planVersion !== 17 && data.planVersion !== '17') || data.schedulerMode !== 'stages') return waiting;
+  if ((data.planVersion !== 18 && data.planVersion !== '18') || data.schedulerMode !== 'stages') return waiting;
   const scheduleComplete = typeof data.scheduleComplete === 'boolean' ? data.scheduleComplete : null;
   const active = index(data.activeStageIndex) && data.activeStageIndex < rows.length ? data.activeStageIndex : null;
   if (status === 'running' && active === null && scheduleComplete !== true) return waiting;

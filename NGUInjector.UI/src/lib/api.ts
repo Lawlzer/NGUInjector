@@ -6,6 +6,40 @@ export type JsonValue = JsonPrimitive | LosslessNumber | JsonValue[] | { [key: s
 export type JsonObject = { [key: string]: JsonValue };
 export type PlanStageAction = 'skip' | 'set' | 'restart';
 export const planRevisionField = '__externalUiRevision';
+export const planVersion = 18;
+
+export function normalizeFightSchedules(plan: JsonObject): JsonObject {
+  if (typeof plan.Version !== 'number' || !Number.isInteger(plan.Version) || plan.Version < 14 || plan.Version > planVersion) throw new Error('Unsupported plan Version. Update the controller or connect to migrate legacy plans.');
+  const ids = new Set<string>();
+  const rows = Array.isArray(plan.Stages) ? plan.Stages.map((row, index) => {
+    if (!isObject(row)) throw new Error('Stages must be an array of objects.');
+    const label = `Stage ${index + 1}`;
+    if ('FightOnEntry' in row && typeof row.FightOnEntry !== 'boolean') throw new Error(`${label} FightOnEntry must be boolean.`);
+    const schedule = 'FightSchedule' in row ? row.FightSchedule : row.FightOnEntry === true
+      ? { Id: `legacy-entry-v1-${index}`, Anchor: 0, DelaySeconds: 0, IntervalSeconds: 0 } : null;
+    if (schedule !== null) {
+      if (!isObject(schedule)) throw new Error(`${label} FightSchedule must be an object or null.`);
+      if (typeof schedule.Id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(schedule.Id)) throw new Error(`${label} FightSchedule Id must contain 1..128 ASCII letters, digits, underscores or hyphens.`);
+      if (ids.has(schedule.Id)) throw new Error('FightSchedule IDs must be unique within the plan.');
+      ids.add(schedule.Id);
+      for (const key of ['Anchor', 'DelaySeconds', 'IntervalSeconds']) {
+        const value = schedule[key];
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > (key === 'Anchor' ? 1 : 2147483647)) throw new Error(`${label} FightSchedule ${key} must be a nonnegative Int32${key === 'Anchor' ? ' (0 or 1)' : ''}.`);
+      }
+    }
+    if (!('FightOnEntry' in row) && row.FightSchedule === schedule) return row;
+    const next: JsonObject = { ...row, FightSchedule: schedule };
+    delete next.FightOnEntry;
+    return next;
+  }) : plan.Stages;
+  return plan.Version === planVersion && (!Array.isArray(rows) || rows.every((row, index) => row === (plan.Stages as JsonValue[])[index]))
+    ? plan : { ...plan, Version: planVersion, ...(rows !== undefined ? { Stages: rows } : {}) };
+}
+
+export function requireCanonicalPlan(plan: JsonObject): JsonObject {
+  if (plan.Version !== planVersion) throw new Error('Plan readback requires version 18 fight schedule support. Update and reconnect the injector.');
+  return normalizeFightSchedules(plan);
+}
 
 // Migration belongs to the backend. Retired overrides must never re-enter a saved definition.
 export function stripNguOverrides(value: JsonObject): JsonObject {
@@ -122,13 +156,12 @@ export async function readPlan(runtimeDir: string, name: string): Promise<JsonOb
   const plan = parseJson(text);
   if (!isObject(plan)) throw new Error('Plan JSON must be an object.');
   requirePlanRevision(plan);
-  if (typeof plan.Version !== 'number' || !Number.isInteger(plan.Version) || plan.Version < 14) throw new Error('Legacy plan cannot be edited offline. Connect to a running protocol v3 injector and reload to apply normalized migrations.');
-  return stripNguOverrides(plan);
+  return stripNguOverrides(requireCanonicalPlan(plan));
 }
 
 export async function savePlan(runtimeDir: string, name: string, plan: JsonObject): Promise<JsonObject> {
   requirePlanRevision(plan);
-  return invoke<JsonObject>('save_plan', { runtimeDir, name, planJson: stringifyJson(stripNguOverrides(plan)) });
+  return invoke<JsonObject>('save_plan', { runtimeDir, name, planJson: stringifyJson(stripNguOverrides(normalizeFightSchedules(plan))) });
 }
 
 export async function readPresetLibrary(runtimeDir: string): Promise<JsonObject> {
@@ -146,7 +179,7 @@ export async function savePresetLibrary(runtimeDir: string, library: JsonObject)
 }
 
 export async function createPlan(runtimeDir: string, requestedName: string, source?: JsonObject): Promise<string> {
-  const copy = source ? stripNguOverrides(cloneObject(source)) : undefined;
+  const copy = source ? stripNguOverrides(normalizeFightSchedules(cloneObject(source))) : undefined;
   if (copy) delete copy[planRevisionField];
   return invoke<string>('create_plan', { runtimeDir, requestedName, sourceJson: copy ? stringifyJson(copy) : undefined });
 }

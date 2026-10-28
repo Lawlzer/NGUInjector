@@ -231,6 +231,14 @@ namespace NGUInjector.CustomPlans
             ValidatePriorityOrder(magic, new[] { "NGU", "RIT", "TM", "WAN" }, "MagicPriorities");
         }
 
+        internal bool ControlsResourceLane(bool energy)
+        {
+            var objectives = energy ? new[] { 0, 6, 7, 8, 9 } : new[] { 1, 2, 6, 8 };
+            var priorities = energy ? EnergyPriorities : MagicPriorities;
+            return objectives.Any(i => Weights != null && i < Weights.Length && Weights[i] > 0)
+                || ResourcePrioritiesReviewed && priorities != null && priorities.Length > 0;
+        }
+
         private static void ValidatePriorityOrder(string[] order, string[] allowed, string key)
         {
             if (order != null && (order.Length > allowed.Length || order.Any(token => !allowed.Contains(token))

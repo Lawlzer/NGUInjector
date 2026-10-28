@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>CS0649;CS0414;CS8981</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="PrepSessionChecks.cs" />
+    <Compile Include="PrepBoundary.cs" />
+    <Compile Include="../../NGUInjector/Main.CustomPrep.cs" Link="Production/Main.CustomPrep.cs" />
+    <Compile Include="../../NGUInjector/Main.FruitActions.cs" Link="Production/Main.FruitActions.cs" />
+    <Compile Include="../../NGUInjector/Main.RebirthActions.cs" Link="Production/Main.RebirthActions.cs" />
+    <Compile Include="../../NGUInjector/Main.FiniteActions.cs" Link="Production/Main.FiniteActions.cs" />
+    <Compile Include="../../NGUInjector/FiniteActionIdentity.cs" Link="Production/FiniteActionIdentity.cs" />
+  </ItemGroup>
+</Project>

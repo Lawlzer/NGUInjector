@@ -2,13 +2,13 @@
 
 Dashboard **Quick**, the **Presets** tab, and plan/stage selectors use one global weighted library in the runtime folder's `presets.json`. Presets own objective weights, AT ratios, support policy and constraints. NGU selection/ratios come only from Misc global settings, independent of the plan open for editing. Plan version remains 17; the runtime advertises `globalPresetsVersion: 2`, `loadoutPresetsVersion: 2` and `globalNguWeightsVersion: 1`. See [global NGU weights](global-ngu-weights.md) for cache invalidation and running-policy reacquisition.
 
-Defaults, ordered objective/beard/digger metadata, and the eighteen new-library seeds are defined in [shared preset definitions](preset-definitions.md). Definition updates never reseed existing libraries or add new beard fields to legacy normalization defaults.
+Defaults, ordered objective/beard/digger metadata, and the seventeen new-library seeds are defined in [shared preset definitions](preset-definitions.md). Definition updates never reseed existing libraries or add creation-only policies to legacy normalization defaults. Untouched saved built-ins receive reviewed priorities through a guarded migration; customized presets and existing explicit priority choices are preserved. Balanced is omitted from new defaults, not deleted from saved libraries.
 
 ## Workflow
 
 1. Add, clone, rename or delete global presets from Dashboard Quick or Presets. Both use the same editor and revision-aware library draft; save the library before execution. Editing or saving never applies a setup.
 2. Set relative outcome weights for Energy NGU, Magic NGU, blood, ITOPOD PP progress, boosts, selected-zone farming, Time Machine, Augments, Wandoos, Advanced Training, Adventure power and Adventure toughness. A single positive weight is a valid preset.
-3. Choose optional minimum adventure power/toughness, magic/blood split and support policy. A blood percentage of `-1` searches 10-percentage-point splits. Edit AT ratios under Advanced settings; edit NGU weights only in Misc. Presets have no duration: standalone Preview/Equip uses a one-hour forecast, not an expiry. Scheduled acquisition uses remaining stage time (bounded to 1..604800 seconds); untimed AT stages use the remaining plan horizon, falling back to one hour when exhausted. Allocation refresh retains that forecast context until re-equip. Legacy `HorizonSeconds` is ignored and removed on normalization/save.
+3. Set independent Energy/Magic priorities, optional minimum adventure power/toughness, and support policy. Each reviewed order funds useful caps before passing only leftovers onward. AT ratios are editable when AT is a gear goal or configured Energy activity; NGU weights stay in Misc. Legacy blood-share overrides remain available for objective-only setup scoring; actual reviewed funding follows the order. Presets have no duration: standalone Preview/Equip uses a one-hour forecast, not an expiry. Scheduled acquisition uses remaining stage time (bounded to 1..604800 seconds); untimed AT stages use the remaining plan horizon, falling back to one hour when exhausted. Allocation refresh retains that forecast context until re-equip. Legacy `HorizonSeconds` is ignored and removed on normalization/save.
 4. Preview. This captures one consistent game state without swapping gear, changing support, allocating resources or advancing stages.
 5. Read the weighted setup's output, comparison with current gear and percentage of full-focus production. The advisory two-phase output appears as another column in the same table, with its schedule and score below. Allocation/route, gear and support details are collapsed. Quick priorities, specialist cards, warnings/notes and preview diagnostics are not rendered.
 6. **Equip** computes and applies a fresh setup when Auto-update is on, the default. When off, it replays the last valid policy computed in this injector session without searching; use explicit Preview + Apply to seed a missing policy. Apply setup uses the exact preview candidate and consumes its authorization token. Dashboard execution takes over only after preflight and pauses the running plan/auto-rebirth; scheduled execution retains its plan ownership.
@@ -23,15 +23,21 @@ Plans store `ActivePresetId`. Stages store a literal `PresetId`, or `@active` to
 
 ## Priorities And Scores
 
-`Weights` has twelve entries in this order; old six- and ten-entry definitions are accepted and zero-padded:
+`Weights` has fourteen entries in this order; old six-, ten-, and twelve-entry definitions are accepted and zero-padded:
 
 ```text
-energyNgu, magicNgu, blood, pp, boosts, zone, timeMachine, augments, wandoos, advancedTraining, adventurePower, adventureToughness
+energyNgu, magicNgu, blood, pp, boosts, zone, timeMachine, augments, wandoos, advancedTraining, adventurePower, adventureToughness, energyCap, magicCap
 ```
 
 Weights express relative value, not independent resource budgets. Adventure power/toughness value immediate projected stats through gear and support, not AT gains, and do not select a farming route. Training activities share conserved energy and magic; TM/Augments/blood/diggers share gold constraints. PP and regular-zone rewards compete for one adventure route rather than being credited simultaneously. The added activity forecasts are bounded progression proxies; native locks, unsupported states or failed parity checks remain unavailable rather than fabricated.
 
 For example, `[300, 0, 50, 0, 0, 0]` strongly values energy NGU while still valuing blood. It does not reserve 1/7 of energy for blood or imply a 6:1 production ratio. `[100, 100, 0, 30, 0, 0]` values both NGU lanes and some PP farming.
+
+Reviewed resource priorities are separate from these setup goals. The planner first searches gear/support and freezes the route and reference metadata using only the original goals. It then funds the fixed setup using `EnergyPriorities` and `MagicPriorities`, even for activities with zero objective weight. Adding or reordering fallbacks does not select different gear/support. Setup scoring uses affordable provisional activity amounts, with one shared liquid-gold budget; it never borrows future gold. The internal `SetupScore` selects the setup, while public `Score` and `Metrics` describe its actual funded output. If the selected setup cannot satisfy mandatory funding, application blocks rather than choosing replacement gear based on the resource order.
+
+Priority #1 receives only useful, affordable demand; #2 and later receive the remainder. Higher demand reclaims funding from lower priorities on refresh. Misc NGU zero ratios and native locks still exclude targets, and an all-zero NGU group yields to the next activity. Mandatory AT commitments still require their positive goal/ratios and actual allocation. Temporary blood demand prepends `RIT` without changing setup weights; release recomputes the current saved order. Acquired AUG tier, Wandoos OS, support and route remain fixed during refresh, including when an activity is temporarily unfunded. Reviewed presets do not offer the legacy proportional two-phase advisory.
+
+An explicitly configured nonempty resource order controls that resource even without a production goal. Empty orders do not invent NGU allocation: objective-owned resources remain controlled-empty, while a resource with neither objective nor configured activity remains uncontrolled. Old/custom unreviewed definitions keep legacy allocation until explicit review. The UI and native queue require `resourceLanePrioritiesVersion: 2` for reviewed execution, including plan activation.
 
 Each preview normalizes the weights to sum to one and keeps positive per-goal references from the best feasible specialist production. If an active goal lacks a positive specialist reference, a bounded score-only pass evaluates current/specialist gear with compatible already-found support under the original request (including mandatory gates and fixed splits). Only missing/zero references may use positive feasible production from these seeds. References freeze before mixed optimization and remain unchanged through replay/Apply; final mixed winners never define them. Scores sum normalized weight times retained production, not improvement-only utility or bonus-multiplier products. With no positive measured reference, zero output earns zero and later-discovered positive output earns one unit of scoring utility (at most its own weight), never an epsilon-amplified score. This does not invent production or a retained percentage: zero/unavailable references still have null retained ratios. Positive-reference mixed/fresh results can exceed 100%. Missing positively weighted metrics make a score unavailable, not silently ignored or replaced by zero. Valid zero completed NGU levels is distinct from unavailable production. Search is bounded and heuristic, not a proof of global optimality. See [current mixed-focus behavior and evidence](AUTOMATIC_COMBAT_AND_MIXED_FOCUS.md#mixed-focus-presets).
 
@@ -84,15 +90,17 @@ Read-only preparation (capture/search/replay/preflight) uses cooperative operati
 
 Forecasts exclude partial initial NGU bars, resource regeneration, bonus compounding, potion/pill exhaustion, future unlocks and full enemy combat simulation. Challenge forecasts are refused. Current preset resource/NGU/GPS/drop getter comparisons stay exact. Adventure power/toughness alone use a seven-binary32-ULP acceptance policy, reject nonfinite/clamp-crossing discrepancies and warn on accepted differences; this is not bit-identical emulation or a universal error bound. See [native precision checks](../checks/PresetIntegration/README.md#adventure-float-checks). Compilation and offline fixtures do not substitute for live validation; the [latest three mixed Preview/Apply cases](AUTOMATIC_COMBAT_AND_MIXED_FOCUS.md#mixed-previewapply) passed, but their PP/boost rates are forecasts, not long-run measured yields.
 
-Relevant offline checks:
+From the repository root, use the public offline runner:
 
 ```powershell
-dotnet run --project checks/Presets/PresetsChecks.csproj -c Release
-dotnet run --project checks/PresetIntegration/NumericIntegrationChecks.csproj -c Release
-dotnet run --project checks/ExternalUi/ExternalUiChecks.csproj
+.\verify.ps1 -Scope Source
+# Native scopes require NGU_IDLE_DIR or -GameFolder:
+.\verify.ps1 -Scope Native -Suite PresetIntegration
+.\verify.ps1 -Scope Native -Suite PresetEquipment
+.\verify.ps1 -Scope UI
 ```
 
-`checks/Presets/README.md` describes the independent numeric oracle and equipment-data checks. `verify-ui.ps1` includes the pure preset checks, and `-IncludeInjector` also builds/runs the compiled preset equipment checks. Browser checks cover the real App/controller against mocked native IPC on desktop and mobile, not live Unity actions.
+`checks/Presets/README.md` describes the independent numeric oracle and equipment-data checks. Source includes pure preset, numeric-integration and bridge checks; Native builds production and the selected fixture dependencies in one incremental MSBuild invocation and runs separate executables. UI includes desktop/mobile browsers against mocked native IPC, not live Unity actions. Scoped PASS is not the default all-scopes gate or live acceptance. See [Testing And Save Safety](testing.md) for reports, artifact capture and fail-fast source/output ownership; internal helpers are not public entrypoints.
 
 `checks/PresetIntegration/README.md` covers the compiled preset adapter fixture, including real Preview/Apply, native beard activation/digger affordability, native preference invalidation, exact-long allocation and intermediate capacity preflight. It never attaches to or modifies a running game.
 
@@ -100,7 +108,7 @@ dotnet run --project checks/ExternalUi/ExternalUiChecks.csproj
 
 The game's backing collections contain 11 energy NGU slots, 11 magic NGU slots and 10 AT slots, while preset policies address 9, 7 and 5 supported targets respectively. Comparing whole collections with `SequenceEqual` rejected correct allocations after application and prevented acquisition of the preset's sustained ownership receipt. Verification now requires every supported target to match exactly, every trailing native slot to be zero, and enough native slots to contain all policy targets. Unexpected allocations are still rejected rather than ignored.
 
-The compiled native-shape regression reproduced the original allocation-receipt exception against the previous DLL. After a normal Release rebuild, all 72 shape assertions and the full 7,576-assertion preset integration suite passed, including global Equip/refresh with 11-slot NGU collections. Use `--allocation-shapes` on the integration executable for the focused regression.
+The compiled native-shape regression reproduced the original allocation-receipt exception against the previous DLL. After a normal Release rebuild, all 72 shape assertions and the full 7,576-assertion preset integration suite passed, including global Equip/refresh with 11-slot NGU collections. For current focused verification, use `.\verify.ps1 -Scope Native -Suite PresetIntegration -Selector '--allocation-shapes'` from the repository root, not an unlocked EXE.
 
 Live verification restarted NGU and the injector, resumed `24hr` at its existing `NGU Energy` stage (index 3), and observed seven fresh runtime samples over 60 seconds. Both NGU lanes remained allocated with a valid scheduled receipt; applied time advanced from 59.65s to 118.65s. The final sample at 02:08:31 local showed 107,502,471 energy in energy NGUs and 4,132,300 magic in magic NGUs, with no active Quick, boss push or combat-preparation owner. Auto-rebirth was left disabled during verification; preset definitions and plan allocation settings were unchanged. Evidence is in the local temporary report directory: `ngu-fix-20261019-summary.json` and `ngu-fix-20261019-sample-{0..6}.json`.
 

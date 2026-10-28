@@ -12,10 +12,14 @@
     <Compile Include="AutoRebirthDefaultsChecks.cs" />
     <Compile Include="NativeSettingsPersistenceChecks.cs" />
     <Compile Include="SettingsCasChecks.cs" />
+    <Compile Include="AutomationErrorChecks.cs" />
+    <Compile Include="../../NGUInjector/AutomationErrorLog.cs" Link="Production/AutomationErrorLog.cs" />
     <EmbeddedResource Include="../settings-contract.json" LogicalName="SettingsContract.json" />
     <Compile Include="../../NGUInjector/AllocationProfiles/RebirthStuff/CustomPlanRebirth.cs" Link="Production/CustomPlanRebirth.cs" />
     <Compile Include="IronPillHistoryChecks.cs" />
     <Compile Include="PlanBloodPersistenceChecks.cs" />
+    <Compile Include="FightSchedulePersistenceChecks.cs" />
+    <Compile Include="PlanCatalogChecks.cs" />
     <Compile Include="AdventureDynamicWeightChecks.cs" />
     <Compile Include="AutoExpSettingsChecks.cs" />
     <Compile Include="AdventureSettingsChecks.cs" />
@@ -42,5 +46,6 @@
     <EmbeddedResource Include="../../NGUInjector/Data/ActivityPolicies.json" LogicalName="NGUInjector.ActivityPolicies.json" />
     <Compile Include="../../NGUInjector/Managers/BloodGoalEstimate.cs" Link="Production/BloodGoalEstimate.cs" />
     <Compile Include="../../NGUInjector/Managers/IronPillAutomation.cs" Link="Production/IronPillAutomation.cs" />
+    <Compile Include="../../NGUInjector/Managers/ProtectedStageScheduler.cs" Link="Production/ProtectedStageScheduler.cs" />
   </ItemGroup>
 </Project>

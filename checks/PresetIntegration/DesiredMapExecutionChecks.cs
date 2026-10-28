@@ -31,7 +31,7 @@ public static partial class PresetIntegrationChecks
         foreach (var autoUpdate in new[] { false, true })
         {
             foreach (var fixedTime in new[] { false, true })
-                run("selected-policy checkpoint quarantine/fixed=" + fixedTime + "/AutoUpdate=" + autoUpdate,
+                run("selected-policy checkpoint resume/fixed=" + fixedTime + "/AutoUpdate=" + autoUpdate,
                     () => CheckSelectedPolicyCheckpoint(autoUpdate, fixedTime));
             run("versioned equipment identity/AutoUpdate=" + autoUpdate, () => CheckVersionedEquipmentSelection(autoUpdate));
             run("equipped-only allocation observation/AutoUpdate=" + autoUpdate, () => CheckEquippedOnlyAllocationObservation(autoUpdate));
@@ -203,23 +203,31 @@ public static partial class PresetIntegrationChecks
         Equal(false, Get(Get(MainInstance, "_protectedScheduler"), "_armed"), "reload does not import an armed application receipt");
         Equal(Property(Json(checkpoint, "fightEntry"), "Value"), Get(MainInstance, "_customStageFightKey") ?? "", "entry fight identity survives reload");
         Equal(null, CallMain("ValidateProtectedPresetProvenance", Json(checkpoint, "selectedPolicy")), "matching provenance passes necessary checks without granting authority");
-        Check(((string)CallMain("ProtectedPresetRestorationIssue", owner)).Contains("Review the acquired selection"), "clock/material equality still requires explicit current-session review");
-        Equal(null, CallMain("ProtectedPresetRestorationIssue", "unrelated-owner"), "quarantine is scoped, not a global failure latch");
+        Equal(null, CallMain("ProtectedPresetRestorationIssue", owner), "valid frozen stage restores intent without action-history review");
+        Equal(null, CallMain("ProtectedPresetRestorationIssue", "unrelated-owner"), "restoration remains scoped to the selected owner");
+        Equal(null, Get(MainInstance, "_globalPresetReceipt"), "semantic import never fabricates applied authority");
+        Equal(Get(policy, "Acquisition"), Get(Get(MainInstance, "_globalPresetApplyingPolicy"), "Acquisition"), "semantic import retains the exact frozen acquisition");
+        Equal(transfers, ResourceTransfers, "semantic import leaves native accounting unchanged");
         CallMain("RunCustomPlanAutomation", plan);
-        var quarantinedProgress = ReadPresetPlanProgress(plan);
-        var quarantinedRow = Json(Json(quarantinedProgress, "stages"), (int)Property(Get(MainInstance, "_protectedScheduler"), "StageIndex"));
-        Equal("\"blocked\"", Json(quarantinedRow, "presetStatus").ToString(), "actual reload projects scoped quarantine as blocked, not pending");
-        Check(((string)Property(Json(quarantinedRow, "presetReason"), "Value")).Contains("Review the acquired selection"), "blocked selection projects its actual review requirement");
-        Equal(null, Get(MainInstance, "_globalPresetReceipt"), "unproven reload never manufactures applied authority");
-        Equal(searches, PresetSearches, "unproven reload does not search in either AutoUpdate mode");
-        Equal(planning, Get(MainType, "_presetPlanningCaptures"), "unproven reload stops before broad capture");
-        Equal(transfers, ResourceTransfers, "unproven reload leaves native accounting unchanged");
-        Equal(swaps, Get(typeof(Program), "Swaps"), "unproven reload never equips replacement gear");
+        Equal(true, CallMain("GlobalPresetStageReceiptValid", plan), "ordinary native admission verifies the restored frozen selection");
+        Equal(Get(policy, "Acquisition"), Get(Get(Get(MainInstance, "_globalPresetReceipt"), "Policy"), "Acquisition"), "ordinary resume never replaces the acquisition");
+        Equal(searches, PresetSearches, "valid reload does not search in either AutoUpdate mode");
+        Check((long)Get(MainType, "_presetPlanningCaptures") > (long)planning, "restoration actually captures current native inputs before admitting saved intent");
+        Equal(transfers, ResourceTransfers, "already-matching restored policy requires no native accounting writes");
+        Equal(swaps, Get(typeof(Program), "Swaps"), "valid reload never equips replacement gear");
         Equal(allocations, CallMain("GlobalPresetAllocationState"), "native allocations are not rollback state");
         Equal(support, CallMain("GlobalPresetSupportState"), "native support is not rollback state");
         for (var i = 0; i < wFields.Length; i++) Equal(wValues[i], Get(nativeW, wFields[i]), "native W is never rolled back/" + wFields[i]);
-        Equal(true, CallMain("SaveProtectedStageProgress", true), "quarantine does not prevent healthy checkpoint progress saving");
-        Equal(serialized, Json(JsonParse(System.IO.File.ReadAllText(path)), "selectedPolicy").ToString(), "unresolved commitment survives another actual atomic checkpoint write");
+        Equal(true, CallMain("SaveProtectedStageProgress", true), "resumed stage retains healthy checkpoint progress saving");
+        var savedSelection = Json(JsonParse(System.IO.File.ReadAllText(path)), "selectedPolicy");
+        var expectedSelection = JsonParse(serialized);
+        for (var i = 0; i < expected.Length; i++)
+        {
+            var descriptor = Json(Json(Json(savedSelection, "equipment"), "equipment"), i);
+            Equal(Json(descriptor, "targetSlot").ToString(), Json(descriptor, "sourceSlotHint").ToString(), "resumed descriptor observes its current equipped location/" + i);
+            SetJson(Json(Json(Json(expectedSelection, "equipment"), "equipment"), i), "sourceSlotHint", Json(descriptor, "sourceSlotHint"));
+        }
+        Equal(expectedSelection.ToString(), savedSelection.ToString(), "all frozen decisions survive another checkpoint write; only current location hints may refresh");
         foreach (var invalidKind in new[] { "version", "entry", "save", "legacy" })
         {
             var invalidCheckpoint = JsonParse(checkpoint.ToString()); var invalidSelection = Json(invalidCheckpoint, "selectedPolicy");
@@ -231,9 +239,19 @@ public static partial class PresetIntegrationChecks
             else SetJson(invalidSelection, invalidKind == "save" ? "rebirth" : invalidKind,
                 ParseFixtureScalar(invalidKind == "version" ? "2" : "\"foreign\""));
             System.IO.File.WriteAllText(path, invalidCheckpoint.ToString());
+            Set(MainInstance, "_globalPresetReceipt", null); Set(MainInstance, "_globalPresetApplyingPolicy", null);
+            ((IDictionary)Get(MainInstance, "_globalPresetPolicies")).Clear();
             CallMain("InitializeProtectedStageProgress", plan);
             var issue = (string)CallMain("ProtectedPresetRestorationIssue", owner);
-            Check(issue != null && issue.Contains(invalidKind == "version" || invalidKind == "legacy" ? "version/schema"
+            if (invalidKind == "legacy")
+            {
+                Equal(null, issue, "checkpoint without an acquired snapshot is eligible for first ordinary selection, not history review");
+                Equal(null, Get(MainInstance, "_globalPresetApplyingPolicy"), "missing snapshot cannot import the preceding selection");
+                Equal(null, Get(MainInstance, "_globalPresetReceipt"), "missing snapshot cannot fabricate applied authority");
+                Equal(transfers, ResourceTransfers, "loading a snapshot-free entry never writes native accounting");
+                continue;
+            }
+            Check(issue != null && issue.Contains(invalidKind == "version" ? "version/schema"
                 : invalidKind == "entry" ? "stage entry" : "save context"), "actual checkpoint reload reports precise unsafe provenance/" + invalidKind);
             CallMain("RunCustomPlanAutomation", plan);
             Equal(searches, PresetSearches, "invalid/legacy durable policy cannot start a replacement search/" + invalidKind);
@@ -1200,8 +1218,9 @@ public static partial class PresetIntegrationChecks
         var scaled = Invoke(Plugin.GetType("NGUInjector.CustomPlans.CustomLoadoutPreset", true), "Parse", Invoke(preset, "ToJson"));
         var importance = new double[14]; importance[0] = .2; importance[1] = .1; Set(scaled, "Weights", importance);
         var scaledRequest = CallMain("LoadoutPresetRequest", scaled);
-        Equal(.1d, ((double[])Get(scaledRequest, "Weights"))[2], "temporary blood inherits Magic importance rather than imposing an arbitrary minimum weight");
+        Equal(0d, ((double[])Get(scaledRequest, "Weights"))[2], "temporary blood does not introduce a setup objective");
         Equal(.2d, ((double[])Get(scaledRequest, "Weights"))[0], "temporary lane priority preserves independent Energy importance");
+        Check(importance.SequenceEqual((double[])Get(scaledRequest, "Weights")), "temporary RIT priority preserves every original objective weight");
         CallMain("RunManualGlobalPresetRefresh");
         Equal(10000L, Get(energy, "energy"), "blood never displaces the Energy lane");
         Equal(0L, Get(magic, "magic"), "higher Magic blood demand preempts all Magic NGU");
@@ -1220,12 +1239,248 @@ public static partial class PresetIntegrationChecks
         Equal(searches, PresetSearches, "temporary demand changes never search replacement gear");
         Equal(history, Invoke(preset, "ToJson").ToString(), "temporary priority never mutates acquired user intent");
         Check(ReferenceEquals(receipt, Get(MainInstance, "_globalPresetReceipt")), "preemption retains acquisition identity");
+        CheckReviewedFallbackExecution();
+        CheckReviewedSetupSelection();
+        CheckReviewedNguCaptureSafety();
+        CheckWandoosImportDependencies();
         CheckCompiledForeignResourceMutation();
         CheckCompiledSupportMutationOutcomes();
         CheckCompiledSupportContinuation();
         CheckSelectedSetupRouteAdmission();
         CheckSelectedSetupSuccessorTimeline();
         CheckCombatPrepSignedSupportRuntime();
+    }
+
+    private static void CheckReviewedFallbackExecution()
+    {
+        SetupResourceCoordination(false, true, "none");
+        Set(Get(Get(Character, "buttons"), "adventure"), "m_Interactable", true);
+        var preset = Invoke(Plugin.GetType("NGUInjector.CustomPlans.CustomLoadoutPreset", true), "Parse", JsonParse(
+            "{\"Id\":\"reviewed-fallback\",\"Name\":\"Reviewed fallback\",\"Weights\":[0,0,0,0,0,0,0,0,0,0,1,0,0,0],"
+            + "\"SupportMode\":\"current\",\"SwapSeconds\":0,\"AutoUpdate\":true,\"ResourcePrioritiesReviewed\":true,"
+            + "\"EnergyPriorities\":[\"NGU\"],\"MagicPriorities\":[\"NGU\"]}"));
+        var settings = Get(MainType, "Settings");
+        var transfers = ResourceTransfers; var swaps = Get(typeof(Program), "Swaps"); var recalls = Get(typeof(Program), "Recalls");
+        var before = CallMain("GlobalPresetAllocationState"); var support = CallMain("GlobalPresetSupportState");
+        var receipt = Get(MainInstance, "_globalPresetReceipt"); var persisted = Get(MainInstance, "_standaloneSelectedPolicy");
+        foreach (var energy in new[] { true, false })
+        {
+            var field = energy ? "_manageEnergy" : "_manageMagic";
+            Set(settings, field, false);
+            try
+            {
+                Throws(() => CallMain("EquipGlobalPresetDefinition", preset, "dashboard", "explicit-equip", true, null),
+                    "requires managed " + (energy ? "Energy" : "Magic"), "zero-objective reviewed lane requires permission before writes");
+                Equal(before, CallMain("GlobalPresetAllocationState"), "permission failure preserves both native lanes");
+                Equal(support, CallMain("GlobalPresetSupportState"), "permission failure preserves native support");
+                Equal(transfers, ResourceTransfers, "permission failure precedes all resource transfers");
+                Equal(swaps, Get(typeof(Program), "Swaps"), "permission failure precedes all equipment writes");
+                Equal(recalls, Get(typeof(Program), "Recalls"), "permission failure precedes whole-lane recalls");
+                Equal(persisted, Get(MainInstance, "_standaloneSelectedPolicy"), "permission failure does not replace the durable selection");
+                Check(ReferenceEquals(receipt, Get(MainInstance, "_globalPresetReceipt")), "permission failure leaves current receipt intact");
+            }
+            finally { Set(settings, field, true); }
+        }
+        CallMain("EquipGlobalPresetDefinition", preset, "dashboard", "explicit-equip", true, null);
+        receipt = Get(MainInstance, "_globalPresetReceipt"); var policy = Get(receipt, "Policy"); var execution = Get(receipt, "Execution");
+        var energyRow = ((IList)Get(Get(Character, "NGU"), "skills"))[0];
+        var magicRow = ((IList)Get(Get(Character, "NGU"), "magicSkills"))[0];
+        Equal(10000L, Get(energyRow, "energy"), "zero Energy objective still funds reviewed native NGU fallback");
+        Equal(1000L, Get(magicRow, "magic"), "zero Magic objective still funds reviewed native NGU fallback");
+        Equal(true, Get(execution, "ControlsEnergy"), "funded execution owns reviewed Energy");
+        Equal(true, Get(execution, "ControlsMagic"), "funded execution owns reviewed Magic");
+        Equal(true, CallMain("GlobalPresetHasMagicObjective", policy), "saved reviewed Magic token is baseline authority, not a temporary claim");
+        Equal(null, Get(receipt, "TemporaryMagicContext"), "reviewed fallback does not borrow temporary Magic ownership");
+        Equal(3, Convert.ToInt32(CallMain("PresetResourceReviewDomains", preset)), "review footprint includes zero-objective reviewed lanes");
+        var preview = CallMain("PreviewExecutionRebind", JsonParse("{}"));
+        var domains = Convert.ToInt32(Get(Get(MainInstance, "_executionRebindReview"), "RecoveryDomains"));
+        Equal(3, domains & 3, "real rebind recovery includes both reviewed resource lanes");
+        Equal(true, Property(Json(Json(preview, "observedResources"), "EnergyNgu"), "IsArray"), "rebind observes zero-objective Energy NGU resources");
+        Equal(true, Property(Json(Json(preview, "observedResources"), "MagicNgu"), "IsArray"), "rebind observes zero-objective Magic NGU resources");
+
+        var saved = JsonParse((string)Get(MainInstance, "_standaloneSelectedPolicy"));
+        var activities = Json(Json(saved, "decision"), "activities");
+        var os = (int)Get(Get(Get(policy, "Candidate"), "Activities"), "Os");
+        SetJson(activities, "os", ParseFixtureScalar(((os + 1) % 3).ToString()));
+        var imported = CallMain("ImportExecutionSelection", saved, null);
+        Equal((os + 1) % 3, Get(Get(Get(imported, "Candidate"), "Activities"), "Os"), "unrelated OS change preserves the acquired OS decision without a false recovery dependency");
+        Equal(null, Get(Get(imported, "Candidate"), "SetupScore"), "import retains selection without inventing a setup rank");
+        Equal(null, Get(Get(imported, "Candidate"), "SetupEligible"), "import does not fabricate a historical setup-search eligibility witness");
+        var importCapture = CallMain("CaptureLoadoutPresetDefinition", Get(imported, "ExecutionPreset"));
+        Equal(true, Get(CallMain("ReplayGlobalPreset", imported, Get(imported, "Preset"), importCapture), "Feasible"), "imported null setup rank can replay without reranking");
+        SetJson(activities, "fixedLegacyAmounts", JsonParse("[\"0\",\"0\",\"1\",\"0\",\"0\",\"0\",\"0\",\"0\",\"0\",\"0\",\"0\"]"));
+        Throws(() => CallMain("ImportExecutionSelection", saved, null), "AUG/OS is unavailable", "actual retained WAN funding still binds acquired OS");
+
+        var empty = Invoke(preset, "MemberwiseClone"); Set(empty, "EnergyPriorities", new string[0]); Set(empty, "MagicPriorities", new string[0]);
+        Equal(0, Convert.ToInt32(CallMain("PresetResourceReviewDomains", empty)), "stat-only reviewed empty lanes remain uncontrolled");
+        var objectives = new double[14]; objectives[0] = objectives[1] = 1; Set(empty, "Weights", objectives);
+        Equal(3, Convert.ToInt32(CallMain("PresetResourceReviewDomains", empty)), "objective-owned reviewed empty lanes stay controlled-empty");
+        Set(empty, "Weights", ((double[])Get(preset, "Weights")).ToArray()); Set(empty, "ResourcePrioritiesReviewed", false);
+        Set(empty, "EnergyPriorities", new[] { "NGU" }); Set(empty, "MagicPriorities", new[] { "NGU" });
+        Equal(0, Convert.ToInt32(CallMain("PresetResourceReviewDomains", empty)), "unreviewed token proposals grant no resource authority");
+
+        CallMain("StopManualGlobalPreset");
+        Equal(0L, Get(energyRow, "energy"), "stop releases the owned zero-objective Energy fallback");
+        Equal(0L, Get(magicRow, "magic"), "stop releases the owned zero-objective Magic fallback");
+        Equal(10000L, Get(Character, "idleEnergy"), "release conserves native Energy");
+        Equal(1000L, Get(Get(Character, "magic"), "idleMagic"), "release conserves native Magic");
+    }
+
+    private static void CheckReviewedSetupSelection()
+    {
+        foreach (var bloodFirst in new[] { false, true })
+        {
+            SetupResourceCoordination(false, true, "none");
+            var inventory = Get(Character, "inventory"); var head = Get(inventory, "head"); var challenger = ((IList)Get(inventory, "inventory"))[0];
+            Set(challenger, "id", 550); Set(challenger, "type", Get(head, "type")); Set(challenger, "bossRequired", 1); Set(challenger, "removable", true);
+            Set(challenger, "spec1Type", Enum.Parse(Field(challenger, "spec1Type").FieldType, "NGU")); Set(challenger, "spec1Cur", 1000f);
+            Sequence(Get(Character, "bloodMagicController"), "normalSpeedDividers", 1, .02f);
+            var preset = Invoke(Plugin.GetType("NGUInjector.CustomPlans.CustomLoadoutPreset", true), "Parse", JsonParse(
+                "{\"Id\":\"setup-primary\",\"Name\":\"Setup primary\",\"Weights\":[0,1,0,0,0,0,0,0,0,0,0,0,0,0],"
+                + "\"SupportMode\":\"current\",\"SwapSeconds\":0,\"AutoUpdate\":true,\"ResourcePrioritiesReviewed\":true,"
+                + "\"EnergyPriorities\":[\"NGU\"],\"MagicPriorities\":" + (bloodFirst ? "[\"RIT\",\"NGU\"]" : "[\"NGU\",\"RIT\"]") + "}"));
+            CallMain("PreviewLoadoutPreset", JsonParse("{\"preset\":" + Invoke(preset, "ToJson") + "}"));
+            var candidates = (Array)Get(Get(Get(MainInstance, "_loadoutPresetPreview"), "Plan"), "Candidates");
+            var current = candidates.GetValue(0); var balanced = candidates.GetValue(1);
+            Check(Convert.ToDouble(Get(balanced, "SetupScore")) > Convert.ToDouble(Get(current, "SetupScore")), "native primary objective distinguishes balanced gear from current");
+            if (bloodFirst)
+            {
+                Equal(0d, Get(current, "Score"), "strict RIT priority leaves current Magic NGU utility zero");
+                Equal(0d, Get(balanced, "Score"), "strict RIT priority also leaves improved gear's funded Magic NGU utility zero");
+            }
+            var picked = ((IEnumerable)CallMain("LoadoutPresetSetupCandidates", candidates, true)).Cast<object>().Single();
+            Check(ReferenceEquals(balanced, picked), "shared Equip/manual-adventure selector uses setup rank, not funded score");
+            Set(balanced, "Feasible", false); Set(balanced, "Score", null);
+            picked = ((IEnumerable)CallMain("LoadoutPresetSetupCandidates", candidates, true)).Cast<object>().Single();
+            Check(ReferenceEquals(balanced, picked), "reviewed best setup is selected before funded feasibility, with no feasible replacement");
+            var cached = Get(MainInstance, "_loadoutPresetPreview"); var transfers = ResourceTransfers; var swaps = Get(typeof(Program), "Swaps");
+            Throws(() => CallMain("PreflightLoadoutPreset", CallMain("LoadoutPresetRequest", preset), Get(cached, "Capture"), picked),
+                "exact selected policy", "production preflight rejects the exact unfunded best setup");
+            Equal(transfers, ResourceTransfers, "unfunded best setup rejects before native resource writes");
+            Equal(swaps, Get(typeof(Program), "Swaps"), "unfunded best setup rejects before native equipment writes");
+            Set(balanced, "SetupScore", null); Set(current, "SetupScore", null); Set(current, "Score", 100d);
+            Equal(0, ((IEnumerable)CallMain("LoadoutPresetSetupCandidates", candidates, true)).Cast<object>().Count(), "reviewed selector never falls back from missing SetupScore to Score");
+            Equal(1, ((IEnumerable)CallMain("LoadoutPresetSetupCandidates", candidates, false)).Cast<object>().Count(), "unreviewed selector retains existing funded filtering");
+
+            CallMain("EquipGlobalPresetDefinition", preset, "dashboard", "explicit-equip", true, null);
+            var receipt = Get(MainInstance, "_globalPresetReceipt");
+            Equal("balanced", Get(Get(Get(receipt, "Policy"), "Candidate"), "Key"), "production Equip selects the primary setup for either resource order");
+            Check(ReferenceEquals(challenger, Get(inventory, "head")), "production equips the exact primary-objective gear despite different resource chains");
+            Equal(10000L, Get(((IList)Get(Get(Character, "NGU"), "skills"))[0], "energy"), "zero Energy objective funds actual native fallback");
+            Equal(bloodFirst ? 0L : 1000L, Get(((IList)Get(Get(Character, "NGU"), "magicSkills"))[0], "magic"), "actual native Magic respects strict resource order without replacing gear");
+            Equal(bloodFirst ? 1000L : 0L, Get(((IList)Get(Get(Character, "bloodMagic"), "ritual"))[0], "magic"), "actual native ritual receives only chain funding");
+            Equal(true, CallMain("GlobalPresetReceiptValid", "dashboard"), "primary selected setup is verified with exact native funding");
+            if (bloodFirst)
+            {
+                var searches = PresetSearches;
+                Sequence(Get(Character, "bloodMagicController"), "normalSpeedDividers", 1, .002f);
+                CallMain("RunManualGlobalPresetRefresh");
+                Equal(101L, Get(((IList)Get(Get(Character, "bloodMagic"), "ritual"))[0], "magic"), "reviewed zero-weight ritual takes only its native productive cap");
+                Equal(899L, Get(((IList)Get(Get(Character, "NGU"), "magicSkills"))[0], "magic"), "only the real ritual residual funds the next reviewed priority");
+                Equal(0L, Get(Get(Character, "magic"), "idleMagic"), "strict residual chain conserves the full native Magic pool");
+                Check(ReferenceEquals(challenger, Get(inventory, "head")), "cap change retains the exact acquired primary setup");
+                Equal(searches, PresetSearches, "cap change never searches replacement gear");
+            }
+        }
+    }
+
+    private static void CheckReviewedNguCaptureSafety()
+    {
+        SetupResourceCoordination(false, true, "none");
+        var preset = Invoke(Plugin.GetType("NGUInjector.CustomPlans.CustomLoadoutPreset", true), "Parse", JsonParse(
+            "{\"Id\":\"cap-fallback\",\"Name\":\"Cap fallback\",\"Weights\":[0,0,0,0,0,0,0,0,0,0,0,0,1,0],"
+            + "\"SupportMode\":\"current\",\"SwapSeconds\":0,\"AutoUpdate\":true,\"ResourcePrioritiesReviewed\":true,"
+            + "\"EnergyPriorities\":[\"NGU\",\"WAN\",\"TM\",\"AUG\",\"AT\"],\"MagicPriorities\":[\"NGU\",\"RIT\",\"WAN\",\"TM\"]}"));
+        var ngu = Get(Character, "NGU"); var row = ((IList)Get(ngu, "skills"))[0];
+        Set(ngu, "autoAdvance", true); Set(row, "target", 10L);
+        var transfers = ResourceTransfers; var swaps = Get(typeof(Program), "Swaps");
+        Throws(() => CallMain("CaptureLoadoutPresetDefinition", preset), "auto-advance", "cap-only reviewed NGU fallback guards unfinished finite native transfers");
+        Equal(true, Get(ngu, "autoAdvance"), "auto-advance rejection never changes the native preference");
+        Equal(transfers, ResourceTransfers, "auto-advance rejection precedes resource writes"); Equal(swaps, Get(typeof(Program), "Swaps"), "auto-advance rejection precedes equipment writes");
+        Set(ngu, "autoAdvance", false);
+        var wandoos = Get(Character, "wandoos98"); Set(wandoos, "os", Enum.ToObject(Field(wandoos, "os").FieldType, 2));
+        try
+        {
+            BlockPresetLevelGain = true;
+            var capture = CallMain("CaptureLoadoutPresetDefinition", preset); var snapshot = Get(capture, "Snapshot");
+            Equal(false, ((bool[])Get(snapshot, "Available"))[0], "native level lock excludes zero-objective Energy NGU funding");
+            Equal(false, ((bool[])Get(snapshot, "Available"))[1], "native level lock excludes zero-objective Magic NGU funding");
+            Equal(2, Get(snapshot, "WandoosOs"), "unavailable optional WAN still captures the actual native OS tier");
+            Equal(null, CallMain("GlobalPresetReadiness", preset, null, null), "optional locked fallback is skipped, not a hard setup readiness failure");
+            CallMain("EquipGlobalPresetDefinition", preset, "dashboard", "explicit-equip", true, null);
+            Equal(0L, Get(row, "energy"), "level-locked NGU fallback receives no native Energy allocation");
+            Equal(0L, Get(((IList)Get(ngu, "magicSkills"))[0], "magic"), "level-locked NGU fallback receives no native Magic allocation");
+            Equal(true, CallMain("GlobalPresetReceiptValid", "dashboard"), "cap setup remains valid with ordinary locked fallbacks skipped");
+            Equal(2, Get(Get(Get(Get(MainInstance, "_globalPresetReceipt"), "Execution"), "Activities"), "Os"), "locked WAN fallback retains the acquired nondefault OS tier");
+            var saved = JsonParse((string)Get(MainInstance, "_standaloneSelectedPolicy"));
+            var activities = Json(Json(saved, "decision"), "activities");
+            var os = (int)Property(Json(activities, "os"), "AsInt");
+            SetJson(activities, "os", ParseFixtureScalar(((os + 1) % 3).ToString()));
+            Throws(() => CallMain("ImportExecutionSelection", saved, null), "AUG/OS is unavailable", "configured WAN fallback retains its acquired OS even when currently unfunded");
+        }
+        finally { BlockPresetLevelGain = false; }
+    }
+
+    private static void CheckWandoosImportDependencies()
+    {
+        foreach (var kind in new[] { "inactive-proposal", "reviewed-dormant", "reviewed-excluded", "legacy-funded" })
+        {
+            SetupResourceCoordination(false, true, "none");
+            var reviewed = kind == "reviewed-dormant" || kind == "reviewed-excluded";
+            var wandoosGoal = kind == "reviewed-excluded" || kind == "legacy-funded";
+            var blocked = kind == "reviewed-dormant" || kind == "legacy-funded";
+            var wandoos = Get(Character, "wandoos98");
+            Set(wandoos, "os", Enum.ToObject(Field(wandoos, "os").FieldType, 2));
+            Set(Get(Get(Character, "buttons"), "brokenTimeMachine"), "m_Interactable", true);
+            Set(Get(Character, "machine"), "transferredBankLevels", true);
+            var tm = Get(Character, "timeMachineController"); Set(tm, "character", Character);
+            Set(tm, "baseNormalSpeedDivider", 1f); Set(tm, "baseNormalGoldMultiDivider", 1f);
+            Set(tm, "baseSpeedCost", 1f); Set(tm, "baseGoldMultiCost", 1f);
+            var preset = Invoke(Plugin.GetType("NGUInjector.CustomPlans.CustomLoadoutPreset", true), "Parse", JsonParse(
+                "{\"Id\":\"os-dependency\",\"Name\":\"OS dependency\",\"Weights\":"
+                + (wandoosGoal ? "[0,0,0,0,0,0,0,0,1,0,0,0,0,0]" : "[0,0,0,0,0,0,1,0,0,0,0,0,0,0]")
+                + ",\"SupportMode\":\"current\",\"SwapSeconds\":0,\"AutoUpdate\":true,\"ResourcePrioritiesReviewed\":" + (reviewed ? "true" : "false")
+                + ",\"EnergyPriorities\":" + (kind == "inactive-proposal" ? "[\"WAN\"]" : kind == "reviewed-dormant" ? "[\"TM\",\"WAN\"]" : "[\"TM\"]")
+                + ",\"MagicPriorities\":[\"TM\"]}"));
+            CallMain("EquipGlobalPresetDefinition", preset, "dashboard", "explicit-equip", true, null);
+            var receipt = Get(MainInstance, "_globalPresetReceipt"); var policy = Get(receipt, "Policy");
+            var acquired = Get(Get(policy, "Candidate"), "Activities");
+            Equal(2, Get(acquired, "Os"), kind + " acquires actual native OS2");
+            var funded = (long)Get(acquired, "WandoosEnergy") + (long)Get(acquired, "WandoosMagic");
+            if (kind == "legacy-funded") Check(funded > 0, "legacy OS dependency has actual pinned WAN funding");
+            else Equal(0L, funded, kind + " has no acquired WAN allocation");
+            if (!wandoosGoal) Check((long)Get(acquired, "TimeMachineEnergy") + (long)Get(acquired, "TimeMachineMagic") > 0,
+                kind + " actually funds its TM-only objective");
+            var saved = JsonParse((string)Get(MainInstance, "_standaloneSelectedPolicy"));
+            var searches = PresetSearches; var writes = ResourceTransfers; var swaps = Get(typeof(Program), "Swaps");
+            Set(wandoos, "os", Enum.ToObject(Field(wandoos, "os").FieldType, 0));
+            var capture = CallMain("CaptureLoadoutPresetDefinition", Get(policy, "ExecutionPreset"));
+            if (kind == "reviewed-dormant")
+                Throws(() => CallMain("ReplayGlobalPreset", policy, Get(policy, "Preset"), capture), "Wandoos OS", "reviewed dormant WAN binds OS during ordinary replay");
+            else
+                Equal(!blocked, Get(CallMain("ReplayGlobalPreset", policy, Get(policy, "Preset"), capture), "Feasible"), kind + " ordinary replay applies the exact OS dependency");
+            if (blocked)
+            {
+                Throws(() => CallMain("ImportExecutionSelection", saved, null), "AUG/OS is unavailable", kind + " import rejects changed relevant OS");
+                Throws(() => CallMain("PreviewExecutionRebind", JsonParse("{}")), "AUG/OS is unavailable", kind + " rebind cannot bypass relevant OS");
+            }
+            else
+            {
+                var imported = CallMain("ImportExecutionSelection", saved, null);
+                Equal(2, Get(Get(Get(imported, "Candidate"), "Activities"), "Os"), kind + " import preserves acquired OS2 without binding unrelated installed OS0");
+                Equal(true, Get(CallMain("ReplayGlobalPreset", imported, Get(imported, "Preset"), capture), "Feasible"), kind + " imported replay agrees with ordinary replay");
+                var preview = CallMain("PreviewExecutionRebind", JsonParse("{}"));
+                CallMain("ApplyExecutionRebind", ExecutionReviewApplyArgs(preview));
+                Check(ReferenceEquals(receipt, Get(MainInstance, "_globalPresetReceipt")), kind + " actual rebind preserves still-owned live setup");
+                var rebound = Get(Get(MainInstance, "_globalPresetReceipt"), "Policy");
+                Equal(Get(policy, "Acquisition"), Get(rebound, "Acquisition"), kind + " actual rebind retains exact acquisition");
+                Equal(2, Get(Get(Get(rebound, "Candidate"), "Activities"), "Os"), kind + " actual rebind does not replace acquired OS choice");
+            }
+            Equal(0, Convert.ToInt32(Get(wandoos, "os")), kind + " review never changes current native OS0");
+            Equal(writes, ResourceTransfers, kind + " replay/import/rebind perform no native allocation writes");
+            Equal(swaps, Get(typeof(Program), "Swaps"), kind + " replay/import/rebind perform no gear writes");
+            Equal(searches, PresetSearches, kind + " replay/import/rebind perform no replacement search");
+        }
     }
 
     private static void CheckCompiledForeignResourceMutation()

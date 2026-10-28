@@ -451,7 +451,9 @@ public static partial class Program
     {
         object plan; var old = AdventureWeightAtFixture(out plan); var phase = ScheduledPhase(old);
         var e = Get(phase, "AtEnergyTarget"); var m = Get(phase, "AtMagicTarget");
-        CallMain("EndCombatPrep", "cancelled", "Injector unloaded.", true); ReplaceAutomaticCoordinator(plan);
+        Equal(true, CallMain("SaveProtectedStageProgress", true), "interrupted weighted AT retains its acquired gate checkpoint");
+        ReplaceAutomaticCoordinator(plan);
+        Equal(false, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "crash recovery imports intent but no historical cleanup authority");
         Set(Character, "energyPower", 50f); // Live rates may change, but a persisted paid gate must not.
         var changedDuringAcquisition = false; var searches = AdventureWeightSearches;
         CombatPrepClockRead = () => {
@@ -486,7 +488,9 @@ public static partial class Program
     {
         object plan; var old = AdventureWeightAtFixture(out plan); var phase = ScheduledPhase(old);
         var entry = Get(old, "OwnerEntry"); var deadline = Get(old, "DeadlineRebirthSeconds");
-        CallMain("EndCombatPrep", "cancelled", "Injector unloaded.", true); ReplaceAutomaticCoordinator(plan);
+        Equal(true, CallMain("SaveProtectedStageProgress", true), "completed-gate crash fixture preserves acquired targets before interruption");
+        ReplaceAutomaticCoordinator(plan);
+        Equal(false, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "completed-gate restart imports no historical cleanup authority");
         var levels = (long[])Get(Get(Character, "advancedTraining"), "level");
         levels[3] = (long)Get(phase, "AtEnergyTarget"); levels[4] = (long)Get(phase, "AtMagicTarget");
         Set(Character, "energyPower", 50f);

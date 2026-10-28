@@ -15,7 +15,9 @@ using Mono.Cecil.Cil;
 public static class IronPillSetupBoundary
 {
     internal static bool Enabled;
+    internal static Action SpellRendered;
     public static bool Active() { return Enabled; }
+    public static void RenderSpell() { SpellRendered?.Invoke(); }
 }
 
 internal static partial class IronPillReservationChecks
@@ -76,6 +78,8 @@ internal static partial class IronPillReservationChecks
                 if (!bloodMenu && !tooltip && !trainingRefresh) continue;
                 if (method.ReturnType.FullName != "System.Void") throw new Exception("Unexpected UI boundary signature: " + method.FullName);
                 method.Body = new Mono.Cecil.Cil.MethodBody(method);
+                if (type.Name == "RebirthPowerSpell" && method.Name == "updateMenu")
+                    method.Body.Instructions.Add(Instruction.Create(OpCodes.Call, game.MainModule.ImportReference(typeof(IronPillSetupBoundary).GetMethod("RenderSpell"))));
                 method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
                 if (trainingRefresh) patchedTrainingRefresh++;
                 else patched++;
@@ -95,6 +99,7 @@ internal static partial class IronPillReservationChecks
         _planType = assembly.GetType("NGUInjector.CustomPlans.CustomPlan", true);
         _scheduler = assembly.GetType("NGUInjector.Managers.CustomStageAllocator", true);
         _assertions = 0;
+        var setupBoundaryBefore = IronPillSetupBoundary.Enabled;
         var saved = new Dictionary<FieldInfo, object>();
         foreach (var name in new[] {"reference", "Character", "Controller", "Settings", "CustomPlanStore", "settingsForm", "OutputWriter", "_customAutomationStatus", "_dir"})
         {
@@ -113,7 +118,8 @@ internal static partial class IronPillReservationChecks
             var checks = new List<Action> { CheckOrders, CheckBloodGoalPriorities, CheckBloodGoalPreemptionAndReservation,
                 CheckShortPlanBloodGoals, CheckBloodGoalTimerIsolation, CheckQuickBloodGoalTelemetry, CheckPlanScopedBloodRuntime,
                 CheckPlanScopedIronPillRuntime, CheckWindowAndStageTransitions, CheckMinimumAndSuccessfulCast, CheckRejectedPill,
-                CheckRejectedFlush, CheckUnavailableState, CheckTimeout, CheckPreemption };
+                CheckRejectedFlush, CheckUnavailableState, CheckTimeout, CheckPreemption, CheckSavingCheckpointRestore,
+                CheckStartingCheckpointRestore, CheckCheckpointFailures };
             if (includeSchedulerChecks) checks.Add(CheckSequentialTimers);
             foreach (var check in checks)
             {
@@ -126,6 +132,8 @@ internal static partial class IronPillReservationChecks
         }
         finally
         {
+            IronPillSetupBoundary.Enabled = setupBoundaryBefore;
+            IronPillSetupBoundary.SpellRendered = null;
             try { foreach (var field in saved) field.Key.SetValue(null, field.Value); }
             finally
             {
@@ -506,13 +514,16 @@ internal static partial class IronPillReservationChecks
         Call("RunCustomBloodSpellAutomation", _plan);
         Eq(11.5d, Get(_blood, "rebirthPower"), "NUMBER accepts fractional blood below pill/loot/gold minima");
         Eq(true, Saving(), "fractional NUMBER flush begins reservation");
-        var window = Get(Get(_main, "_ironWindowRecord"), "Before");
+        var window = Get(_main, "_ironWindow");
+        var deadline = Get(window, "Deadline");
         Setting("CustomIronPillMinWorth", 1e8d);
         Set(_blood, "bloodPoints", 99d);
         Call("RunCustomBloodSpellAutomation", _plan);
         Eq(99d, Get(_blood, "bloodPoints"), "pill minimum rejects insufficient banked blood");
         Eq(0, ((Array) _settings.GetType().GetProperty("CustomIronPillHistory").GetValue(_settings)).Length, "minimum failure never enters history");
-        Eq(window, Get(Get(_main, "_ironWindowRecord"), "Before"), "live threshold edits cannot rewrite the acquired saving window");
+        Eq(true, ReferenceEquals(window, Get(_main, "_ironWindow")), "live threshold edits retain the acquired saving window");
+        Eq(1d, Get(window, "MinWorth"), "live threshold edits preserve acquired worth target");
+        Eq(deadline, Get(window, "Deadline"), "live threshold edits preserve the original deadline");
         Set(_blood, "bloodPoints", 100d);
         AtTime(5910d);
         Call("RunCustomBloodSpellAutomation", _plan);
@@ -553,12 +564,10 @@ internal static partial class IronPillReservationChecks
         AssertToggles(false, false, true, "flush rejection");
         AtTime(6800d);
         Call("UpdateCustomIronPillPrep", _plan);
-        Eq(false, Saving(), "elapsed backoff cannot authorize replay of an unknown native invocation");
-        Eq(10000d, Get(_blood, "bloodPoints"), "unknown native NUMBER evidence preserves the exact current bank");
-        Eq(11d, Get(_blood, "rebirthPower"), "repairing the scene reference never repeats the uncertain NUMBER effect");
-        var records = (Array)Property(Get(_main, "_finiteActionLedger"), "Records");
-        Eq(1, records.Cast<object>().Count(record => (string)Get(Get(record, "Identity"), "Kind") == "blood-number"), "unknown flush retains one semantic action, not another retry opportunity");
-        Eq("Unknown", Get(records.Cast<object>().Single(record => (string)Get(Get(record, "Identity"), "Kind") == "blood-number"), "State").ToString(), "native invocation uncertainty remains durable after the backoff");
+        Eq(true, Saving(), "elapsed bounded backoff admits a new saving window using current native blood");
+        Eq(0d, Get(_blood, "bloodPoints"), "fresh window flushes the current bank after finite backoff");
+        Eq(10011d, Get(_blood, "rebirthPower"), "new bounded attempt is not permanently blocked by the cancelled window");
+        Eq(6800d, Get(_main, "_customIronPillPrepStartedAt"), "new window has its own start rather than resurrecting the cancelled timer");
         Setup();
         var other = New(_character.GetType());
         Child(other, "bloodMagic");
@@ -581,10 +590,97 @@ internal static partial class IronPillReservationChecks
         Child(otherBlood, "adventureSpellTime");
         Set(_spells, "character", other);
         Call("RunCustomBloodSpellAutomation", _plan);
-        Eq(true, Saving(), "game-rejected pill retains bounded reservation");
+        Eq(false, Saving(), "invoked but unverified pill cancels only the current saving window");
         Eq(100d, Get(_blood, "bloodPoints"), "game-rejected pill retains current saved blood");
         Eq(0, ((Array) _settings.GetType().GetProperty("CustomIronPillHistory").GetValue(_settings)).Length, "game-rejected pill never enters history");
-        Eq(5900d, Get(_main, "_customIronPillPrepStartedAt"), "game-rejected pill does not restart saving timer");
+        Eq(-1d, Get(_main, "_customIronPillPrepStartedAt"), "game-rejected pill retires the saving timer");
+        Eq(6800d, Get(_main, "_customIronPillRetryAt"), "game-rejected pill uses bounded local backoff");
+    }
+
+    private static string PillCheckpoint => Path.Combine((string)_mainType.GetField("_dir", All).GetValue(null), "iron-pill-window-v1.json");
+
+    private static void ForgetPillSession()
+    {
+        Set(_main, "_ironWindowLoaded", false); Set(_main, "_ironWindow", null);
+        Set(_main, "_customIronPillPrepStartedAt", -1d); Set(_main, "_customIronPillPlanName", null);
+        Set(_main, "_customIronPillRetryAt", 0d);
+    }
+
+    private static void CheckSavingCheckpointRestore()
+    {
+        Setup();
+        Call("UpdateCustomIronPillPrep", _plan);
+        Eq("saving", Get(Get(_main, "_ironWindow"), "Phase"), "verified NUMBER entry publishes saving phase");
+        Set(_blood, "bloodPoints", 321d);
+        var original = File.ReadAllText(PillCheckpoint);
+        ForgetPillSession(); AtTime(6000d);
+        Call("UpdateCustomIronPillPrep", _plan);
+        Eq(true, Saving(), "valid saving checkpoint resumes reservation");
+        Eq(5900d, Get(_main, "_customIronPillPrepStartedAt"), "restoration retains the original timer");
+        Eq(321d, Get(_blood, "bloodPoints"), "restoration never repeats NUMBER entry flush");
+        Eq(10011d, Get(_blood, "rebirthPower"), "restoration awards no second NUMBER effect");
+        Eq(original, File.ReadAllText(PillCheckpoint), "restoration does not renew deadline or targets");
+        Call("ResetCustomIronPillPrep"); ForgetPillSession();
+        Call("UpdateCustomIronPillPrep", _plan);
+        Eq(false, Saving(), "closed checkpoint cannot resurrect a cancelled saving window");
+        Eq(321d, Get(_blood, "bloodPoints"), "closed restoration preserves newly produced blood");
+    }
+
+    private static void CheckStartingCheckpointRestore()
+    {
+        Setup();
+        Eq(true, Call("AcquireIronBloodWindow", _plan), "starting checkpoint is durable before native flush");
+        ForgetPillSession(); AtTime(5910d);
+        Call("UpdateCustomIronPillPrep", _plan);
+        Eq(false, Saving(), "ambiguous restored starting phase cancels only its saving window");
+        Eq("closed", Get(Get(_main, "_ironWindow"), "Phase"), "ambiguous starting phase is retired");
+        Eq(6810d, Get(_main, "_customIronPillRetryAt"), "ambiguous starting phase gets finite backoff");
+        Eq(10000d, Get(_blood, "bloodPoints"), "restored starting phase never enters NUMBER");
+        AtTime(6810d); Call("UpdateCustomIronPillPrep", _plan);
+        Eq(true, Saving(), "new window is permitted after bounded cancellation delay");
+        Eq(6810d, Get(_main, "_customIronPillPrepStartedAt"), "bounded retry is a new window, not revived elapsed time");
+    }
+
+    private static void CheckCheckpointFailures()
+    {
+        Setup();
+        File.WriteAllText(PillCheckpoint, "{}");
+        using (var held = new FileStream(PillCheckpoint, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            // Avoid importing the deliberately invalid file; this isolates admission storage.
+            Set(_main, "_ironWindowLoaded", true);
+            Call("UpdateCustomIronPillPrep", _plan);
+            Eq(false, Saving(), "starting write failure withholds entry flush");
+            Eq(10000d, Get(_blood, "bloodPoints"), "starting write failure spends no blood");
+        }
+        FileStream savingHeld = null;
+        IronPillSetupBoundary.SpellRendered = () => {
+            if (savingHeld == null) savingHeld = new FileStream(PillCheckpoint, FileMode.Open, FileAccess.Read, FileShare.Read);
+        };
+        try
+        {
+            Call("UpdateCustomIronPillPrep", _plan);
+            Eq(true, Saving(), "saving write failure retains verified flush in memory");
+            Eq(true, Get(Get(_main, "_ironWindow"), "Dirty"), "failed saving checkpoint remains pending locally");
+            Set(_blood, "bloodPoints", 321d);
+            Call("UpdateCustomIronPillPrep", _plan);
+            Eq(321d, Get(_blood, "bloodPoints"), "saving write retry never reflushes new blood");
+            Eq(10011d, Get(_blood, "rebirthPower"), "saving write failure cannot duplicate NUMBER effect");
+        }
+        finally { IronPillSetupBoundary.SpellRendered = null; savingHeld?.Dispose(); }
+        Call("UpdateCustomIronPillPrep", _plan);
+        Eq(false, Get(Get(_main, "_ironWindow"), "Dirty"), "saving write recovers without another native effect");
+        AtTime(6800d); Set(_blood, "bloodPoints", 100d);
+        using (var held = new FileStream(PillCheckpoint, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            Eq(true, Call("TryCastCustomIronPill"), "real pill commits despite closure checkpoint write failure");
+            Eq(false, Saving(), "closure failure retires reservation in memory");
+            Set(_blood, "bloodPoints", 100d);
+            Set(Get(_blood, "adventureSpellTime"), "totalseconds", 10000d);
+            Eq(false, Call("TryCastCustomIronPill"), "closed in-memory window never recasts even if native cooldown is ready");
+            Eq(100d, Get(_blood, "bloodPoints"), "closure failure never consumes another blood pool");
+            Eq(3f, Get(Get(_character, "adventure"), "attack"), "closure failure grants only the proven first pill effect");
+        }
     }
 
     private static void CheckSequentialTimers()

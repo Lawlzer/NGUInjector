@@ -8,6 +8,7 @@ namespace NGUInjector
     internal partial class Main
     {
         internal static bool LegacyAutomationEnabled => false;
+        private bool _automationRoutineRunning;
 
         // Stuff on a very short timer
         void QuickStuff()
@@ -42,10 +43,16 @@ namespace NGUInjector
         // Runs every 10 seconds, our main loop
         void AutomationRoutine()
         {
-            if (!ReferenceEquals(reference, this) || _unloaded || _executionLifecycle != ExecutionLifecycle.Running) return;
+            if (!ReferenceEquals(reference, this) || _unloaded || _executionLifecycle != ExecutionLifecycle.Running || _automationRoutineRunning) return;
+            _automationRoutineRunning = true;
             try
             {
                 ObserveCustomRebirthEpoch();
+                BeginRebirthAutomationPass();
+                try { PurchaseActionDiggers(); }
+                catch (Exception error) { LogError("Digger purchase", error); }
+                try { RunCustomAutoExp(); }
+                catch (Exception error) { LogError("Auto use EXP", error); }
                 // Inventory boosting does not acquire resources or restore gear. Automatic prep
                 // observes material growth itself; manual previews and live cleanup remain pinned.
                 var customAutoBoost = Settings.CustomAutoBoostEnabled;
@@ -57,19 +64,19 @@ namespace NGUInjector
                     catch (Exception error) { LogError("Custom auto boost", error); }
                 }
 
-                if (Character.buttons.yggdrasil.interactable)
-                    _yggManager.ManageYggHarvest(allowSwap: !CombatPrepActive);
-
-                ServiceAutomaticRecovery();
-
                 CustomPlan activeCustomPlan = null;
                 if (Settings.UseCustomRebirthPlan && CustomPlanStore != null)
                 {
                     activeCustomPlan = LoadRuntimeCustomPlan();
                 }
+                if (Character.buttons.yggdrasil.interactable && !CustomRebirthFruitHarvestReserved(activeCustomPlan))
+                    _yggManager.ManageYggHarvest(allowSwap: !CombatPrepActive);
+
+                ServiceAutomaticRecovery();
+
                 ObserveCustomRebirthReadiness(activeCustomPlan);
                 if (CombatPrepActive) { _timeLeft = 10f; return; }
-                ProcessPendingManualRebirth();
+                if (ProcessPendingManualRebirth() || RebirthAttemptedThisPass) return;
 
                 if (TryStartAutomaticStage(activeCustomPlan)) { _timeLeft = 10f; return; }
 
@@ -83,7 +90,6 @@ namespace NGUInjector
                         SetCustomAutomationStatus(moneyPit);
                 }
 
-                RunCustomAutoExp();
                 RunCustomBloodSpellAutomation(activeCustomPlan);
                 var previousCombatPrepRun = _combatPrepRun;
                 ReconcileCustomResources(activeCustomPlan, true);
@@ -103,19 +109,27 @@ namespace NGUInjector
             {
                 LogError("AutomationRoutine", e);
             }
-            _timeLeft = 10f;
+            finally
+            {
+                _automationRoutineRunning = false;
+                _timeLeft = 10f;
+            }
         }
 
         private bool RunCustomRebirthAutomation(CustomPlan activeCustomPlan)
         {
-            if (CombatPrepActive) return false;
+            if (CombatPrepActive || RebirthAttemptedThisPass) return false;
             var plan = Settings.UseCustomRebirthPlan && CustomPlanStore != null
                 ? activeCustomPlan ?? CustomPlanStore.Load(Settings.CustomPlanFile) : null;
-            if (!ObserveCustomRebirthReadiness(plan)) return false;
-            var rebirth = new CustomPlanRebirth(plan);
+            if (!ObserveCustomRebirthReadiness(plan) && !CustomRebirthPreparationDue(plan)) return false;
+            var prepared = _customPreRebirthPrepCompleted;
             if (RunCustomPreRebirthPrepIfNeeded(plan))
                 return true;
 
+            // Fruit rewards and the boss push can change NUMBER; preparation is not permission to rebirth early.
+            if (!prepared && _customPreRebirthPrepCompleted) CustomPlanRebirth.ResetRuntimeState();
+            if (!ObserveCustomRebirthReadiness(plan)) return false;
+            var rebirth = new CustomPlanRebirth(plan);
             var history = CaptureCustomRebirthHistory(DescribeCustomRebirthReason(plan));
             if (_profile.DoRebirth(rebirth))
             {

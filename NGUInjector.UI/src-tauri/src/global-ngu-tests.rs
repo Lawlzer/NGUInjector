@@ -6,7 +6,7 @@ pub(super) fn globals() -> Value {
 
 fn runtime() -> Value {
     json!({"externalUiEnabled": true, "status": "running", "updatedAt": Utc::now().to_rfc3339(),
-        "protocolVersion": 3, "planVersion": 17, "stageTimingVersion": 1,
+        "protocolVersion": 3, "planVersion": 18, "fightScheduleVersion": 1, "stageTimingVersion": 1,
         "globalNguWeightsVersion": 1, "loadoutPresetsVersion": 2, "globalPresetsVersion": 2,
         "startedAt": "session", "settingsCasVersion": 1, "supportedCommands": ["readPlan", "savePlan", "createPlan", "applySettingsPatch", "previewLoadoutPreset", "applyLoadoutPreset", "previewGlobalPreset", "applyGlobalPreset", "equipGlobalPreset"]})
 }
@@ -128,7 +128,7 @@ fn plans_retire_ratios_without_requiring_or_validating_them() {
             }
             assert_eq!(normalized["GoalPresets"][0]["Future"], 42);
             assert_eq!(normalized["Future"], source["Future"]);
-            assert_eq!(normalized["Version"], 17);
+            assert_eq!(normalized["Version"], 18);
         }
         normalize_offline_plan(json!({"Version": version})).unwrap();
     }
@@ -173,7 +173,7 @@ fn offline_retirement_waits_for_durable_globals_and_preserves_legacy_source() {
         let settings_bytes = fs::read(dir.path().join("settings.json")).unwrap();
         save_plan_offline(dir.path(), "legacy", &plan, Some(&revision)).unwrap();
         let saved = read_json_object(&path, MAX_JSON_BYTES, false).unwrap();
-        assert_eq!(saved["Version"], 17);
+        assert_eq!(saved["Version"], 18);
         assert_eq!(saved["Future"], 43);
         assert_eq!(saved["RebirthHistory"], original["RebirthHistory"]);
         assert!(saved.get("EnergyNguWeights").is_none());
@@ -341,7 +341,7 @@ fn global_only_writes_require_new_runtime_capability() {
 #[test]
 fn protocol_advertises_global_only_contract_and_backend_defaults() {
     let protocol = protocol_info();
-    assert_eq!(protocol["planVersion"], 17);
+    assert_eq!(protocol["planVersion"], 18);
     assert_eq!(protocol["globalNguWeightsVersion"], 1);
     assert_eq!(protocol["loadoutPresetsVersion"], 2);
     assert_eq!(protocol["globalPresetsVersion"], 2);

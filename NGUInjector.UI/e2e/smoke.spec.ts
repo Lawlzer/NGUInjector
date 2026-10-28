@@ -49,15 +49,15 @@ async function installNativeFixture(page: Page, connected = true, planPatch: Rec
       _customIronPillHistory: [{ CastAtUtc: '2026-10-14T12:30:00Z', WaitSeconds: 900, Worth: 1234.5, RebirthSeconds: 7200 }]
     };
     let plan = {
-      Version: 17, Name: 'default', AutoRebirthEnabled: false, TimeTriggerEnabled: true,
+      Version: 18, Name: 'default', AutoRebirthEnabled: false, TimeTriggerEnabled: true,
       TimeTriggerSeconds: 3600, NumberTriggerEnabled: false, NumberMultiplierTarget: 100,
       NumberClimbEnabled: false, NumberClimbMinSeconds: 480, NumberClimbMultiplierTarget: 100,
       TriggerMode: 0, StageSchedulerEnabled: true, StageDurationSeconds: 1800, StageLoopStartIndex: 1,
       GearGoal: 9, FightScoreMode: 0, ActiveGoalPresetIndex: 0, ActivePresetId: 'global_3',
       GoalPresets: [{ Name: 'Default', GearGoal: 9 }], RebirthHistory: [],
       Stages: [
-        { Name: 'Time Machine opener', Percent: 50, DurationSeconds: 900, EnergyFocus: 1, MagicFocus: 1, GearGoal: 5, CompletionMode: 0, EnergyPriorities: [], MagicPriorities: [] },
-        { Name: 'NGU sustain', Percent: 50, DurationSeconds: 900, EnergyFocus: 5, MagicFocus: 6, GearGoal: 2, CompletionMode: 0, EnergyPriorities: [], MagicPriorities: [] }
+        { Name: 'Time Machine opener', Percent: 50, DurationSeconds: 900, EnergyFocus: 1, MagicFocus: 1, GearGoal: 5, CompletionMode: 0, EnergyPriorities: [], MagicPriorities: [], FightSchedule: null },
+        { Name: 'NGU sustain', Percent: 50, DurationSeconds: 900, EnergyFocus: 5, MagicFocus: 6, GearGoal: 2, CompletionMode: 0, EnergyPriorities: [], MagicPriorities: [], FightSchedule: null }
       ],
       __externalUiRevision: revision.toString(16).padStart(64, '0'),
       ...planPatch
@@ -83,7 +83,7 @@ async function installNativeFixture(page: Page, connected = true, planPatch: Rec
         startedAt: '2026-10-14T10:00:00Z', updatedAt: new Date().toISOString(),
         customStatus: 'Fixture automation idle.', version: 'test', activeFocusGoal: '',
         supportedCommands: ['readPlan', 'applySettingsPatch', 'savePlan', 'createPlan', 'deletePlan', 'focusGoal', 'stopFocus', 'equipGlobalPreset', 'manualFightPrep', 'manualRebirth', 'quickSave', 'safeProbe', 'previewGear', 'setPlanStage'],
-        globalPresetsVersion: 2, loadoutPresetsVersion: 2, globalNguWeightsVersion: 1, loadoutPreset: applied,
+        globalPresetsVersion: 2, loadoutPresetsVersion: 2, globalNguWeightsVersion: 1, resourceLanePrioritiesVersion: 2, loadoutPreset: applied,
         stageOverridesV1: true,
         character: { rebirthSeconds: 420 }, settings: { customPlanFile: settings._customPlanFile, useCustomRebirthPlan: settings._useCustomRebirthPlan, autoRebirth: settings._autoRebirth },
         bloodGoals: {
@@ -93,7 +93,7 @@ async function installNativeFixture(page: Page, connected = true, planPatch: Rec
         },
         ironPill: { available: true, planName: settings._useCustomRebirthPlan ? settings._customPlanFile : '', eligible: false, status: 'blocked', reason: 'Custom auto-rebirth is disabled.' },
         planBloodMagicVersion: 1,
-        planVersion: 17,
+        planVersion: 18, stageTimingVersion: 1, fightScheduleVersion: 1,
         ...((window as FixtureWindow).__fixtureRuntimeOverrides ?? {})
       }
     });
@@ -120,11 +120,11 @@ async function installNativeFixture(page: Page, connected = true, planPatch: Rec
           }
           case 'delete_plan': {
             const name = String(args.name);
-            if (name === 'default' || name === '24hr' || !plans.includes(name)) throw new Error('Cannot delete this plan.');
+            if (['24hr', '15m-NUMBER-increase', '30m-NUMBER-increase', '1h-1m-NUMBER-increase'].includes(name) || !plans.includes(name)) throw new Error('Cannot delete this plan.');
             deletedPlans.push(name);
             plans.splice(plans.indexOf(name), 1);
-            settings._customPlanFile = 'default';
-            return { success: true, mode: connected ? 'connected' : 'offline', data: { selectedPlan: 'default' }, result: { data: { selectedPlan: 'default' } } };
+            settings._customPlanFile = '24hr';
+            return { success: true, mode: connected ? 'connected' : 'offline', data: { selectedPlan: '24hr' }, result: { data: { selectedPlan: '24hr' } } };
           }
           case 'save_settings_patch_json': {
             const casPath = '/e2e/fixtures/settings-cas.ts';
@@ -200,7 +200,7 @@ async function installNativeFixture(page: Page, connected = true, planPatch: Rec
 
 function planProgressFixture(planName = 'default', activeStageIndex = 0) {
   return {
-    available: true, status: 'running', planName, planVersion: 17, schedulerMode: 'stages',
+    available: true, status: 'running', planName, planVersion: 18, schedulerMode: 'stages',
     activeStageIndex, stageProgress: .5, elapsedSeconds: 450, stageElapsedSeconds: 450,
     planRevision: 'a'.padStart(64, '0'), stageEntry: `entry-${activeStageIndex}`,
     cycle: 0, repeating: true, loopStartIndex: 1, reason: '',
@@ -1193,7 +1193,7 @@ test('Dashboard keeps plan controls while Edit plan opens one full-width editor 
   await expect(editor.getByText('Cap buffer (seconds)', { exact: false })).toHaveCount(0);
   await expect(editor.getByRole('button', { name: /^Move (earlier|later)$/, includeHidden: true })).toHaveCount(0);
   await expect(bar.locator('.handle, [data-handle]')).toHaveCount(0);
-  await expect(stage.getByRole('checkbox', { name: 'Fight on entry', exact: true })).not.toBeChecked();
+  await expect(stage.getByRole('checkbox', { name: 'Fights enabled', exact: true })).not.toBeChecked();
   await expect(editor.getByRole('combobox', { name: 'Stage timing', exact: true })).toHaveCount(0);
   await expect(editor.getByRole('checkbox', { name: 'Protect fixed stages', exact: true })).toHaveCount(0);
   const duration = stage.getByRole('textbox', { name: 'Duration', exact: true });
@@ -1351,10 +1351,11 @@ test('plan library selects shortcuts and creates, copies and deletes without act
   await expect(management.getByText('Changes save automatically.', { exact: false })).toHaveCount(0);
   const selected = management.getByRole('combobox', { name: 'Plan to edit', exact: true });
   const shortcuts = management.locator('[aria-label="Built-in plan shortcuts"]');
-  await expect(shortcuts.getByRole('button')).toHaveText(['Default', '24h', '1h / 3m', 'Infinite']);
-  await expect(shortcuts.getByRole('button', { name: '1h / 3m', exact: true })).toBeDisabled();
-  await expect(shortcuts.getByRole('button', { name: 'Infinite', exact: true })).toBeDisabled();
-  await shortcuts.getByRole('button', { name: '24h', exact: true }).click();
+  await expect(shortcuts.getByRole('button')).toHaveText(['24h NGU', '15m NUMBER', '30m NUMBER', '1h1m NUMBER']);
+  for (const label of ['15m NUMBER', '30m NUMBER', '1h1m NUMBER']) {
+    await expect(shortcuts.getByRole('button', { name: label, exact: true })).toBeDisabled();
+  }
+  await shortcuts.getByRole('button', { name: '24h NGU', exact: true }).click();
   await expect(selected).toHaveValue('24hr');
   await expect(page.locator('#plan-editor')).toBeHidden();
   await page.getByRole('navigation', { name: 'Primary' }).getByRole('button', { name: 'Dashboard', exact: true }).click();
@@ -1364,8 +1365,9 @@ test('plan library selects shortcuts and creates, copies and deletes without act
   const remove = management.getByRole('button', { name: 'Delete', exact: true });
   await expect(remove).toBeDisabled();
   await expect(management).toContainText('Built-in plans cannot be deleted');
-  await shortcuts.getByRole('button', { name: 'Default', exact: true }).click();
+  await selected.selectOption('default');
   await expect(selected).toHaveValue('default');
+  await expect(remove).toBeEnabled();
   const source = await page.evaluate(() => (window as FixtureWindow).__fixtureState().plan);
   const name = management.getByRole('textbox', { name: 'New plan name', exact: true });
   await name.fill('browser-created');
@@ -1383,7 +1385,8 @@ test('plan library selects shortcuts and creates, copies and deletes without act
   ]);
   await expect(remove).toBeEnabled();
   await remove.click();
-  await expect(selected).toHaveValue('default');
+  await expect(selected).toHaveValue('');
+  expect(await page.evaluate(() => (window as FixtureWindow).__fixtureState().settings._customPlanFile)).toBe('24hr');
   await expect(selected.locator('option')).toHaveText(['Select plan', 'default', '24hr', 'browser-created']);
   expect(await page.evaluate(() => (window as FixtureWindow).__fixtureDeletedPlans)).toEqual(['browser-copy']);
   await expect(page.getByRole('button', { name: 'Advanced', exact: true })).toHaveAttribute('aria-current', 'page');
@@ -2436,14 +2439,22 @@ test('Quick preset stopping remains available with invalid drafts and only stop 
 test('Quick preset stop rejection keeps the active state without replaying', async ({ page }) => {
   await installNativeFixture(page);
   await page.goto('/');
-  const tile = page.getByRole('button', { name: 'Use Time Machine', exact: true });
+  const library = page.getByRole('region', { name: 'Loadout presets', exact: true });
+  const quick = library.getByLabel('Global quick presets', { exact: true });
+  await expect(quick.getByRole('button')).toHaveCount(presetLibrary.Presets.length);
+  await expect(page.getByRole('combobox', { name: 'Plan', exact: true })).toHaveValue('default');
+  await expect(library.getByRole('combobox', { name: 'Inspect preset', exact: true })).toBeEnabled();
+  const tile = quick.getByRole('button', { name: 'Use Time Machine', exact: true });
   await tile.click();
   await expect(tile).toHaveAttribute('aria-pressed', 'true');
   await page.evaluate(() => { (window as FixtureWindow).__fixtureStopReject = 'Cannot release Quick ownership.'; });
   await tile.click();
-  await expect(page.getByRole('alert')).toHaveText('Cannot release Quick ownership.');
+  const error = page.getByRole('alert', { name: 'Injector errors', exact: true }).locator('li > p');
+  await expect(error).toHaveText('Command failed: Clear quick: Cannot release Quick ownership.');
+  await expect(error).toBeVisible();
   await expect(tile).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(error).toHaveText('Command failed: Clear quick: Cannot release Quick ownership.');
   await expect(tile).toHaveAttribute('aria-pressed', 'true');
   expect(await page.evaluate(() => (window as FixtureWindow).__fixturePresetCommands.map(row => row.command))).toEqual(['equipGlobalPreset', 'stopFocus']);
 });

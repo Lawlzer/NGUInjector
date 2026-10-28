@@ -8,24 +8,24 @@ private allocation writer, or hand-authored scheduler snapshot.
 
 ## Run
 
-From the repository root, use the shared verifier for EVERY production/native
-build and executable run:
+From the repository root, use the public offline verifier:
 
 ```powershell
-& .\checks\VerifyExecutorOffline.ps1 -Suite OrdinaryPolicy `
-  -GameFolder 'C:\Gaming\Launchers\Steam\Steam\steamapps\common\NGU IDLE' `
-  -LogPath 'C:\Users\Kevin\AppData\Local\Temp\opencode\ordinary-policy-native.log'
+.\verify.ps1 -Scope Native -Suite OrdinaryPolicy
 # Optional focused real-coordinator timeline:
-& .\checks\VerifyExecutorOffline.ps1 -Suite OrdinaryPolicy -Selector --terminal-hold `
-  -GameFolder 'C:\Gaming\Launchers\Steam\Steam\steamapps\common\NGU IDLE'
+.\verify.ps1 -Scope Native -Suite OrdinaryPolicy -Selector '--terminal-hold'
 ```
 
-The verifier holds `Local\NGUInjector-Executor-Offline-Verification` across the
-production Release rebuild, fixture rebuild and run. Initial fixture-only
-MSBuild compilation also requires that mutex. Do not run an unlocked EXE.
+Set `NGU_IDLE_DIR` or pass `-GameFolder` for the installed game references. One
+incremental MSBuild invocation compiles production and the selected fixture/dependency
+projects under shared verification ownership; programs remain separate assemblies.
+Do not run direct builds or EXEs, or edit shared sources, during verification.
+JSON/phase logs retain actual results and artifact identity. Contention/defer/drift
+exits 2 with an append to `artifacts/agent-handoff.md`; scoped PASS is not the full
+gate. See [Testing And Save Safety](../../docs/testing.md).
 
 `OrdinaryPolicyChecks.csproj` references the existing BlackBar project so the
-fixture dependency is rebuilt even when OrdinaryPolicy is the ONLY selected
+fixture dependency is compiled even when OrdinaryPolicy is the ONLY selected
 suite. It does not run BlackBar's full or selector entry point. The verifier
 supplies the executable's three required arguments: Managed directory, injector
 DLL and BlackBar EXE. An optional fourth argument is `--terminal-hold`.
@@ -89,12 +89,12 @@ terminal selector is diagnostic, not a replacement for the full result.
 
 No installed-game save, bridge command, deployment, injection, restart or live
 action is performed. Unity tick timing and actual later gold debit remain outside
-this offline suite. A focused pass does not rerun or certify the other 11 native
-suites on the same production artifact.
+this offline suite. A focused pass does not rerun or certify other native suites
+on the same production artifact.
 
-## Verification
+## Historical Verification
 
-Migration verified 2026-10-23. Logs are under
+Migration verified 2026-10-23, not rerun by the runner/documentation change. Logs are under
 `C:\Users\Kevin\AppData\Local\Temp\opencode`.
 
 | Gate | Retained result | Evidence |

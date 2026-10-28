@@ -91,21 +91,21 @@ public static partial class OwnershipChecks
             string result;
             try { result = CheckPitNow(); }
             finally { PitRendered = PitSetupReady = null; Program.NativeGearSwapped = null; }
-            Check(result.StartsWith("Money Pit Reward:"), kind + "/" + successor + "/" + renderFailure + " durable native feed succeeds despite optional render failure: " + result
-                + "; before=" + G(PitRecord(), "Before") + "; after=" + G(PitRecord(), "After") + "; native=" + NativePitError);
+            Check(result.StartsWith("Money Pit Reward:"), kind + "/" + successor + "/" + renderFailure + " verified native feed succeeds despite optional render failure: " + result
+                + "; reason=" + G(LastPitResult, "Reason") + "; native=" + NativePitError);
             Equal(1, PitCalls, "actual native engage executes once"); Equal(gold, G(G(Character, "pit"), "totalGold"), "native cumulative gold accounting");
             Equal(1, setupObservations, "real request reaches selected-setup boundary exactly once");
             Equal(true, G(LastPitResult, "Committed"), "native pit result proves actual model commitment");
-            Equal(true, G(LastPitResult, "Durable"), "native pit result is stored before reward publication");
+            Equal(true, G(LastPitResult, "Invoked"), "native pit result reports this request's actual invocation");
             Equal(true, G(LastPitResult, "AuthorityCurrent"), "exact level-only material revision retains scoped current authority");
-            Equal(true, G(LastPitResult, "Verified"), "real native leaf has current scoped authority and durable result: " + G(LastPitResult, "Reason"));
+            Equal(true, G(LastPitResult, "Verified"), "real native leaf has exact commitment and current scoped authority: " + G(LastPitResult, "Reason"));
             Check(ReferenceEquals(successor ? b : kind == "none" ? old : head, G(inv, "head")), "exit resolves CURRENT B or preserves native gear without successor");
             if (kind != "none" && kind != "optimal") Check(!seen.SkipWhile(x => x != (int)G(head, "id")).Skip(1).Contains((int)G(old, "id")), "exit has no historical A flash");
             Equal(recalls, G(typeof(Program), "Recalls"), "pit preserving claim performs no recalls"); Equal(false, M("ExecutionOwnsDomain", Domain("Gear, Support, Route")), "pit retires its real claim");
             if (!successor && (kind == "none" || kind == "optimal")) Equal(swaps, G(typeof(Program), "Swaps"), "already-selected/no-equipment reward has no swaps");
             var writes = G(typeof(Program), "Swaps"); CheckPitNow(); Equal(1, PitCalls, "readiness prevents another feed"); Equal(writes, G(typeof(Program), "Swaps"), "repeat never restores twice");
-            var record = PitRecord(); Equal("Committed", G(record, "State").ToString(), "finite ledger stores actual native commitment");
-            Equal(renderFailure ? "ModelAppliedRenderFailed" : "AppliedVerified", G(record, "Disposition"), "ledger retains exact model/render disposition");
+            Equal(renderFailure ? "ModelAppliedRenderFailed" : "AppliedVerified", G(LastPitResult, "Disposition").ToString(), "current result retains exact model/render disposition");
+            Equal(false, Directory.Exists(Path.Combine((string)G(MainType, "_dir"), "finite-actions-v1")), "native feed creates no per-action disk history");
             if (successor)
             {
                 M("RunCustomPlanAutomation", plan);
@@ -149,8 +149,6 @@ public static partial class OwnershipChecks
         return selection;
     }
 
-    static object PitRecord() => ((Array)G(M("get_FiniteActions"), "Records")).Cast<object>().Single(x => (string)G(G(x, "Identity"), "Kind") == "pit-feed");
-
     static void CheckPitSetupFailures()
     {
         foreach (var blocker in new[] { "claim", "drag", "full", "partial", "unknown", "epoch" }) PitCase(() => {
@@ -165,9 +163,16 @@ public static partial class OwnershipChecks
             if (blocker == "epoch") S(Character, "stats", null);
             var stats = blocker == "epoch" ? null : G(Character, "stats"); var bag = G(inv, "inventory");
             if (blocker == "unknown") Program.NativeGearSwapped = _ => { Program.NativeGearSwapped = null; S(inv, "inventory", null); };
-            var failure = Failure(() => CheckPitNow()); Program.NativeGearSwapped = null; S(inv, "inventory", bag);
+            string result = null;
+            var failure = Failure(() => result = CheckPitNow()); Program.NativeGearSwapped = null; S(inv, "inventory", bag);
             if (stats != null) S(Character, "stats", stats);
-            Check(failure != null, "setup blocker rejects actual pit request: " + blocker); Equal(0, PitCalls, "unverified setup never enters native engage");
+            if (blocker == "claim")
+            {
+                Equal(null, failure, "conflicting claim returns expected admission wait without throwing");
+                Equal("Money Pit waiting for current execution ownership.", result, "conflicting claim reports the exact admission wait");
+            }
+            else Check(failure != null, "setup blocker rejects actual pit request: " + blocker);
+            Equal(0, PitCalls, "unverified setup never enters native engage");
             Equal(recalls, G(typeof(Program), "Recalls"), "blocked setup never recalls resources");
             if (blocker == "partial" || blocker == "unknown")
             { Equal(swaps + 1, G(typeof(Program), "Swaps"), "partial/unknown setup stops at first actual swap"); Check(ReferenceEquals(head, G(inv, "head")), "no historical rollback after failed acquisition"); }
@@ -204,31 +209,42 @@ public static partial class OwnershipChecks
         });
     }
 
-    static void CheckPitLedgerFaults()
+    static void CheckPitSessionFaults()
     {
-        foreach (var fault in new[] { "unknown", "result-storage", "prepare-storage", "permission" }) PitCase(() => {
+        foreach (var fault in new[] { "unknown", "permission", "legacy-locked", "legacy-not-directory" }) PitCase(() => {
             Setup(); Setting("ManageMagic", false); S(Character, "realGold", 1e7); Script(new[] { 1, 10, 4 }, new[] { -7, 0, -1 }, new[] { 0, 100, 37 });
-            var inv = G(Character, "inventory"); var head = PitGear(510, "Head", 90); PitBag[0] = head; FileStream held = null;
+            var head = PitGear(510, "Head", 90); PitBag[0] = head; FileStream held = null;
             var directory = (string)G(MainType, "_dir");
-            if (fault == "prepare-storage") { var file = Path.Combine(directory, "not-directory"); File.WriteAllText(file, "blocked"); S(MainType, "_dir", file); }
+            var legacy = fault.StartsWith("legacy-"); var path = Path.Combine(directory, "finite-actions-v1");
+            if (fault == "legacy-locked")
+            {
+                Directory.CreateDirectory(path);
+                var identity = M("ActionIdentity", "pit-feed", "money-pit", "0", null);
+                var hash = Invoke(Plugin.GetType("NGUInjector.JsonFiles", true), "ComputeRevision", System.Text.Encoding.UTF8.GetBytes((string)G(identity, "Key")));
+                path = Path.Combine(path, hash + ".json");
+            }
+            if (legacy) File.WriteAllText(path, "{");
+            if (fault == "legacy-locked") held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
             PitInvoking = () => { if (fault == "unknown") PitThrowAt = 0; };
             PitRendered = () => {
                 if (fault == "permission") M("SetExecutionLifecycle", Enum.Parse(MainType.GetNestedType("ExecutionLifecycle", All), "Quiescing"));
-                if (fault != "result-storage") return;
-                var identity = M("ActionIdentity", "pit-feed", "money-pit", "0", null);
-                var hash = Invoke(Plugin.GetType("NGUInjector.JsonFiles", true), "ComputeRevision", System.Text.Encoding.UTF8.GetBytes((string)G(identity, "Key")));
-                held = new FileStream(Path.Combine(directory, "finite-actions-v1", hash + ".json"), FileMode.Open, FileAccess.Read, FileShare.Read);
             };
             string result = null;
-            try { result = CheckPitNow(); } finally { held?.Dispose(); PitRendered = PitInvoking = null; S(MainType, "_dir", directory); PitThrowAt = -1; }
-            Check(!result.StartsWith("Money Pit Reward:"), "unverified finite result withholds dependent success: " + fault + ": " + result);
-            Equal(fault == "prepare-storage" ? 0 : 1, PitCalls, "storage/authority fault has exact native invocation count");
-            if (fault == "prepare-storage") { Equal(1e7, G(Character, "realGold"), "storage admission failure spends no gold"); return; }
-            var record = PitRecord(); Equal(fault == "unknown" ? "Unknown" : "Committed", G(record, "State").ToString(), "real ledger retains native outcome despite fault");
+            try { result = CheckPitNow(); } finally { held?.Dispose(); PitRendered = PitInvoking = null; PitThrowAt = -1; }
+            Equal(legacy, result.StartsWith("Money Pit Reward:"), "only current native proof authorizes publication, independent of retired storage/" + fault + ": " + result);
+            Equal(1, PitCalls, "each admitted request invokes native engage exactly once/" + fault);
+            Equal(true, G(LastPitResult, "Invoked"), "current result reports the native invocation/" + fault);
+            Equal(fault != "unknown", G(LastPitResult, "Committed"), "commitment requires the actual native gold/time proof/" + fault);
+            Equal(legacy, G(LastPitResult, "Verified"), "commitment alone cannot lend revoked or unknown authority/" + fault);
+            if (legacy)
+            {
+                Equal("{", File.ReadAllText(path), "retired malformed/unwritable history is ignored without modification/" + fault);
+                Equal(0d, G(Character, "realGold"), "ignored storage does not change the exact native gold debit");
+                Equal(91, G(head, "level"), "ignored storage retains one exact native item reward");
+            }
             if (fault == "permission")
             {
                 Equal(true, G(LastPitResult, "Committed"), "quiescing callback retains actual native feed commitment");
-                Equal(true, G(LastPitResult, "Durable"), "quiescing callback durably records the native result");
                 Equal(false, G(LastPitResult, "AuthorityCurrent"), "quiescing cannot approve the native material revision using revoked authority");
                 Equal(false, G(LastPitResult, "Verified"), "known commitment cannot lend dependent success after lifecycle revocation");
             }
@@ -236,47 +252,36 @@ public static partial class OwnershipChecks
             {
                 Equal("UnknownOutcome", G(LastPitResult, "Disposition").ToString(), "interrupted native reward retains typed unknown outcome");
                 Equal(false, G(LastPitResult, "Committed"), "unknown native reward is not promoted to committed");
-                Equal(true, G(LastPitResult, "Durable"), "unknown reward evidence is durable before rejection");
                 Equal(false, G(LastPitResult, "AuthorityCurrent"), "missing expected level change cannot authorize dependent setup");
             }
             var map = CapturePitGear(); var swaps = G(typeof(Program), "Swaps");
-            // Reload durable evidence, not a reset to an uninvoked in-memory action.
-            S(MainObject, "_finiteActionLedger", null);
             if (fault == "permission") M("SetExecutionLifecycle", Enum.Parse(MainType.GetNestedType("ExecutionLifecycle", All), "Running"));
             S(Character, "realGold", 1e7); S(G(G(Character, "pit"), "pitTime"), "totalseconds", 1e9); S(G(Character, "pit"), "tossCount", 0);
             S(G(Character, "pit"), "pitState", NewPitState(0, 111));
-            result = null; var replayError = Failure(() => result = CheckPitNow());
-            if (fault == "permission" || fault == "unknown")
+            result = CheckPitNow();
+            Check(result.Contains("already attempted"), "bounded session memory retires this one native feed opportunity/" + fault);
+            Equal(1, PitCalls, "same session opportunity cannot repeat native feed/" + fault);
+            Equal(1e7, G(Character, "realGold"), "session duplicate spends no gold"); SamePitMap(map, CapturePitGear(), "session duplicate preserves exact current setup"); Equal(swaps, G(typeof(Program), "Swaps"), "session duplicate manufactures no restoration swaps");
+            S(G(Character, "pit"), "tossCount", 17);
+            var replacementError = Failure(() => result = CheckPitNow());
+            if (!legacy)
             {
-                Check(replayError?.GetBaseException().GetType().Name == "SelectedSetupAuthorityException", "ordinary re-admission cannot bypass unapproved/unknown native material: " + replayError);
-                Equal("gear", G(replayError.GetBaseException(), "Domain"), "re-admission rejects the exact unapproved material domain");
-                Equal(fault == "unknown" ? "Unknown" : "Committed", G(PitRecord(), "State").ToString(), "durable native evidence survives rejected re-admission");
-                Equal(null, result, "rejected material re-admission publishes no reward result");
+                Check(replacementError?.GetBaseException().GetType().Name == "SelectedSetupAuthorityException", "new opportunity cannot bypass current unapproved material/" + fault + ": " + replacementError);
+                Equal("gear", G(replacementError.GetBaseException(), "Domain"), "new opportunity retains the scoped gear guard/" + fault);
+                Equal(1, PitCalls, "foreign/unknown material prevents a second native feed");
+                Equal(1e7, G(Character, "realGold"), "current material rejection spends no gold");
+                SamePitMap(map, CapturePitGear(), "current material rejection preserves exact native setup");
+                Equal(swaps, G(typeof(Program), "Swaps"), "current material rejection performs no restoration swap");
             }
             else
             {
-                Check(replayError == null, "ledger-only import rejection has no unrelated setup failure/" + fault + ": " + replayError);
-                Check(!result.StartsWith("Money Pit Reward:"), "old commitment cannot lend fresh action credit");
+                Check(replacementError == null, "fresh native feed opportunity ignores retired history: " + replacementError);
+                Check(result.StartsWith("Money Pit Reward:"), "fresh native opportunity earns only its actual new reward");
+                Equal(2, PitCalls, "fresh opportunity invokes once without replaying the prior feed");
+                Equal(92, G(head, "level"), "fresh opportunity applies the next exact native level reward");
+                Equal(0d, G(Character, "realGold"), "fresh opportunity spends its current native gold");
             }
-            Equal(1, PitCalls, "UNKNOWN/committed import never repeats native feed");
-            Equal(1e7, G(Character, "realGold"), "import never spends again"); SamePitMap(map, CapturePitGear(), "import preserves exact current setup"); Equal(swaps, G(typeof(Program), "Swaps"), "import does not manufacture restoration swaps");
-            if (fault == "unknown" || fault == "result-storage")
-            {
-                S(G(Character, "pit"), "tossCount", 17);
-                var replacementError = Failure(() => result = CheckPitNow());
-                if (fault == "unknown")
-                {
-                    Check(replacementError?.GetBaseException().GetType().Name == "SelectedSetupAuthorityException", "replacement opportunity cannot bypass unknown material review");
-                    Equal("gear", G(replacementError.GetBaseException(), "Domain"), "unknown replacement remains scoped to material review");
-                }
-                else Check(replacementError == null, "unapproved result storage is blocked by actual ledger dependencies, not an unrelated setup fault: " + replacementError);
-                Equal(1, PitCalls, "a replacement native opportunity cannot evade unresolved same-entry pit evidence");
-                var replacement = M("ActionIdentity", "pit-feed", "money-pit", "17", null);
-                Equal(true, Invoke(M("get_FiniteActions"), "HasUnresolved", replacement), "replacement opportunity is blocked by actual unresolved same-entry ledger evidence");
-                Equal(1e7, G(Character, "realGold"), "changed opportunity cannot spend again under unknown history");
-                Equal(1, ((Array)G(M("get_FiniteActions"), "Records")).Length, "unknown replacement creates no new action record");
-            }
-            var healthy = M("ResolveExecutionGrant", "healthy", "current", Domain("Energy"), (Func<bool>)(() => true), null, null); Equal(true, M("ValidateExecutionGrant", healthy, Domain("Energy")), "unresolved pit is scoped, not a global Energy stop");
+            var healthy = M("ResolveExecutionGrant", "healthy", "current", Domain("Energy"), (Func<bool>)(() => true), null, null); Equal(true, M("ValidateExecutionGrant", healthy, Domain("Energy")), "pit uncertainty is scoped, not a global Energy stop");
             var intent = Activator.CreateInstance(Manager("ResourceSetupIntent"), true);
             var desired = (IDictionary)Invoke(Manager("ResourceWriter"), "EmptyDesiredMap", true, false, false);
             ((long[])desired[Enum.Parse(Manager("ResourceTarget"), "EnergyNgu")])[0] = 100;
@@ -284,8 +289,10 @@ public static partial class OwnershipChecks
             var coordinator = MainObject; S(intent, "Authorized", (Func<bool>)(() => ReferenceEquals(MainObject, coordinator)));
             Equal(true, G(M("ReconcileStageResourceSetup", intent), "Verified"), "actual healthy Energy actuator continues despite pit uncertainty");
             Equal(100L, G(((IList)G(G(Character, "NGU"), "skills"))[0], "energy"), "healthy Energy actually funds its declared native target");
-            var ledger = G(MainObject, "_finiteActionLedger"); var priorRecord = PitRecord(); M("ObserveCustomRebirthEpoch"); ChangeEpoch("counter"); M("ObserveCustomRebirthEpoch");
-            Check(ReferenceEquals(ledger, G(MainObject, "_finiteActionLedger")), "epoch retirement never resets irreversible-action ledger"); Check(ReferenceEquals(priorRecord, PitRecord()), "epoch observation retains exact unresolved/committed evidence");
+            map = CapturePitGear(); var calls = PitCalls;
+            M("ObserveCustomRebirthEpoch"); ChangeEpoch("counter"); M("ObserveCustomRebirthEpoch");
+            Equal(calls, PitCalls, "epoch retirement cannot invoke a historical feed");
+            SamePitMap(map, CapturePitGear(), "epoch retirement imports no historical gear cleanup authority");
         });
     }
 

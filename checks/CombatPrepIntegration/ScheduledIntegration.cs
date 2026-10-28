@@ -49,6 +49,7 @@ public static partial class Program
     {
         CheckScheduledTransitions();
         CheckScheduledReplans();
+        CheckScheduledClaimAuthority();
         CheckScheduledOwnership();
         CheckScheduledRestore();
         CheckScheduledFailures();
@@ -173,6 +174,62 @@ public static partial class Program
         Equal(false, ((Array)Get(Get(run, "Policy"), "Phases")).Cast<object>().Any(x => (string)Get(x, "Kind") == "Augments"), "completed augment phase cannot restart on replan");
         Equal(true, ReferenceEquals(original, Get(run, "Capture")), "augment continuation retains original restoration capture");
         CallMain("EndCombatPrep", "cancelled", "test cleanup", true);
+    }
+
+    private static void CheckScheduledClaimAuthority()
+    {
+        foreach (var domain in new[] { "Gear", "Support" })
+        foreach (var expire in new[] { false, true })
+        {
+            var plan = ScheduledSetup(); ControlledCombatPrepClock = 10000;
+            Set(Get(Get(Character, "buttons"), "augmentation"), "m_Interactable", false);
+            foreach (var name in new[] { "wandoosEnergy", "wandoosMagic" })
+                Set(Get(Get(Character, "advancedTrainingController"), name), "levelFactor", 1000f);
+            var run = StartScheduled(plan); var phase = ScheduledPhase(run);
+            Equal("AT", Get(phase, "Kind"), "claim boundary fixture acquires real paid AT");
+            Equal(true, CallMain("CombatPrepRequirementsVerified", run, phase), "claim boundary positive control has current prerequisites");
+            var started = Get(run, "Started"); var duration = Get(run, "Duration"); var deadline = Get(run, "DeadlineRebirthSeconds");
+            var entry = Get(run, "OwnerEntry"); var setup = Get(run, "Setup");
+            var levels = (long[])Get(Get(Character, "advancedTraining"), "level");
+            levels[3] = (long)Get(phase, "AtEnergyTarget"); levels[4] = (long)Get(phase, "AtMagicTarget");
+            Set(run, "PhaseDeadline", ControlledCombatPrepClock.Value - 1);
+            var phaseDeadline = Get(run, "PhaseDeadline");
+            var claim = BeginFixtureClaim(domain, "scheduled-phase-authority"); var writes = ResourceCommittedWrites;
+            Equal(false, CallMain("CombatPrepRequirementsVerified", run, phase), domain + " claim immediately denies matching native prerequisites");
+            if (expire) ControlledCombatPrepClock = (double)started + (double)duration + 1;
+            ScheduledRefresh(run);
+            if (expire)
+            {
+                Equal("cancelled", Get(run, "Status"), "denied setup cannot certify phase completion at the original deadline");
+                Equal(false, Get(MainInstance, "CombatPrepRunActive"), "expired claim wait does not acquire a replacement budget");
+            }
+            else
+            {
+                Equal(false, Get(run, "SetupVerified"), "denied claim invalidates cached phase proof");
+                Equal(-1, Get(run, "AppliedResourcePhase"), "denied claim invalidates dependent resource credit");
+                Equal(writes, ResourceCommittedWrites, "denied phase boundary performs no dependent native resource writes");
+                Equal(true, ReferenceEquals(phase, ScheduledPhase(run)), "denied claim retains the acquired phase");
+                Equal(true, ReferenceEquals(setup, Get(run, "Setup")), "denied claim retains the acquired selected setup");
+                Equal(phaseDeadline, Get(run, "PhaseDeadline"), "denied claim cannot renew the phase deadline");
+            }
+            Equal(0, Get(run, "ReplanCount"), "denied claim cannot admit a completed-phase replan");
+            Equal(false, Get(Get(MainInstance, "_protectedScheduler"), "AutoAtCompleted"), "matching AT targets under denied authority cannot complete the gate");
+            Equal(0L, Get(Get(Character, "wandoos98"), "wandoosEnergy"), "denied AT never starts dependent Wandoos");
+            Equal(started, Get(run, "Started"), "claim wait preserves original run start");
+            Equal(duration, Get(run, "Duration"), "claim wait preserves original run duration");
+            Equal(deadline, Get(run, "DeadlineRebirthSeconds"), "claim wait preserves original run deadline");
+            Equal(entry, Get(run, "OwnerEntry"), "claim wait preserves original entry identity");
+            Equal(true, CallMain("EndExecutionClaim", claim, false), "foreign claim releases without historical restoration");
+            if (expire) continue;
+            ScheduledRefresh(run);
+            Equal(true, CallMain("CombatPrepRequirementsVerified", run, phase), "released claim re-verifies the same acquired phase");
+            Equal(0, Get(run, "ReplanCount"), "re-verification precedes completed-phase admission");
+            ScheduledRefresh(run);
+            Equal(1, Get(run, "ReplanCount"), "verified completion admits exactly one ordinary phase replan");
+            Equal(started, Get(run, "Started"), "released claim never renews the run start");
+            Equal(deadline, Get(run, "DeadlineRebirthSeconds"), "released claim never renews the run deadline");
+            CallMain("CancelCombatPrep", Parse("{\"runId\":\"" + Get(run, "Id") + "\"}"));
+        }
     }
 
     private static void CheckScheduledOwnership()

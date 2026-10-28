@@ -16,11 +16,10 @@ namespace NGUInjector.Managers
             var activities = policy.Activities;
             if (activities == null) throw new InvalidOperationException("Acquired activity decisions are missing; preview again.");
             var wandoos = activities.WandoosEnergy > 0 || activities.WandoosMagic > 0
-                || weights.Length > 8 && weights[8] > 0 && ((request.EnergyPriorities?.Contains("WAN") ?? false)
-                    || (request.MagicPriorities?.Contains("WAN") ?? false));
+                || (request.EnergyPriorities?.Contains("WAN") ?? false) || (request.MagicPriorities?.Contains("WAN") ?? false);
             if (wandoos && activities.Os != snapshot.WandoosOs)
                 throw new InvalidOperationException("Acquired Wandoos OS is incompatible with the installed OS; preview again.");
-            var funded = EvaluateSelection(snapshot, request, items, weights, normalization, key, label, null, policy.Support, activities);
+            var funded = EvaluateSelection(FundingSnapshot(snapshot, policy), request, items, weights, normalization, key, label, null, policy.Support, activities);
             var replay = policy.Copy();
             replay.PriorityFunding = funded.PriorityFunding;
             replay.Activities = funded.Activities;

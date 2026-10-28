@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -33,6 +32,13 @@ namespace NGUInjector
             internal string[] SetupMaterial;
             internal bool SetupVerified;
             internal bool RequirementsDue;
+            internal bool FightSuspended, FightResuming, FightReleaseVerified;
+            internal int FightResumeCount;
+            internal ih[] FightSuccessorGear;
+            internal string[] FightSuccessorMaterial;
+            internal SupportState FightSuccessorSupport;
+            internal object[] FightSuccessorSupportObjects;
+            internal long FightConflictVersion;
             internal string BlockedDomain, BlockedReason;
             internal ResourceMutationResult ResourceOutcome;
             internal bool OsInvoked;
@@ -85,7 +91,6 @@ namespace NGUInjector
         private double _combatPrepLastActualRefresh = -1;
         private CombatPrepCapture _combatPrepOsEpoch;
         private int _combatPrepPinnedOs;
-        private bool _combatPrepOsPinDurable;
         private readonly HashSet<string> _combatPrepEndedRuns = new HashSet<string>();
         private static readonly string[] CombatPrepActivityKinds = { "AT", "Augments", "Wandoos", "NGU", "Background" };
         private const string CombatPrepOwnerPausedReason = "Scheduled owner paused, switched, disabled or current entry changed.";
@@ -391,55 +396,17 @@ namespace NGUInjector
 
         private void ApplyCombatPrepOsPin(CombatPrepCapture capture)
         {
-            var path = string.IsNullOrEmpty(_dir) ? null : Path.Combine(_dir, "combat-prep-os.json");
-            if ((_combatPrepOsEpoch == null || !CombatPrepEpochMatches(_combatPrepOsEpoch)) && path != null && File.Exists(path))
-            {
-                try
-                {
-                    var pin = JsonFiles.ParseObject(File.ReadAllText(path));
-                    long rebirth;
-                    if (!pin["version"].IsNumber || pin["version"].AsDouble != 1 && pin["version"].AsDouble != 2
-                        || pin["version"].AsDouble == 2 && (!pin["action"].IsString || string.IsNullOrEmpty(pin["action"].Value)
-                            || !pin["runId"].IsString || !pin["entry"].IsString || !pin["invocation"].IsBoolean)
-                        || !pin["rebirth"].IsString
-                        || !long.TryParse(pin["rebirth"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out rebirth)
-                        || !FiniteCheckpointNumber(pin["origin"], false) || !FiniteCheckpointNumber(pin["elapsed"], true)
-                        || !FiniteCheckpointNumber(pin["total"], true) || !pin["os"].IsNumber || pin["os"].AsDouble < 0
-                        || pin["os"].AsDouble > 2 || pin["os"].AsDouble != Math.Floor(pin["os"].AsDouble))
-                        throw new FormatException("Invalid OS pin metadata.");
-                    if (rebirth == capture.Rebirth && Math.Abs(pin["origin"].AsDouble - capture.Origin) <= 2
-                        && pin["elapsed"].AsDouble <= capture.Elapsed + .1 && pin["total"].AsDouble <= capture.Total + .1)
-                    {
-                        _combatPrepOsEpoch = capture; _combatPrepPinnedOs = pin["os"].AsInt; _combatPrepOsPinDurable = true;
-                    }
-                }
-                catch
-                {
-                    // An unreadable pin never grants permission to automatically select another OS.
-                    _combatPrepOsEpoch = capture; _combatPrepPinnedOs = capture.Snapshot.CurrentOsId; _combatPrepOsPinDurable = false;
-                    capture.Snapshot.CaptureAssumptions += " OS pin metadata was unreadable; only the current OS is allowed.";
-                }
-            }
             if (_combatPrepOsEpoch == null || !CombatPrepEpochMatches(_combatPrepOsEpoch)) return;
             if (capture.Snapshot.CurrentOsId != _combatPrepPinnedOs)
                 throw new InvalidOperationException("The pinned OS changed externally; no further automatic OS changes this rebirth.");
             foreach (var os in capture.Snapshot.OperatingSystems) os.Unlocked &= os.Id == _combatPrepPinnedOs;
         }
 
-        private void PersistCombatPrepOsPin(CombatPrepCapture capture, int os)
+        private void RetainCombatPrepOsChoice(CombatPrepCapture capture, int os)
         {
-            if (_combatPrepOsPinDurable && _combatPrepOsEpoch != null && CombatPrepEpochMatches(_combatPrepOsEpoch)
-                && _combatPrepPinnedOs == os) return;
-            if (string.IsNullOrEmpty(_dir)) throw new InvalidOperationException("Combat prep cannot durably pin the OS without its runtime directory.");
-            var pin = new JSONObject(); pin["version"] = 2; pin["rebirth"] = capture.Rebirth.ToString(CultureInfo.InvariantCulture);
             var run = _combatPrepRun;
             if (run == null || !ReferenceEquals(run.Capture, capture)) throw new InvalidOperationException("OS pin requires its current acquired run.");
-            pin["runId"] = run.Id; pin["entry"] = run.OwnerEntry ?? "manual";
-            pin["action"] = run.Id + ":" + (run.OwnerEntry ?? "manual") + ":OS:" + os;
-            pin["invocation"] = (int)Character.wandoos98.os != os;
-            pin["origin"] = capture.Origin; pin["elapsed"] = capture.Elapsed; pin["total"] = capture.Total; pin["os"] = os;
-            JsonFiles.WriteAtomic(Path.Combine(_dir, "combat-prep-os.json"), pin.ToString());
-            _combatPrepOsEpoch = capture; _combatPrepPinnedOs = os; _combatPrepOsPinDurable = true;
+            _combatPrepOsEpoch = capture; _combatPrepPinnedOs = os;
         }
 
         private string CombatPrepStartBlocker(CombatPrepRun acquisition = null)
@@ -567,7 +534,17 @@ namespace NGUInjector
             if (_combatPrepEndedRuns.Contains(id)) return "Combat prep run is already inactive: " + id;
             if (!CombatPrepRunActive || _combatPrepRun.Id != id) throw new InvalidOperationException("Run ID does not match the active combat prep run.");
             if (_combatPrepRun.Automatic && CombatPrepEntryAuthority(_combatPrepRun))
+            {
+                // Cancellation retires paid preparation, not the entry's original elapsed obligation.
+                _automaticSafeResourcesEntry = AutomaticRecoveryEntry;
                 _automaticCancelledEntry = AutomaticRecoveryEntry;
+                SaveProtectedStageProgress(true);
+            }
+            if (_combatPrepRun.CleanupPending)
+            {
+                _combatPrepRun.CleanupStatus = "cancelled";
+                _combatPrepRun.CleanupReason = "Cancelled by user.";
+            }
             if (_combatPrepRun.CleanupPending) TickCombatPrep();
             else EndCombatPrep("cancelled", "Cancelled by user.");
             if (_combatPrepRun.CleanupPending) return "Combat prep cancellation cleanup is pending; normal automation remains blocked: " + id;
@@ -627,6 +604,7 @@ namespace NGUInjector
             }
             if (!CombatPrepRunActive) return;
             var run = _combatPrepRun;
+            if (run.FightSuspended || run.FightResuming) { ServiceSuspendedCombatPrep(); return; }
             if (run.CleanupPending)
             {
                 EndCombatPrep(run.CleanupStatus, run.CleanupReason);
@@ -653,6 +631,11 @@ namespace NGUInjector
                 }
                 var now = CombatPrepClock;
                 var phase = run.PhaseIndex < 0 ? null : run.Policy.Phases[run.PhaseIndex];
+                if (run.SetupVerified && !ValidateExecutionGrant(CombatPrepSetupGrant(run), ExecutionDomain.Gear | ExecutionDomain.Support))
+                {
+                    run.SetupVerified = false;
+                    run.AppliedResourcePhase = -1;
+                }
                 if (run.Automatic && phase?.Kind == "AT" && CombatPrepHasNativeWandoosWork())
                 {
                     EndCombatPrep("cancelled", "Wandoos work appeared during paid AT; further paid AT is forbidden.");
@@ -668,6 +651,7 @@ namespace NGUInjector
                         : laterPhases ? "Deadline reached before later phases could start; Wandoos budget was not extended." : "Original wall-clock budget completed.");
                     return;
                 }
+                if (run.Automatic && TrySuspendCombatPrepForFight(run)) return;
                 if (now - run.LastRefresh < run.Inputs.Snapshot.AllocationRefreshSeconds) return;
                 if (!Settings.ManageEnergy || !Settings.ManageMagic) { EndCombatPrep("cancelled", "Resource management was disabled."); return; }
                 RequireCombatPrepContext();
@@ -774,7 +758,7 @@ namespace NGUInjector
         private void ReconcileCombatPrepRequirements()
         {
             var run = _combatPrepRun;
-            if (run == null || run.Status != "running" || run.CleanupPending || run.Setup == null || !run.RequirementsDue) return;
+            if (run == null || run.Status != "running" || run.FightSuspended || run.CleanupPending || run.Setup == null || !run.RequirementsDue) return;
             run.RequirementsDue = false;
             var phase = run.Policy.Phases[run.PhaseIndex];
             try
@@ -831,6 +815,7 @@ namespace NGUInjector
                         && Character.wandoos98.os == os && CombatPrepRequirementsVerified(run, phase)
                         && resourceContextOwned() });
                 if (!run.ResourceOutcome.Verified) throw new ResourceMutationException(run.ResourceOutcome);
+                if (run.Automatic && CombatPrepRequirementsVerified(run, phase)) ObserveStageFightAugmentFunding(desired);
                 foreach (var fallback in fallbacks) BlackBarAllocator.ObserveApplied(fallback);
                 run.AppliedResourcePhase = run.PhaseIndex;
                 if (CombatPrepClock - run.Started >= run.Duration || run.Automatic && Character.rebirthTime.totalseconds >= run.DeadlineRebirthSeconds)
@@ -848,6 +833,8 @@ namespace NGUInjector
             catch (Exception error)
             {
                 if (!ReferenceEquals(reference, this) || _unloaded || Settings == null) { RetireCombatPrepAuthority(run); return; }
+                if (run.Retired || !CombatPrepRunActive) return;
+                run.AppliedResourcePhase = -1;
                 var mutation = error as ResourceMutationException;
                 var gear = error as SelectedSetupException;
                 var support = error as SupportApplicationException;
@@ -860,8 +847,10 @@ namespace NGUInjector
                 {
                     if (mutation != null) run.YieldedResourceLanes |= mutation.Result.AffectedLanes;
                     else { run.BlockedDomain = gear != null ? "gear" : "support"; run.BlockedReason = error.Message; }
+                    EndCombatPrep("cancelled", error.Message, false);
+                    return;
                 }
-                run.AppliedResourcePhase = -1;
+                if (error is SelectedSetupAuthorityException) { EndCombatPrep("cancelled", error.Message, false); return; }
                 run.Reason = error.Message;
                 if (!CombatPrepDeadlineAvailable(run))
                 {
@@ -1067,6 +1056,11 @@ namespace NGUInjector
             }
             if (!CombatPrepRunActive) return;
             var run = _combatPrepRun;
+            if (run.FightSuspended || run.FightResuming)
+            {
+                CancelSuspendedCombatPrep(run, reason);
+                return;
+            }
             FreezeCombatPrepTiming(run);
             var sameEpoch = CombatPrepEpochMatches(run.Capture);
             if (sameEpoch && !CombatPrepGearMatches(run.ExpectedGear))
@@ -1078,6 +1072,8 @@ namespace NGUInjector
             {
                 run.CleanupStatus = status; run.CleanupReason = reason;
                 var entryAuthority = CombatPrepEntryAuthority(run);
+                if (entryAuthority && status != "completed" && reason != CombatPrepOwnerPausedReason)
+                    _automaticSafeResourcesEntry = AutomaticRecoveryEntry;
                 if (entryAuthority && AutomaticContinuationPending && !run.CleanupWandoosConflictRecorded && CombatPrepHasNativeWandoosWork())
                 {
                     // A recall destroys allocation-only history. Save this entry's conflict before any cleanup/handoff can erase it.
@@ -1175,7 +1171,7 @@ namespace NGUInjector
             {
                 TryCommitProtectedEntryChange(scheduler => {
                     scheduler.AutoCleanupRecoveryRequired = false;
-                    if (_protectedCheckpointDurable && reason != "Injector unloaded." && (status != "cancelled" || reason != CombatPrepOwnerPausedReason)
+                    if (_protectedCheckpointDurable && status == "completed" && reason != "Injector unloaded."
                         && (run.YieldedResourceLanes == 0 || Character.rebirthTime.totalseconds >= run.DeadlineRebirthSeconds
                             || _automaticCancelledEntry == AutomaticRecoveryEntry)
                         && (!AutomaticContinuationPending || _automaticCancelledEntry == AutomaticRecoveryEntry))
@@ -1258,7 +1254,7 @@ namespace NGUInjector
             if (!next.RestoreState(plan, _protectedScheduler.ExportState())) return false;
             next.AllowRepeat = _protectedScheduler.AllowRepeat;
             next.AutoCleanupRecoveryRequired = false;
-            if (_protectedCheckpointDurable && (status != "cancelled" || reason != CombatPrepOwnerPausedReason)
+            if (_protectedCheckpointDurable && status == "completed"
                 && (run.YieldedResourceLanes == 0 || Character.rebirthTime.totalseconds >= run.DeadlineRebirthSeconds
                     || _automaticCancelledEntry == AutomaticRecoveryEntry)
                 && (!AutomaticContinuationPending || _automaticCancelledEntry == AutomaticRecoveryEntry))
@@ -1290,10 +1286,11 @@ namespace NGUInjector
             && (!run.Automatic || Character.rebirthTime.totalseconds < run.DeadlineRebirthSeconds);
 
         private bool CombatPrepPhaseAuthority(CombatPrepRun run, CombatPrepPhase phase) => ReferenceEquals(reference, this)
-            && !_unloaded && ReferenceEquals(_combatPrepRun, run) && !run.Retired && run.Status == "running" && !run.CleanupPending
+            && !_unloaded && ReferenceEquals(_combatPrepRun, run) && !run.Retired && run.Status == "running" && !run.CleanupPending && !run.FightSuspended
             && run.PhaseIndex >= 0 && ReferenceEquals(run.Policy.Phases[run.PhaseIndex], phase)
             && CombatPrepEpochMatches(run.Capture) && (!run.Automatic || AutomaticCombatPrepOwnerMatches(run))
             && CombatPrepDeadlineAvailable(run) && Settings.ManageEnergy && Settings.ManageMagic && CombatPrepNativeNukeStillOwned(run)
+            && (!run.FightResuming || phase.Kind != "AT" || !CombatPrepHasNativeWandoosWork())
             && CombatPrepCombatPreemption() == null && CombatPrepTargetsMatch(run);
 
         private void SelectCombatPrepRequirements(CombatPrepRun run, CombatPrepPhase phase)
@@ -1302,32 +1299,36 @@ namespace NGUInjector
             var gear = run.Inputs.Gear[phase.GearProfileKey];
             run.SetupMaterial = gear.Select(x => LoadoutPresetPrimitiveKey(x.equipment)).ToArray();
             var support = run.Inputs.Support[phase.GearProfileKey];
-            var acquisition = run.Id + ":" + run.ReplanCount + ":" + run.PhaseIndex;
+            var acquisition = run.Id + ":" + run.ReplanCount + ":" + run.PhaseIndex + ":" + run.FightResumeCount;
             run.SetupVerified = false;
             run.SupportStatus = "pending";
             run.AppliedResourcePhase = -1;
-            run.Setup = new SelectedSetupRequirements { Owner = run.Automatic ? "combat-stage:" + run.OwnerPlan + ":" + run.OwnerEntry : "combat:" + run.Id, Acquisition = acquisition,
+            SelectedSetupRequirements selected = null;
+            selected = new SelectedSetupRequirements { Owner = run.Automatic ? "combat-stage:" + run.OwnerPlan + ":" + run.OwnerEntry : "combat:" + run.Id, Acquisition = acquisition,
                 Gear = gear, Recall = GearRecallFootprint.Energy | GearRecallFootprint.Magic,
                 RetireRoute = true,
                 Support = support.Evaluation.Selection, ChangeSupport = true, Budget = support.BudgetFraction,
                 EnforceSupportBudget = support.EnforceBudget,
-                Authorized = () => CombatPrepPhaseAuthority(run, phase) && run.BlockedReason == null,
+                Authorized = () => ReferenceEquals(run.Setup, selected) && CombatPrepPhaseAuthority(run, phase) && run.BlockedReason == null,
                 MaterialValid = () => !gear.Where((x, i) => LoadoutPresetPrimitiveKey(x.equipment) != run.SetupMaterial[i]).Any(),
                 RouteRetirementAuthorized = () => CombatPrepRouteRetirementAuthorized(run) || run.EntryRouteAuthorized?.Invoke() == true,
                 ObserveRouteRetirement = () => run.EntryRouteAuthorized = null,
-                ObserveProgress = (items, selected) => {
+                ObserveProgress = (items, selection) => {
                     if (!CombatPrepPhaseAuthority(run, phase)) return;
                     run.ExpectedGear = items;
                     run.ExpectedMaterial = items.Select(x => LoadoutPresetPrimitiveKey(x.equipment)).ToArray();
                     run.ExpectedSupport = CaptureSupportState();
                     run.ExpectedSupportObjects = SupportObjects();
                 } };
+            run.Setup = selected;
         }
 
         private void ApplyCombatPrepRequirements(CombatPrepRun run, CombatPrepPhase phase)
         {
             if (CombatPrepRequirementsVerified(run, phase)
                 && (!_presetSupportPresentationPending || _resourceSetupExecutor.Application.BlockedLanes != 0)) return;
+            run.SetupVerified = false;
+            run.AppliedResourcePhase = -1;
             if (!CombatPrepPhaseAuthority(run, phase) || !CombatPrepGearMatches(run.ExpectedGear) || !CombatPrepSupportStillOwned(run))
                 throw new InvalidOperationException("Combat setup authority changed; native setup retained.");
             BeginPresetSupportAcquisition(run.Setup.Owner, run.Setup.Acquisition);
@@ -1343,12 +1344,22 @@ namespace NGUInjector
             { run.AdventureRouteOwned = false; run.AdventureRoute = null; run.AdventureRouteObjects = null; }
         }
 
+        private ExecutionGrant CombatPrepSetupGrant(CombatPrepRun run)
+        {
+            var setup = run.Setup;
+            // Authority is independent of the deadline: an on-time result can still
+            // finish at expiry, but a foreign setup claim cannot certify that result.
+            return setup == null ? null : ResolveExecutionGrant(setup.Owner, setup.Acquisition, ExecutionDomain.Gear | ExecutionDomain.Support,
+                () => ReferenceEquals(_combatPrepRun, run) && !run.FightSuspended && ReferenceEquals(run.Setup, setup));
+        }
+
         private bool CombatPrepRequirementsVerified(CombatPrepRun run, CombatPrepPhase phase)
         {
-            return run.SetupVerified && CombatPrepPhaseAuthority(run, phase) && run.BlockedReason == null
-                && run.Setup != null && run.Setup.MaterialValid() && CombatPrepGearMatches(run.Setup.Gear)
-                && !run.ExpectedGear.Where((x, i) => LoadoutPresetPrimitiveKey(x.equipment) != run.ExpectedMaterial[i]).Any()
-                && CombatPrepSupportStillOwned(run) && CaptureSupportState().Selection.StableKey == run.Setup.Support.StableKey;
+            return run.SetupVerified && VerifyExecutionPrerequisites(CombatPrepSetupGrant(run), ExecutionDomain.Gear | ExecutionDomain.Support,
+                () => CombatPrepPhaseAuthority(run, phase) && run.BlockedReason == null
+                    && run.Setup.MaterialValid() && CombatPrepGearMatches(run.Setup.Gear)
+                    && !run.ExpectedGear.Where((x, i) => LoadoutPresetPrimitiveKey(x.equipment) != run.ExpectedMaterial[i]).Any()
+                    && CombatPrepSupportStillOwned(run) && CaptureSupportState().Selection.StableKey == run.Setup.Support.StableKey);
         }
 
         private void ApplyCombatPrepOperatingSystem(CombatPrepRun run, CombatPrepPhase phase)
@@ -1358,7 +1369,7 @@ namespace NGUInjector
             if ((int)w.os == run.Policy.OsId)
             {
                 if (run.Automatic || run.Policy.Phases.Any(x => x.Kind == "Wandoos" || x.Kind == "Background" || x.BackgroundMagicWandoos))
-                    PersistCombatPrepOsPin(run.Capture, run.Policy.OsId);
+                    RetainCombatPrepOsChoice(run.Capture, run.Policy.OsId);
                 if (run.OsOutcome == null) run.OsOutcome = MutationDisposition.AppliedVerified.ToString();
                 return;
             }
@@ -1366,9 +1377,6 @@ namespace NGUInjector
                 throw new InvalidOperationException("OS switching would erase existing work or use a locked OS.");
             var bootup = w.bootupTime.totalseconds;
             if (run.OsInvoked) throw new InvalidOperationException("OS invocation cannot be replayed; review the previous native outcome.");
-            PersistCombatPrepOsPin(run.Capture, run.Policy.OsId);
-            if (!CombatPrepRequirementsVerified(run, phase)) throw new InvalidOperationException("OS invocation authority changed after persistence.");
-            // The durable pin is invocation authorization, never permission to replay an unknown reset.
             var accounting = ResourceWriter.AllocatedResourceKey();
             var grant = ResolveExecutionGrant("combat:" + run.Id, run.Id,
                 ExecutionDomain.Energy | ExecutionDomain.Magic | ExecutionDomain.Gear | ExecutionDomain.Support
@@ -1378,15 +1386,17 @@ namespace NGUInjector
                 RouteActionKind.CombatOperatingSystem, run.Policy.OsId);
             run.OsInvoked = action.Invoked;
             var rendering = action.Error;
-            if (!action.Committed || !CombatPrepRequirementsVerified(run, phase) || (int)w.os != run.Policy.OsId
+            if (!action.Verified || !CombatPrepRequirementsVerified(run, phase) || (int)w.os != run.Policy.OsId
                 || CombatPrepHasNativeWandoosWork() || w.bootupTime.totalseconds != bootup
                 || ResourceWriter.AllocatedResourceKey() != accounting)
             {
                 run.OsOutcome = MutationDisposition.UnknownOutcome.ToString();
                 run.BlockedDomain = "OS";
-                run.BlockedReason = "OS invocation outcome requires review; automatic reset will not repeat.";
+                run.BlockedReason = "OS invocation was not verified; the current preparation attempt is cancelled.";
+                EndCombatPrep("cancelled", run.BlockedReason, false);
                 throw new InvalidOperationException(run.BlockedReason, rendering);
             }
+            RetainCombatPrepOsChoice(run.Capture, run.Policy.OsId);
             run.OsOutcome = (rendering == null ? MutationDisposition.AppliedVerified : MutationDisposition.ModelAppliedRenderFailed).ToString();
             if (rendering != null) CombatPrepCleanupWarning(run, "OS model committed; native presentation failed: " + rendering.Message);
             var presentation = ResolveExecutionGrant("combat:" + run.Id, run.Setup.Acquisition, ExecutionDomain.NativeSettings,

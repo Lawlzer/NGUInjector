@@ -11,8 +11,8 @@ function deferred<T>() {
 }
 const settingsRevision = 'a'.repeat(64);
 const settingsSaved = (settings: JsonObject, extra: JsonObject = {}): JsonObject => ({ success: true, mode: 'connected', data: { settings, revision: 'b'.repeat(64) }, ...extra });
-const snapshot = (settings: JsonObject = {}, dir = 'A:/runtime'): NguiState => ({ runtime_dir: dir, marker_enabled: true, connected: true, protocol: {}, settings, settings_revision: settingsRevision, runtime: { externalUiEnabled: true, status: 'running', protocolVersion: 3, planVersion: 17, updatedAt: new Date().toISOString(), supportedCommands: ['readPlan', 'savePlan', 'focusGoal', 'manualRebirth', 'applySettingsPatch', 'previewGear', 'previewAugments', 'allocateAugments', 'createPlan', 'deletePlan'] }, profiles: [], plans: [], logs: [], command_results: [] });
-const plan = (): JsonObject => ({ Version: 17, __externalUiRevision: 'a'.repeat(64), Name: 'plan', Stages: [{ Name: 'one', Percent: 100, DurationSeconds: 0, DurationUnit: '%', CompletionMode: 0, GearGoal: -1 }], StageLoopStartIndex: -1, StageDurationSeconds: 1800, Future: 1, RebirthHistory: [{ TimestampLocal: 'old' }] });
+const snapshot = (settings: JsonObject = {}, dir = 'A:/runtime'): NguiState => ({ runtime_dir: dir, marker_enabled: true, connected: true, protocol: {}, settings, settings_revision: settingsRevision, runtime: { externalUiEnabled: true, status: 'running', protocolVersion: 3, planVersion: 18, stageTimingVersion: 1, fightScheduleVersion: 1, updatedAt: new Date().toISOString(), supportedCommands: ['readPlan', 'savePlan', 'focusGoal', 'manualRebirth', 'applySettingsPatch', 'previewGear', 'previewAugments', 'allocateAugments', 'createPlan', 'deletePlan'] }, profiles: [], plans: [], logs: [], command_results: [] });
+const plan = (): JsonObject => ({ Version: 18, __externalUiRevision: 'a'.repeat(64), Name: 'plan', Stages: [{ Name: 'one', Percent: 100, DurationSeconds: 0, DurationUnit: '%', CompletionMode: 0, GearGoal: -1, FightSchedule: null }], StageLoopStartIndex: -1, StageDurationSeconds: 1800, Future: 1, RebirthHistory: [{ TimestampLocal: 'old' }] });
 function setup(initial = snapshot()) {
   const getState = vi.fn(async () => initial);
   const backend = { ...api,
@@ -23,13 +23,46 @@ function setup(initial = snapshot()) {
     enqueueCommand: vi.fn(async (_dir: string, _command: string, _args?: JsonObject) => 'command-id'),
     readCommandResult: vi.fn(async (_dir: string, _id: string): Promise<JsonObject | null> => ({ id: 'command-id', command: 'focusGoal', success: true, message: 'Applied' })),
     createPlan: vi.fn(async (_dir: string, _name: string, _source?: JsonObject) => 'created'),
-    deletePlan: vi.fn(async (_dir: string, _name: string): Promise<JsonObject> => ({ success: true, mode: 'connected', result: { data: { name: _name, selectedPlan: 'default' } } })),
+    deletePlan: vi.fn(async (_dir: string, _name: string): Promise<JsonObject> => ({ success: true, mode: 'connected', result: { data: { name: _name, selectedPlan: '24hr' } } })),
     tailLog: vi.fn(async (_dir: string, _name: string) => 'log')
   };
   const confirm = vi.fn(async (_message: string) => true);
   const ui = createController(backend, confirm, initial.runtime_dir);
   return { ui, backend, confirm };
 }
+
+describe('fight schedule bridge guards', () => {
+  it.each([undefined, 0, 2, '1'])('does not read, save, copy, create or start with old capability %s', async capability => {
+    const initial = snapshot();
+    if (capability === undefined) delete initial.runtime.fightScheduleVersion; else initial.runtime.fightScheduleVersion = capability;
+    const { ui, backend } = setup(initial);
+    try {
+      await ui.refresh(); await ui.loadPlan('plan');
+      await ui.createPlan('copy', true); await ui.createPlan('new', false);
+      await ui.saveSettingValue('_useCustomRebirthPlan', true);
+      await ui.saveSettingValue('_autoRebirth', true);
+      expect(backend.readPlan).not.toHaveBeenCalled();
+      expect(backend.savePlan).not.toHaveBeenCalled();
+      expect(backend.createPlan).not.toHaveBeenCalled();
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+      expect(backend.enqueueCommand).not.toHaveBeenCalled();
+    } finally { ui.dispose(); }
+  });
+  it('keeps the schedule dirty when successful save readback silently disables it', async () => {
+    const { ui, backend } = setup();
+    try {
+      await ui.refresh(); await ui.loadPlan('plan');
+      const schedule = { Id: 'keep-me', Anchor: 1, DelaySeconds: 180, IntervalSeconds: 180 };
+      ui.setPlan({ ...ui.current().plan!, Stages: [{ ...(ui.current().plan!.Stages as JsonObject[])[0], FightSchedule: schedule }] });
+      await ui.saveActivePlan();
+      expect(backend.savePlan).toHaveBeenCalledTimes(1);
+      expect(ui.current().error).toContain('fight schedules differ from readback');
+      expect(ui.current().planDirty).toBe(true);
+      expect((ui.current().plan!.Stages as JsonObject[])[0].FightSchedule).toEqual(schedule);
+      expect((ui.current().planBase!.Stages as JsonObject[])[0].FightSchedule).toBeNull();
+    } finally { ui.dispose(); }
+  });
+});
 
 describe('bulk settings fresh-read regressions', () => {
   it.each(['control', 'raw JSON'])('rejects an unpolled backend conflict from a %s edit', async editor => {
@@ -1104,7 +1137,7 @@ describe('local plan timing draft safety', () => {
 });
 
 describe('plan saves and selection', () => {
-  it.each(['default', '24hr', '1h-3m-rebirth', 'infinite'])('quick-selects %s without activating or starting rebirth', async name => {
+  it.each(['24hr', '15m-NUMBER-increase', '30m-NUMBER-increase', '1h-1m-NUMBER-increase'])('quick-selects %s without activating or starting rebirth', async name => {
     const { ui, backend } = setup();
     await ui.refresh();
     await ui.loadPlan(name);
@@ -1207,6 +1240,112 @@ describe('plan saves and selection', () => {
 });
 
 describe('native read latency and fresh heartbeat snapshots', () => {
+  it.each(['LoadingSave', 'Quiescing', 'starting'])('defers automatic reads while execution is %s and loads once when Running', async lifecycle => {
+    const initial = snapshot({ _customPlanFile: 'plan', _moneyPitThreshold: 1 });
+    initial.plans = ['plan'];
+    initial.runtime = { ...initial.runtime, startedAt: 'session', execution: { lifecycle }, globalPresetsVersion: 2, supportedCommands: ['readPlan', 'readPresetLibrary'] };
+    if (lifecycle === 'starting') { initial.connected = false; initial.runtime.status = 'starting'; delete initial.runtime.execution; }
+    const { ui, backend } = setup(initial);
+    const readLibrary = vi.fn(async () => ({ Version: 1, Presets: [], __externalUiRevision: 'a'.repeat(64) }));
+    backend.readPresetLibrary = readLibrary;
+    try {
+      await ui.refresh();
+      ui.setSetting('_moneyPitThreshold', 2);
+      await ui.refresh(true);
+      expect(backend.readPlan).not.toHaveBeenCalled();
+      expect(readLibrary).not.toHaveBeenCalled();
+      expect(ui.current().error).toBe('');
+      expect(ui.current().pollError).toBe('');
+      expect(ui.current().busy).toBe(false);
+      backend.getState.mockResolvedValue({ ...initial, connected: true, runtime: { ...initial.runtime, status: 'running', execution: { lifecycle: 'Running' } } });
+      await ui.refresh(true);
+      await ui.refresh(true);
+      expect(backend.readPlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'plan');
+      expect(readLibrary).toHaveBeenCalledExactlyOnceWith('A:/runtime');
+      expect(ui.current().planName).toBe('plan');
+      expect(ui.current().patch).toEqual({ _moneyPitThreshold: 2 });
+      expect(ui.current().error).toBe('');
+      expect(backend.enqueueCommand).not.toHaveBeenCalled();
+      expect(backend.saveSettingsPatch).not.toHaveBeenCalled();
+    } finally { ui.dispose(); }
+  });
+  it('reports unsupported automatic plan reads rather than waiting indefinitely for readiness', async () => {
+    const initial = snapshot(); initial.plans = ['plan']; initial.runtime.supportedCommands = [];
+    const { ui, backend } = setup(initial);
+    try {
+      await ui.refresh();
+      expect(backend.readPlan).not.toHaveBeenCalled();
+      expect(ui.current().planName).toBe('');
+      expect(ui.current().error).toContain('advertising readPlan');
+    } finally { ui.dispose(); }
+  });
+  it('retains an initial read failure without heartbeat retries until an explicit refresh', async () => {
+    const initial = snapshot(); initial.plans = ['plan']; initial.runtime.startedAt = 'session';
+    const { ui, backend } = setup(initial);
+    backend.readPlan.mockRejectedValueOnce(new Error('Plan file is malformed.'));
+    try {
+      await ui.refresh();
+      await ui.refresh(true);
+      await ui.refresh(true);
+      expect(backend.readPlan).toHaveBeenCalledTimes(1);
+      expect(ui.current().planName).toBe('');
+      expect(ui.current().error).toBe('Plan file is malformed.');
+      expect(ui.current().pollError).toBe('');
+      await ui.refresh();
+      expect(backend.readPlan).toHaveBeenCalledTimes(2);
+      expect(ui.current().planName).toBe('plan');
+      expect(ui.current().error).toBe('');
+      expect(backend.savePlan).not.toHaveBeenCalled();
+      expect(backend.enqueueCommand).not.toHaveBeenCalled();
+    } finally { ui.dispose(); }
+  });
+  it('allows a new injector session to attempt its initial plan read after an earlier failure', async () => {
+    const initial = snapshot(); initial.plans = ['plan']; initial.runtime.startedAt = 'old';
+    const { ui, backend } = setup(initial);
+    backend.readPlan.mockRejectedValueOnce(new Error('Read failed.'));
+    try {
+      await ui.refresh();
+      backend.getState.mockResolvedValue({ ...initial, runtime: { ...initial.runtime, startedAt: 'new' } });
+      await ui.refresh(true);
+      expect(backend.readPlan).toHaveBeenCalledTimes(2);
+      expect(ui.current().planName).toBe('plan');
+      expect(ui.current().error).toBe('');
+    } finally { ui.dispose(); }
+  });
+  it.each(['LoadingSave', 'Quiescing'])('retains the editor when execution becomes %s during a pending read', async lifecycle => {
+    const { ui, backend } = setup();
+    const reading = deferred<JsonObject>();
+    try {
+      await ui.refresh(); await ui.loadPlan('plan');
+      backend.readPlan.mockReturnValueOnce(reading.promise);
+      const loading = ui.loadPlan('other');
+      const next = snapshot(); next.runtime.execution = { lifecycle };
+      backend.getState.mockResolvedValue(next);
+      await ui.refresh(true);
+      reading.resolve({ ...plan(), Name: 'other' });
+      await loading;
+      expect(ui.current().planName).toBe('plan');
+      expect(ui.current().plan).toEqual(plan());
+      expect(ui.current().error).toContain('became unready');
+    } finally { ui.dispose(); }
+  });
+  it('does not replay an action blocked by execution readiness after Running resumes', async () => {
+    const initial = snapshot(); initial.runtime.execution = { lifecycle: 'LoadingSave' };
+    const { ui, backend } = setup(initial);
+    try {
+      await ui.refresh();
+      await ui.runCommand('focusGoal', { goal: 'EnergyNgu' });
+      expect(backend.enqueueCommand).not.toHaveBeenCalled();
+      expect(ui.current().commandErrors).toHaveLength(1);
+      backend.getState.mockResolvedValue({ ...initial, runtime: { ...initial.runtime, execution: { lifecycle: 'Running' } } });
+      await ui.refresh(true);
+      expect(backend.enqueueCommand).not.toHaveBeenCalled();
+      expect(ui.current().commandErrors).toHaveLength(1);
+      await ui.runCommand('focusGoal', { goal: 'EnergyNgu' });
+      expect(backend.enqueueCommand).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'focusGoal', { goal: 'EnergyNgu' });
+      expect(ui.current().commandErrors).toEqual([]);
+    } finally { ui.dispose(); }
+  });
   it('does not publish a post-save reload from an injector session that changed while reading', async () => {
     const initial = snapshot(); initial.runtime.startedAt = 'old';
     const { ui, backend } = setup(initial);
@@ -1376,7 +1515,7 @@ describe('connected plan creation and deletion', () => {
     expect(ui.current().planDirty).toBe(true);
     expect(ui.current().planDraftDirty).toBe(true);
   });
-  it.each(['default', '24hr', '1h-3m-rebirth', 'infinite'])('blocks deletion of builtin %s before confirmation', async name => {
+  it.each(['24hr', '15m-NUMBER-increase', '30m-NUMBER-increase', '1h-1m-NUMBER-increase'])('blocks deletion of builtin %s before confirmation', async name => {
     const { ui, backend, confirm } = setup();
     await ui.refresh(); await ui.loadPlan(name);
     await ui.deletePlan();
@@ -1384,6 +1523,16 @@ describe('connected plan creation and deletion', () => {
     expect(backend.deletePlan).not.toHaveBeenCalled();
     expect(ui.current().planName).toBe(name);
     expect(ui.current().error).toContain('Built-in plans');
+  });
+  it.each(['default', '1h-3m-rebirth', 'infinite'])('allows deletion of retired builtin %s', async name => {
+    const initial = snapshot(); initial.plans = ['24hr', name];
+    const { ui, backend, confirm } = setup(initial);
+    await ui.refresh(); await ui.loadPlan(name);
+    await ui.deletePlan();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(backend.deletePlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', name);
+    expect(ui.current().planName).toBe('');
+    expect(ui.current().error).toBe('');
   });
   it('blocks deletion of the active running plan even with pending stop edits', async () => {
     const initial = snapshot();
@@ -1399,7 +1548,7 @@ describe('connected plan creation and deletion', () => {
   });
   it('waits for connected deletion and refreshes the backend fallback selection', async () => {
     const initial = snapshot({ _customPlanFile: 'custom' });
-    initial.plans = ['default', 'custom'];
+    initial.plans = ['24hr', 'custom'];
     initial.runtime.settings = { customPlanFile: 'custom', useCustomRebirthPlan: false };
     const { ui, backend } = setup(initial);
     await ui.refresh();
@@ -1411,15 +1560,15 @@ describe('connected plan creation and deletion', () => {
     expect(ui.current().planName).toBe('custom');
     expect(ui.current().planDraftDirty).toBe(true);
     expect(ui.current().busy).toBe(true);
-    const next = snapshot({ _customPlanFile: 'default' });
-    next.plans = ['default']; next.runtime.settings = { customPlanFile: 'default', useCustomRebirthPlan: false };
+    const next = snapshot({ _customPlanFile: '24hr' });
+    next.plans = ['24hr']; next.runtime.settings = { customPlanFile: '24hr', useCustomRebirthPlan: false };
     backend.getState.mockResolvedValue(next);
-    deleted.resolve({ success: true, mode: 'connected', result: { data: { name: 'custom', selectedPlan: 'default' } } });
+    deleted.resolve({ success: true, mode: 'connected', result: { data: { name: 'custom', selectedPlan: '24hr' } } });
     await pending;
     expect(backend.deletePlan).toHaveBeenCalledWith('A:/runtime', 'custom');
     expect(ui.current().planName).toBe('');
     expect(ui.current().planDraftDirty).toBe(false);
-    expect(ui.current().snapshot!.settings._customPlanFile).toBe('default');
+    expect(ui.current().snapshot!.settings._customPlanFile).toBe('24hr');
     expect(ui.current().busy).toBe(false);
   });
   it('requires connected deletion support', async () => {
@@ -1433,9 +1582,9 @@ describe('connected plan creation and deletion', () => {
     expect(ui.current().error).toContain('does not support plan deletion');
   });
   it('allows offline deletion without connected command support', async () => {
-    const initial = { ...snapshot(), connected: false }; initial.plans = ['default', 'custom']; initial.runtime.supportedCommands = [];
+    const initial = { ...snapshot(), connected: false }; initial.plans = ['24hr', 'custom']; initial.runtime.supportedCommands = [];
     const { ui, backend } = setup(initial);
-    backend.deletePlan.mockResolvedValueOnce({ success: true, mode: 'offline', data: { name: 'custom', selectedPlan: 'default' } });
+    backend.deletePlan.mockResolvedValueOnce({ success: true, mode: 'offline', data: { name: 'custom', selectedPlan: '24hr' } });
     await ui.refresh(); await ui.loadPlan('custom');
     await ui.deletePlan();
     expect(backend.deletePlan).toHaveBeenCalledWith('A:/runtime', 'custom');
@@ -2960,7 +3109,7 @@ describe('global NGU settings autosave', () => {
     const before = api.cloneObject(ui.current().snapshot!.settings);
     ui.editPlan({ ...ui.current().plan!, NguGoal: 1, EnergyNguWeights: [3], MagicNguWeights: null, TimeTriggerSeconds: 600 });
     await ui.flushAutosave();
-    expect(backend.savePlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'selected', expect.objectContaining({ TimeTriggerSeconds: 600, Version: 17 }));
+    expect(backend.savePlan).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'selected', expect.objectContaining({ TimeTriggerSeconds: 600, Version: 18 }));
     expect(backend.savePlan.mock.calls[0][2]).not.toHaveProperty('EnergyNguWeights');
     expect(backend.savePlan.mock.calls[0][2]).not.toHaveProperty('MagicNguWeights');
     expect(backend.savePlan.mock.calls[0][2]).not.toHaveProperty('NguGoal');
@@ -3017,7 +3166,7 @@ describe('global NGU settings autosave', () => {
 
   it('preserves current version, stored fields, and fixed durations while editing unrelated settings', async () => {
     const { ui, backend } = setup();
-    const source = { ...plan(), Stages: [{ Name: 'Fixed', Percent: 100, DurationSeconds: 120, DurationUnit: 's', CompletionMode: 0 }] };
+    const source = { ...plan(), Stages: [{ Name: 'Fixed', Percent: 100, DurationSeconds: 120, DurationUnit: 's', CompletionMode: 0, FightSchedule: null }] };
     backend.readPlan.mockResolvedValue(source);
     await ui.refresh(); await ui.loadPlan('selected');
     ui.editPlan({ ...ui.current().plan!, TimeTriggerSeconds: 600 });

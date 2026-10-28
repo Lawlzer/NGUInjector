@@ -214,16 +214,17 @@ public static partial class Program
         Set(MainType, "Settings", Settings); Set(MainType, "CustomPlanStore", store); Set(Controller, "midDrag", false);
         CallMain("InitializeProtectedStageProgress", plan);
         Equal(null, Get(MainInstance, "_combatPrepRun"), "checkpoint recovery has no reconstructed live run");
-        Equal(true, Get(MainInstance, "CombatPrepActive"), "durable marker guards resources until coordinator service");
+        Equal(false, Get(MainInstance, "CombatPrepActive"), "restart does not import historical cleanup authority or block ordinary maintenance");
         head = PrepareAutoBoostInventory(); Set(head, "capAttack", 1000f); slot = PutAutoBoost(1, 123f);
-        var receipt = InstallAutoBoostCachedReceipt(); var gear = CallMain("CombatPrepEquipped");
+        Equal(null, Get(MainInstance, "_globalPresetReceipt"), "restart has no imported cached-preset application receipt");
+        var gear = CallMain("CombatPrepEquipped");
         var recalls = Recalls; var writes = ResourceCommittedWrites; var swaps = Swaps; var energy = OwnedResourceTotal(true); var magic = OwnedResourceTotal(false);
         var scheduler = Get(MainInstance, "_protectedScheduler"); var stage = Get(scheduler, "StageIndex");
         for (var tick = 0; tick < 3; tick++)
         {
             CallMain("AutomationRoutine"); CallMain("QuickStuff"); CallMain("RunCustomPlanAutomation", plan); CallMain("GetProtectedStage", plan);
         }
-        Equal(123f, Get(head, "curAttack"), "AutomationRoutine boosts through recovery and suspended cached-preset deferral");
+        Equal(123f, Get(head, "curAttack"), "AutomationRoutine resumes native boosting without historical cleanup authority");
         Equal(0, Get(((IList)Get(Get(Character, "inventory"), "inventory"))[slot], "id"), "recovery-only scheduling consumes the native boost");
         Equal(1, AutoBoostRandomReads, "recovery consumes once without replaying the boost");
         Equal(true, CallMain("CombatPrepGearMatches", gear), "recovery maintenance preserves exact equipped identities");
@@ -237,7 +238,7 @@ public static partial class Program
         Equal(false, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "coordinator retires recovery without acknowledgement");
         var checkpoint = Parse(File.ReadAllText((string)Get(MainInstance, "ProtectedCheckpointPath")));
         Equal(false, Get(Json(Json(checkpoint, "scheduler"), "autoCleanupRecoveryRequired"), "AsBool"), "marker retirement is durable before successor funding");
-        Equal(true, ReferenceEquals(receipt, Get(MainInstance, "_globalPresetReceipt")), "boosting does not reacquire the suspended cached preset");
+        Equal(null, Get(MainInstance, "_globalPresetReceipt"), "boosting does not reconstruct a historical cached preset");
         Equal(false, Get(MainInstance, "_customEquipmentApplicationInvalidated"), "selected ordinary successor finishes its own current equipment reconciliation");
         Equal(null, Get(MainInstance, "_combatPrepRun"), "maintenance does not fabricate a live recovery run");
     }
@@ -316,7 +317,8 @@ public static partial class Program
             if (guard == "cleanup")
             {
                 object plan, original; run = CleanupRecoveryFixture(out plan, out original, false);
-                FailDesiredEnergyPreflight = true; CallMain("CancelCombatPrep", Parse("{\"runId\":\"" + Get(run, "Id") + "\"}"));
+                FailDesiredEnergyPreflight = true; CallMain("EndCombatPrep", "cancelled", "Injector unloaded.", true);
+                Equal(false, FailDesiredEnergyPreflight, "cleanup suppression reaches an actual failed resource release");
                 Set(Controller, "midDrag", false); Set(run, "CleanupLastAttempt", (double)Get(MainType, "CombatPrepClock") + 100);
                 PrepareAutoBoostInventory(); Set(Get(Get(Character, "inventory"), "head"), "capAttack", 1000f);
                 Equal(true, Get(run, "CleanupPending"), "cleanup suppression has pending live restoration without drag");

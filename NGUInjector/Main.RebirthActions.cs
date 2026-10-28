@@ -9,33 +9,16 @@ namespace NGUInjector
     {
         private ExecutionClaim _rebirthActionClaim;
         private SelectedSetupRequirements _rebirthActionSetup;
-        internal bool RebirthFinitePrerequisitesResolved
-        {
-            get
-            {
-                try
-                {
-                    var acquisition = "rebirth:" + ActionNumber(Character.stats.rebirthNumber);
-                    var id = ActionIdentity("rebirth", "rebirth", "engage");
-                    var dependencies = 511 & ~(int)ExecutionDomain.FiniteAction;
-                    if (!FiniteActions.FlushDependentResults(id, acquisition, dependencies)
-                        || FiniteActions.HasUnresolvedDependencies(id, acquisition, dependencies)) return false;
-                    return !FiniteActions.Records.Any(x => x.Identity.Acquisition == acquisition
-                        && (x.Identity.Kind.StartsWith("fruit-harvest:", StringComparison.Ordinal)
-                            || x.Identity.Kind.StartsWith("blood-", StringComparison.Ordinal))
-                        && (x.State == FiniteActionState.Unknown || x.State == FiniteActionState.Invocation
-                            || x.State == FiniteActionState.Committed && x.Dirty));
-                }
-                catch { return false; }
-            }
-        }
+        internal bool RebirthAttemptedThisPass { get; private set; }
+        internal void BeginRebirthAutomationPass() { RebirthAttemptedThisPass = false; }
 
         internal bool PrepareFinalRebirthAction()
         {
+            if (CustomBossFightActive()) return false;
             if (_rebirthActionClaim != null) return FiniteActionSetupVerified(_rebirthActionClaim, _rebirthActionSetup);
             var id = ActionIdentity("rebirth", "rebirth", "engage");
             var claim = BeginExecutionClaim(id.Owner, id.Acquisition, ExecutionDomain.FiniteAction | ExecutionDomain.NativeSettings
-                | ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route | ExecutionDomain.Inventory, () => true);
+                | ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route | ExecutionDomain.Inventory, () => !CustomBossFightActive());
             _rebirthActionClaim = claim;
             try
             {
@@ -83,16 +66,19 @@ namespace NGUInjector
         private sealed class NativeRebirthAction : FiniteAction
         {
             internal long Rebirth;
+            internal Character Model;
+            internal object Controller, Stats;
             internal MethodInfo Method;
             internal Func<bool> SetupVerified;
-            internal override bool Prerequisites() => SetupVerified() && Character.stats.rebirthNumber == Rebirth
-                && reference.RebirthFinitePrerequisitesResolved
+            internal override bool Prerequisites() => ReferenceEquals(Character, Model) && ReferenceEquals(Model.rebirth, Controller)
+                && ReferenceEquals(Model.stats, Stats) && SetupVerified() && Character.stats.rebirthNumber == Rebirth
                 && Character.rebirthTime.totalseconds > Character.rebirth.minRebirthTime()
                 && !Character.bossController.isFighting && !Character.bossController.nukeBoss
                 && (!Character.buttons.beards.interactable || !Character.beards.disabled && Character.beards.activeBeards.Contains(2));
             internal override string Observe() => ActionNumber(Character.stats.rebirthNumber) + "|" + ActionNumber(Character.rebirthTime.totalseconds);
-            internal override void Invoke() => Method.Invoke(Character.rebirth, null);
-            internal override MutationDisposition Classify(string before, string after, Exception error) => Character.stats.rebirthNumber == Rebirth + 1
+            internal override void Invoke() => Method.Invoke(Model.rebirth, null);
+            internal override MutationDisposition Classify(string before, string after, Exception error) => ReferenceEquals(Character, Model)
+                && ReferenceEquals(Model.rebirth, Controller) && ReferenceEquals(Model.stats, Stats) && Model.stats.rebirthNumber == Rebirth + 1
                 && Character.rebirthTime.totalseconds == 0d
                     ? error == null ? MutationDisposition.AppliedVerified : MutationDisposition.ModelAppliedRenderFailed : MutationDisposition.UnknownOutcome;
         }
@@ -100,20 +86,20 @@ namespace NGUInjector
         internal bool InvokeFinalRebirthAction(string method)
         {
             var claim = _rebirthActionClaim;
-            if (claim == null) return false;
+            if (claim == null || RebirthAttemptedThisPass) return false;
             var callback = Character.rebirth.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
                 .SingleOrDefault(x => x.Name == method && x.GetParameters().Length == 0);
             if (callback == null) return false;
-            // Normal and challenge engagement share one identity: a failed/unknown
-            // challenge must never fall through into a second normal rebirth.
+            // Normal and challenge engagement share one pass-local attempt.
             var id = ActionIdentity("rebirth", claim.Owner, "engage");
             var action = new NativeRebirthAction { Identity = id, Footprint = claim.Domains, Rebirth = Character.stats.rebirthNumber,
-                DependencyDomains = (ExecutionDomain)(511 & ~(int)ExecutionDomain.FiniteAction),
+                Model = Character, Controller = Character.rebirth, Stats = Character.stats,
                 Method = callback, SetupVerified = () => FiniteActionSetupVerified(claim, _rebirthActionSetup) };
             var result = RunFiniteAction(action, ResolveExecutionGrant(id.Owner, id.Acquisition, action.Footprint,
                 () => ExecutionClaimCurrent(claim), claim));
-            // A verified native rebirth deliberately retires the old epoch/grant.
-            return result.Committed && result.Durable && Character.stats.rebirthNumber == action.Rebirth + 1;
+            RebirthAttemptedThisPass |= result.Invoked;
+            // A native rebirth deliberately retires the old epoch/grant.
+            return result.Committed && Character.stats.rebirthNumber == action.Rebirth + 1;
         }
     }
 }

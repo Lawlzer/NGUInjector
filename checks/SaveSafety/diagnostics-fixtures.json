@@ -3,6 +3,7 @@
   "startedAt": "2026-10-23T00:00:00Z",
   "updatedAt": "2026-10-23T00:00:01Z",
   "runtimeRevision": 1,
+  "automationErrors": [],
   "settings": { "customPlanFile": "Fixture Plan", "useCustomRebirthPlan": true },
   "planProgress": { "available": true, "status": "running", "planName": "Fixture Plan", "planRevision": "fixture-revision", "activeStageIndex": 0 },
   "execution": {

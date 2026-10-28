@@ -197,7 +197,7 @@ test('actual activity timing in Advanced is run-local, updates through replans a
   await expect(timing).toContainText('Now: Wandoos / 30s');
   await expect(timing.locator('.timing-rows dd')).toHaveText(['1m 1s', '2m 5s', '30s', '5s']);
   await timing.getByText('How time is counted', { exact: true }).click();
-  for (const text of ['Actual exclusive phase wall-time', 'including phase setup', 'not a forecast', 'not separately added', 'Excludes offline time and cumulative stage history']) await expect(timing).toContainText(text);
+  for (const text of ['This run only', 'Actual exclusive phase wall-time', 'including phase setup', 'not a forecast', 'not separately added', 'Excludes entry preparation and cleanup']) await expect(timing).toContainText(text);
   await expect(timing).not.toContainText(/in memory|storage|injector session|polling/i);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await timing.scrollIntoViewIfNeeded();
@@ -501,6 +501,7 @@ test('expired previews and changed injector sessions cannot start', async ({ pag
 test('unknown Start outcome spends token without replay and missing telemetry stays unavailable', async ({ page }) => {
   const planner = await openPlanner(page);
   await planner.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(planner.getByRole('button', { name: 'Start selected' })).toBeEnabled();
   await page.evaluate(() => { (window as FixtureWindow).__combatFailure = 'Transport lost after enqueue'; });
   await planner.getByRole('button', { name: 'Start selected' }).click();
   await expect(page.getByRole('alert')).toContainText('Outcome may be unknown');

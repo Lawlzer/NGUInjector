@@ -1,5 +1,5 @@
 import { LosslessNumber } from 'lossless-json';
-import { cloneObject, isObject, planRevisionField, requirePlanRevision, stringifyJson, type JsonObject, type JsonValue, type NguiState } from './api';
+import { cloneObject, isObject, normalizeFightSchedules, planRevisionField, requirePlanRevision, stringifyJson, type JsonObject, type JsonValue, type NguiState } from './api';
 import { validatePresetLibrary } from './presets';
 import { isValidPriority } from './stage-presets';
 import { titanZones } from './options';
@@ -9,8 +9,10 @@ export const focusNames = ['AugmentsBloodMagic', 'TimeMachine', 'Wandoos', 'Ener
 export const gearNames = ['EnergyCap', 'MagicCap', 'EnergyNgu', 'MagicNgu', 'AllNgu', 'TimeMachine', 'Blood', 'Gold', 'Drop', 'Fight', 'Augments', 'AdvancedTraining', 'Wandoos', 'ManualAdventure'];
 export const fightNames = ['SqrtPowerToughness', 'PowerTimesToughness', 'PowerPlusToughness'];
 export const builtInPlans = [
-  { name: 'default', label: 'Default' }, { name: '24hr', label: '24h' },
-  { name: '1h-3m-rebirth', label: '1h / 3m' }, { name: 'infinite', label: 'Infinite' }
+  { name: '24hr', label: '24h NGU' },
+  { name: '15m-NUMBER-increase', label: '15m NUMBER' },
+  { name: '30m-NUMBER-increase', label: '30m NUMBER' },
+  { name: '1h-1m-NUMBER-increase', label: '1h1m NUMBER' }
 ];
 export function equal(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -68,10 +70,11 @@ export function stages(plan: JsonObject): JsonObject[] {
 }
 
 export function validatePlan(plan: JsonObject): void {
+  normalizeFightSchedules(plan);
   validatePresetLibrary(plan.LoadoutPresets);
   if (plan.ActivePresetId !== undefined && (typeof plan.ActivePresetId !== 'string' || plan.ActivePresetId !== '' && !/^[A-Za-z0-9_-]{1,64}$/.test(plan.ActivePresetId))) throw new Error('ActivePresetId must be a global preset ID or empty for an existing legacy plan.');
   if (plan.Name !== undefined && (typeof plan.Name !== 'string' || !plan.Name.trim())) throw new Error('Name must be a nonempty string; the backend owns the file name.');
-  numeric(plan.Version, 'Version (connect and reload to migrate legacy plans)', 14);
+  numeric(plan.Version, 'Version (connect and reload to migrate legacy plans)', 14, 18);
   requirePlanRevision(plan);
   for (const key of ['AutoRebirthEnabled', 'AutoIronPillEnabled', 'TimeTriggerEnabled', 'NumberTriggerEnabled', 'NumberClimbEnabled', 'StageSchedulerEnabled', 'AutoActivateFruits', 'PrepRequireMaxedFruit']) {
     if (plan[key] !== undefined && typeof plan[key] !== 'boolean') throw new Error(`${key} must be boolean.`);
@@ -83,7 +86,7 @@ export function validatePlan(plan: JsonObject): void {
   ] as const) {
     if (plan[key] != null) numeric(plan[key], key, 0, max, integer);
   }
-  for (const key of ['TimeTriggerSeconds', 'NumberClimbMinSeconds']) if (plan[key] !== undefined) numeric(plan[key], key);
+  for (const key of ['TimeTriggerSeconds', 'NumberClimbMinSeconds', 'RebirthPrepStartSeconds']) if (plan[key] !== undefined) numeric(plan[key], key);
   if (plan.StageDurationSeconds !== undefined) numeric(plan.StageDurationSeconds, 'StageDurationSeconds');
   for (const [key, min, max] of [['TriggerMode', 0, 1], ['GearGoal', 0, 13], ['FightScoreMode', 0, 2]] as const) {
     if (plan[key] !== undefined) numeric(plan[key], key, min, max);
@@ -115,7 +118,7 @@ export function validatePlan(plan: JsonObject): void {
     }
     for (const key of ['EnergyFocus', 'MagicFocus']) if (stage[key] !== undefined) numeric(stage[key], `${label} ${key}`, 0, 7);
     if (stage.GearGoal !== undefined) numeric(stage.GearGoal, `${label} GearGoal`, -1, 13);
-    if (stage.FightOnEntry !== undefined && typeof stage.FightOnEntry !== 'boolean') throw new Error(`${label} FightOnEntry must be boolean.`);
+    if (stage.UseWandoosWhenTimeMachineLocked !== undefined && typeof stage.UseWandoosWhenTimeMachineLocked !== 'boolean') throw new Error(`${label} UseWandoosWhenTimeMachineLocked must be boolean.`);
     if (stage.CompletionMode !== undefined) numeric(stage.CompletionMode, `${label} CompletionMode`, 0, 1);
     if (stage.BlackBarLookaheadSeconds !== undefined) numeric(stage.BlackBarLookaheadSeconds, `${label} BlackBarLookaheadSeconds`, 3);
     for (const key of ['TargetAdvancedTrainingPower', 'TargetAdvancedTrainingToughness']) {
@@ -311,13 +314,27 @@ export function heartbeat(state: NguiState | null, now = Date.now()): { connecte
 }
 
 export function canCommand(state: NguiState | null, command: string, now = Date.now()): boolean {
-  return heartbeat(state, now).connected && Number(state?.runtime.protocolVersion) >= 3 && Array.isArray(state?.runtime.supportedCommands) && state.runtime.supportedCommands.includes(command);
+  const lifecycle = object(state?.runtime.execution).lifecycle;
+  // Older bridges omit lifecycle; an advertised non-running lifecycle follows injector admission.
+  return (lifecycle === undefined || lifecycle === 'Running' || ['status', 'unload', 'restoreSaveTest'].includes(command))
+    && (!['readPlan', 'savePlan', 'createPlan', 'setPlanStage'].includes(command) || planCapabilitiesReady(state))
+    && heartbeat(state, now).connected && Number(state?.runtime.protocolVersion) >= 3 && Array.isArray(state?.runtime.supportedCommands) && state.runtime.supportedCommands.includes(command);
+}
+
+export function planCapabilitiesReady(state: NguiState | null): boolean {
+  const runtime = state?.runtime;
+  return runtime?.stageTimingVersion === 1 && runtime.fightScheduleVersion === 1 && typeof runtime.planVersion === 'number' && Number.isInteger(runtime.planVersion) && runtime.planVersion >= 18;
+}
+
+export function assertFightScheduleReadback(expected: JsonObject, actual: JsonObject): void {
+  const schedules = (plan: JsonObject) => stages(normalizeFightSchedules(plan)).map(row => row.FightSchedule);
+  if (!equal(schedules(expected), schedules(actual))) throw new Error('Saved fight schedules differ from readback. Edits retained; update or reconnect the injector before retrying.');
 }
 
 export function planDeletionReason(state: NguiState | null, name: string, now = Date.now(), patch: JsonObject = {}): string {
   if (!name) return 'Select a plan to delete.';
   const normalized = name.toLowerCase();
-  if (builtInPlans.some(plan => plan.name === normalized)) return 'Built-in plans cannot be deleted. Copy one to create a removable plan.';
+  if (builtInPlans.some(plan => plan.name.toLowerCase() === normalized)) return 'Built-in plans cannot be deleted. Copy one to create a removable plan.';
   if (state && state.plans.length <= 1) return 'The last plan cannot be deleted.';
   if (typeof patch._customPlanFile === 'string' && patch._customPlanFile.toLowerCase() === normalized) return 'Save or discard the pending selection of this plan before deleting it.';
   if (heartbeat(state, now).connected) {

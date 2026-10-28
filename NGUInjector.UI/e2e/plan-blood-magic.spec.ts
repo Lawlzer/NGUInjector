@@ -8,7 +8,7 @@ type FixtureWindow = Window & {
 async function installFixture(page: Page, connected = true, capability: number | null = 1, noPlans = false): Promise<void> {
   await page.addInitScript(({ connected, capability, noPlans }) => {
     let revision = 1;
-    const base = { Version: 17, __externalUiRevision: 'a'.repeat(64), Stages: [{ Name: 'NGU', Percent: 100, EnergyFocus: 5, MagicFocus: 6 }], RebirthHistory: [], UnknownRoot: { keep: 'untouched' } };
+    const base = { Version: 18, __externalUiRevision: 'a'.repeat(64), Stages: [{ Name: 'NGU', Percent: 100, EnergyFocus: 5, MagicFocus: 6 }], RebirthHistory: [], UnknownRoot: { keep: 'untouched' } };
     const fixture: FixtureWindow['__bloodState'] = {
       connected, capability, running: true, telemetryPlan: 'alpha',
       plans: noPlans ? {} : {
@@ -28,7 +28,7 @@ async function installFixture(page: Page, connected = true, capability: number |
           protocol: { version: 3 }, ...await cas.settingsSnapshot({ ...fixture.settings, _useCustomRebirthPlan: fixture.running }), plans: Object.keys(fixture.plans), profiles: [], logs: [], command_results: [],
           runtime: {
             externalUiEnabled: fixture.connected, status: fixture.connected ? 'running' : 'unloaded', updatedAt: new Date().toISOString(), startedAt: 'blood-session', protocolVersion: 3, settingsCasVersion: 1,
-            supportedCommands: ['readPlan', 'savePlan', 'applySettingsPatch'], planVersion: 17, planBloodMagicVersion: fixture.capability,
+            supportedCommands: ['readPlan', 'savePlan', 'applySettingsPatch'], planVersion: 18, stageTimingVersion: 1, fightScheduleVersion: 1, planBloodMagicVersion: fixture.capability,
             settings: { customPlanFile: 'alpha', useCustomRebirthPlan: fixture.running },
             bloodGoals: { available: true, planName: fixture.telemetryPlan, autoBloodSpellsEnabled: true,
               spaghetti: { goalPercent: 35, currentPercent: 10, remainingBlood: 90000, estimatedSeconds: 90, status: 'Casting' },
@@ -57,8 +57,14 @@ async function installFixture(page: Page, connected = true, capability: number |
     localStorage.clear();
   }, { connected, capability, noPlans });
   await page.goto('/');
-  await expect(page.getByRole('article', { name: 'Blood Magic', exact: true })).toBeVisible();
-  if (!noPlans) await expect(page.getByRole('combobox', { name: 'Plan', exact: true })).toHaveValue('alpha');
+  const card = page.getByRole('article', { name: 'Blood Magic', exact: true });
+  await expect(card).toBeVisible();
+  if (!noPlans) {
+    await expect(page.getByRole('combobox', { name: 'Plan', exact: true })).toHaveValue('alpha');
+    await expect(card.locator(':scope > p').first()).toHaveText('Plan: alpha');
+  } else await expect(card.locator(':scope > p').first()).toHaveText('Editing: Global defaults');
+  await expect(page.locator('.status-line')).toBeEmpty();
+  await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
 }
 
 const state = (page: Page) => page.evaluate(() => (window as unknown as FixtureWindow).__bloodState);
@@ -231,11 +237,20 @@ test('queued autosaves and retries recheck capability before plan transport', as
   await page.getByRole('checkbox', { name: 'Auto blood spells', exact: true }).uncheck();
   await page.evaluate(() => { (window as unknown as FixtureWindow).__bloodState.capability = null; });
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  const card = page.getByRole('article', { name: 'Blood Magic', exact: true });
+  // Native refresh/readback is asynchronous even while the browser clock is paused.
+  await expect(card.getByRole('status').filter({ hasText: 'Update and reconnect' })).toHaveText('Update and reconnect the injector to edit plan Blood Magic.');
+  await expect(card.getByRole('checkbox', { name: 'Auto blood spells', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
+  expect((await state(page)).writes).toEqual([]);
   await page.clock.runFor(500);
-  await expect(page.getByRole('alert')).toContainText('Update and reconnect, or edit offline.');
+  const error = page.getByRole('alert', { name: 'Injector errors', exact: true }).locator('li > p').filter({ hasText: /^Changes not saved:/ });
+  const message = 'Changes not saved: Plan Blood Magic edits require an updated injector advertising planBloodMagicVersion: 1. Update and reconnect, or edit offline.';
+  await expect(error).toHaveText(message);
+  await expect(error).toBeVisible();
   expect((await state(page)).writes).toEqual([]);
   await page.getByRole('button', { name: 'Retry saving', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('Update and reconnect, or edit offline.');
+  await expect(error).toHaveText(message);
   expect((await state(page)).writes).toEqual([]);
   expect((await state(page)).patches).toEqual([]);
 });

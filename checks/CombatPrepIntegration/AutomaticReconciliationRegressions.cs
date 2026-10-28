@@ -296,7 +296,14 @@ public static partial class Program
             if (cancel) CallMain("CancelCombatPrep", Parse("{\"runId\":\"" + Get(run, "Id") + "\"}"));
             else ScheduledTime(1200);
             CallMain("ReconcileCustomResources", plan, true);
-            Equal(1, Get(scheduler, "StageIndex"), "explicit cancellation or original expiry still completes conservative entry: " + cancel);
+            if (cancel)
+            {
+                Equal(0, Get(scheduler, "StageIndex"), "explicit cancellation cannot fabricate earned entry completion");
+                Equal(false, ((bool[])Get(scheduler, "Completed"))[0], "cancelled conservative entry remains unearned");
+                Equal(deadline, Get(scheduler, "ExpectedEndSeconds"), "cancellation preserves original conservative deadline");
+                ScheduledTime(1200); CallMain("ReconcileCustomResources", plan, true);
+            }
+            Equal(1, Get(scheduler, "StageIndex"), "original expiry retires conservative entry without a new budget: " + cancel);
         }
     }
 
@@ -326,15 +333,21 @@ public static partial class Program
         var resumed = StartScheduled(plan); phase = ScheduledPhase(resumed);
         Equal(entry, Get(resumed, "OwnerEntry"), "subsequent dispatch retains cancelled entry identity");
         Equal(deadline, Get(resumed, "DeadlineRebirthSeconds"), "subsequent dispatch retains original deadline");
-        Equal("AT", Get(phase, "Kind"), "subsequent dispatch resumes acquired AT, not successor");
-        Equal(targetE, Get(phase, "AtEnergyTarget"), "support refresh retains exact energy gate");
-        Equal(targetM, Get(phase, "AtMagicTarget"), "support refresh retains exact magic gate");
-        Near(phaseEnd, (double)Get(resumed, "PhaseDeadline") - (double)Get(resumed, "Started"), "support refresh retains phase deadline");
+        Equal("NGU", Get(phase, "Kind"), "cancelled bounded preparation resumes only conservative background work");
+        var continuation = Get(MainInstance, "_automaticAtContinuation");
+        Equal(targetE.ToString(), JsonValue(continuation, "energyTarget"), "cancelled preparation retains exact unresolved energy gate");
+        Equal(targetM.ToString(), JsonValue(continuation, "magicTarget"), "cancelled preparation retains exact unresolved magic gate");
+        Near(phaseEnd, (double)Get(Json(continuation, "phaseEnd"), "AsDouble"), "cancelled preparation retains original AT phase deadline");
+        Equal(false, Get(scheduler, "AutoAtCompleted"), "conservative continuation cannot fabricate cancelled AT completion");
         Equal(0L, Get(Get(Character, "wandoos98"), "wandoosEnergy"), "support refresh cannot fund W energy before gate");
         Equal(0L, Get(Get(Character, "wandoos98"), "wandoosMagic"), "support refresh cannot fund W magic before gate");
         CallMain("CancelCombatPrep", Parse("{\"runId\":\"" + Get(resumed, "Id") + "\"}"));
         CallMain("RunCustomPlanAutomation", plan);
-        Equal(1, Get(scheduler, "StageIndex"), "explicit user cancel still intentionally completes entry");
+        Equal(0, Get(scheduler, "StageIndex"), "explicit user cancel cannot complete unresolved AT entry");
+        Equal(false, ((bool[])Get(scheduler, "Completed"))[0], "explicit user cancel leaves AT entry unearned");
+        Equal(deadline, Get(scheduler, "ExpectedEndSeconds"), "explicit user cancel does not alter original entry deadline");
+        ScheduledTime(1200); CallMain("ReconcileCustomResources", plan, true);
+        Equal(1, Get(scheduler, "StageIndex"), "original deadline retires the cancelled AT entry");
     }
 
     private static void CheckCleanLegacyAtRecovery()
@@ -396,7 +409,8 @@ public static partial class Program
                 if (marker) CallMain("RecallCombatPrepResources");
                 else CallMain("EndCombatPrep", "cancelled", "Injector unloaded.", true);
                 var w = Get(Character, "wandoos98"); var os = Get(w, "os");
-                var pinPath = Path.Combine((string)Get(MainType, "_dir"), "combat-prep-os.json"); var pin = File.ReadAllText(pinPath);
+                var pinPath = Path.Combine((string)Get(MainType, "_dir"), "combat-prep-os.json"); var pin = "{retired-os-history";
+                File.WriteAllText(pinPath, pin);
                 if (field.EndsWith("Progress")) Set(w, field, .25f);
                 else Set(w, field, 123L);
                 if (field == "wandoosEnergy") Set(Character, "idleEnergy", (long)Get(Character, "idleEnergy") - 123);
@@ -416,7 +430,7 @@ public static partial class Program
                 Equal(false, Get(scheduler, "AutoAtCompleted"), "native W conflict does not fake AT completion");
                 Equal(eLevel, Get(w, "energyLevel"), "native W energy levels are retained"); Equal(mLevel, Get(w, "magicLevel"), "native W magic levels are retained");
                 Equal(eProgress, Get(w, "energyProgress"), "native W energy partial is retained"); Equal(mProgress, Get(w, "magicProgress"), "native W magic partial is retained");
-                Equal(os, Get(w, "os"), "native W conflict cannot change OS"); Equal(pin, File.ReadAllText(pinPath), "native W conflict preserves exact durable OS pin");
+                Equal(os, Get(w, "os"), "native W conflict cannot change OS"); Equal(pin, File.ReadAllText(pinPath), "native W conflict ignores retired OS history without rewriting it");
                 var durable = Parse(File.ReadAllText(path));
                 Equal(true, Get(Json(Json(durable, "automaticSetup"), "safeResources"), "AsBool"), "native W conflict safe continuation is durable before funding");
                 Equal(continuation, Json(durable, "automaticAtContinuation").ToString(), "native W conflict retains exact unresolved AT continuation");
@@ -484,9 +498,12 @@ public static partial class Program
         Equal(null, Get(run, "Setup"), "superseded coordinator permanently retires selected setup authority");
         Equal(false, Get(run, "NukeTimerOwned"), "superseded coordinator permanently retires timer permission");
         Equal(false, Get(run, "SetupVerified"), "superseded coordinator permanently retires setup verification");
-        // Telemetry observes the pending marker, but does not service it.
+        // Restart discarded cleanup authority; telemetry must remain observational.
+        Equal(false, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "restart imports no historical cleanup authority");
         CallMain("GetCombatPrepRuntime");
-        Equal(true, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "telemetry leaves recovery untouched");
+        Equal(false, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "telemetry cannot recreate historical cleanup authority");
+        Equal(checkpointBefore, File.ReadAllText(checkpointPath), "telemetry does not rewrite restarted stage progress");
+        Equal(writes, ResourceCommittedWrites, "telemetry performs no native cleanup or funding");
         var resumed = StartScheduled(plan); phase = ScheduledPhase(resumed);
         Equal(false, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "current coordinator clears recovery automatically before fresh acquisition");
         Equal(targetE, Get(phase, "AtEnergyTarget"), "energy acquired gate survives fresh capture");
@@ -534,6 +551,9 @@ public static partial class Program
     {
         object plan; var run = UnfinishedAtFixture(out plan); var entry = Get(run, "OwnerEntry"); var deadline = Get(run, "DeadlineRebirthSeconds");
         ReplaceAutomaticCoordinator(plan); var scheduler = Get(MainInstance, "_protectedScheduler");
+        Equal(false, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "restart drops the old cleanup marker before testing a fresh transition");
+        Set(scheduler, "AutoCleanupRecoveryRequired", true);
+        Equal(true, CallMain("SaveProtectedStageProgress", true), "fresh current-session transition marker is durably recorded");
         var path = (string)Get(MainInstance, "ProtectedCheckpointPath"); var recalls = Recalls; var swaps = Swaps;
         using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
         {
@@ -587,11 +607,42 @@ public static partial class Program
         foreach (var expiry in new[] { "rebirth", "setup" })
         {
             object plan; var run = UnfinishedAtFixture(out plan);
+            var scheduler = Get(MainInstance, "_protectedScheduler"); var deadline = (double)Get(scheduler, "ExpectedEndSeconds");
+            var entry = Get(scheduler, "Entry"); var entered = Get(scheduler, "EnteredAt");
+            var earned = ((double[])Get(scheduler, "EarnedSeconds")).ToArray();
             CallMain("EndCombatPrep", "cancelled", "Injector unloaded.", true);
-            var scheduler = Get(MainInstance, "_protectedScheduler"); var deadline = Get(scheduler, "ExpectedEndSeconds");
+            Equal(deadline, Get(scheduler, "ExpectedEndSeconds"), "clean cancellation retains the original entry deadline: " + expiry);
             var path = (string)Get(MainInstance, "ProtectedCheckpointPath");
             if (expiry == "rebirth") ScheduledTime(1200);
-            else Set(MainInstance, "_automaticStageSetupStarted", (double)Get(MainType, "CombatPrepClock") - 601);
+            else
+            {
+                Set(MainInstance, "_automaticStageSetupStarted", (double)Get(MainType, "CombatPrepClock") - 601);
+                var targets = Plugin.GetType("NGUInjector.Managers.ResourceTarget", true);
+                var paid = new HashSet<int>(new[] { "AdvancedTraining", "Augment", "AugmentUpgrade", "WandoosEnergy", "WandoosMagic" }
+                    .Select(name => (int)Enum.Parse(targets, name)));
+                var paidWrites = 0;
+                Action<object, int, int, long, long> observe = (c, target, index, before, desired) => {
+                    if (desired > before && paid.Contains(target)) paidWrites++;
+                };
+                ResourceModelWriteAfter += observe;
+                try
+                {
+                    foreach (var elapsed in new[] { (double)Get(Get(Character, "rebirthTime"), "totalseconds"), deadline - .001d })
+                    {
+                        ScheduledTime(elapsed); CallMain("RunCustomPlanAutomation", plan);
+                        Equal(0, Get(scheduler, "StageIndex"), "cancelled wall-clock expiry cannot select a successor before the original deadline");
+                        Equal(entry, Get(scheduler, "Entry"), "cancelled wall-clock expiry preserves the original entry");
+                        Equal(entered, Get(scheduler, "EnteredAt"), "cancelled wall-clock expiry cannot renew the entry start");
+                        Equal(deadline, Get(scheduler, "ExpectedEndSeconds"), "cancelled wall-clock expiry cannot reset the original budget");
+                        Equal(false, ((bool[])Get(scheduler, "Completed"))[0], "cancelled wall-clock expiry is not completed preparation");
+                        Equal(false, Get(scheduler, "AutoAtCompleted"), "cancelled wall-clock expiry cannot fabricate the unfinished AT gate");
+                        Equal(true, earned.SequenceEqual((double[])Get(scheduler, "EarnedSeconds")), "cancelled wall-clock expiry invents no earned stage credit");
+                        Equal(0, paidWrites, "cancelled wall-clock expiry never reacquires paid AT, augments or Wandoos");
+                    }
+                }
+                finally { ResourceModelWriteAfter -= observe; }
+                ScheduledTime(deadline);
+            }
             var recalls = Recalls; var swaps = Swaps; var writes = ResourceCommittedWrites;
             using (var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None))
             {

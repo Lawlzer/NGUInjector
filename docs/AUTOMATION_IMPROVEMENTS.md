@@ -1,6 +1,6 @@
 # Automation Improvements
 
-Current implementation follow-up to the [historical integration review](AUTOMATION_INTEGRATION_REVIEW.md). R01-R28 and follow-up fixes R29-R33 are implemented. The [active work list](../../temp.md) contains only remaining work and decisions; this guide preserves completed behavior and verification rather than reopening historical findings.
+Implementation follow-up to the [historical integration review](AUTOMATION_INTEGRATION_REVIEW.md). R01-R28 and follow-up fixes R29-R33 are implemented. [Current WIP](../../wip.md) owns required closure/acceptance; [future work](future-work.md) owns optional topics and intentional decisions. Historical commands, counts and incident statuses below are evidence only, not a second backlog or current live instructions. The newer [action/session contract](action-state-simplification-20261023.md) overrides obsolete durable replay/restore assumptions.
 
 For the current automatic stage, mixed production/support search, forward bootup/Wish 190, precision policy and latest recorded live results, see [Automatic Combat And Mixed Focus](AUTOMATIC_COMBAT_AND_MIXED_FOCUS.md). Historical verification below is not a claim about the game's current final configuration.
 
@@ -8,13 +8,13 @@ For the current automatic stage, mixed production/support search, forward bootup
 
 | Path | Selection and execution | Lifetime |
 | --- | --- | --- |
-| Scheduled stages / Quick focus | Quick matches standard presets by gear/energy/magic intent and copies their priorities defensively; unmatched special focuses use declared defaults. Ordinary selectors use actual remaining pools, upfront bar affordability and the execution pair policy. Configured gear/support intent stays separate from temporary Blood/Iron-Pill allocation overlays. | Quick is a manual indefinite override, not timed Combat Prep. Protected stage credit requires valid application/entry receipts. |
-| Combat Prep | Bounded timed AT/Augments/Wandoos search maximizes terminal A*W within the entered budget. Same-gear current versus deterministic standard phase support is included before comparison, with fixed captured levels and per-profile net GPS. Cached exact gear/support replay, actual target gates, one original deadline and once-per-rebirth OS choice govern execution. | Runtime overlay; cancellation respects exact gear, support receipts, targets, epoch and native-nuke timer ownership. Owned cleanup restores original active support and only owned touched inactive levels. |
+| Scheduled stages / Quick | Global weighted presets supply acquired gear/support and independent resource priorities; retained inline stages keep their ordinary cap/share semantics. Configured setup stays separate from temporary Blood/Iron-Pill funding. | Quick is a session-local indefinite manual takeover, not timed Combat Prep. Protected stage credit requires verified application and entry ownership. |
+| Combat Prep | Bounded timed AT/Augments/Wandoos search maximizes terminal A*W within the entered budget. Current versus legal phase support, fixed captured levels, per-profile GPS, exact replay, actual targets, original deadline and committed OS govern execution. | Shared setup/resources and current-successor handoff; only exact still-owned borrowed fields return. Historical gear/support restoration is removed. |
 | Automatic Augments + Wandoos stage | `ExecutionMode: 1` uses the same Combat engine with fresh start/eligible boundary/material GPS or equipment-change planning. Original elapsed budget includes entry fight, fruits, waits, planning and setup. Continuation retains actual gates, no-AT-after-W history, pools, OS and deadline. | Scheduled runtime overlay; safe cleanup retries are bounded, obsolete restoration permissions retire, and current intent reconciles automatically without manual acknowledgement. Ordinary saved rows are not batch-migrated. |
-| Weighted presets | Six normalized retained-production goals, optional planned support portfolios (at most 64 policies, top-three beam), exact-policy feasibility replay and observed post-apply metrics. Immediate beard effects and candidate GPS precede digger/blood budgeting. | One-shot; normal beards may rotate afterward. Advisory sequences are not executable schedules. The 120-second preview token is not a sustain timer. |
-| Temporary detours | Token/epoch-aware snapshots, preflight before mutation, explicit restoration/release and application invalidation. | Feature-specific Titan/Yggdrasil/fruit-cap/Money Pit/manual lifetimes, not a global owner framework. |
+| Weighted presets | Retained-production and immediate-stat goals, bounded legal support portfolios, exact-policy replay and observed post-apply metrics. Support/GPS precede affordability and funding. | Global owners sustain acquired intent; legacy inline Apply is one-shot. Advisory sequences are not executable schedules; a Preview token is not a sustain timer. |
+| Temporary detours / finite effects | Current-session claims/grants, verified prerequisites and identified native action boundaries. Exit resolves current successor intent, not a historical setup snapshot. | Bounded session-local processes; ordinary purchases/rescans use fresh native state, not a per-action disk replay ledger. |
 
-The later regressions also preserve generic AUG in a completed-but-held final stage using a rolling estimate without reopening AT preparation (R29), retain an existing Quick owner on read-only replacement rejection (R30), use the metadata gear goal for actual Magic NGU equipment (R31), and retain the original preset baseline/normalization while replaying fresh progress and reporting the applied candidate (R32). Gear map/epoch pairs and digger snapshots publish only after successful capture; Ygg acquires locks only after saving, and cleanup discards only its matching digger token (R33).
+The earlier regressions preserve completed-but-held AUG without reopening AT preparation (R29), an existing Quick owner on read-only rejection (R30), actual Magic NGU gear intent (R31), and original scoring references during fresh replay (R32). R33 addressed the then-existing snapshot/lock capture problem; that historical fix is not a requirement to restore removed manager workflows. Current claims and session rules take precedence.
 
 ## Shared Utilities
 
@@ -50,17 +50,27 @@ Edit `NGUInjector/Data/ActivityPolicies.json` for supported policy changes; see 
 
 Search remains bounded, not globally optimal over arbitrary gear/schedules. Projection uses captured native fields and parity checks, not inferred optimizer scores. It does not credit future loot or resource refill after a cap increase. Support requests remain subject to unlocks, slots, core-first beard policy and affordability; requested support is not proof of observed activation.
 
-Questions reserved for later discussion, with no behavior change implied:
-
-- Exhaustive joint gear/support optimization and future beard/digger growth. Current-versus-standard phase support at captured levels is already implemented; it is not an exhaustive search or a future-growth forecast.
-- Higher-fidelity farming/float-threshold forecasts and selected-policy timing diagnostics. The earlier 150-second -1.4343541695% shortfall remains unresolved; later 300-second accuracy is scenario-specific, not universal.
-- A global utility tradeoff between terminal Augments x Wandoos and permanent NGU progression. The current objectives intentionally remain separate.
-- Whether preset sequences should ever execute or sustain ownership. They are advisory and Apply remains one-shot.
-- Whether fixed applied-policy time should require positive production. Current valid-but-zero-funded fixed stages can earn time; mandatory AT completion still requires actual levels.
+Optional precision, diagnostic, bonus-growth and sequence investigations are tracked
+only in [future work](future-work.md). Fixed applied time without positive production
+is intentional; mandatory AT still checks actual levels. Global preset ownership is
+implemented and is separate from optional executable advisory sequences.
 
 ## Verification Boundary
 
-Use the normal build/check commands in [Ownership](../checks/Ownership/README.md), [Preset Integration](../checks/PresetIntegration/README.md), [Activity Policy](../checks/ActivityPolicy/README.md) and [Combat Prep Integration](../checks/CombatPrepIntegration/README.md). The [October 16 two-hour live verification](COMBAT_PREP_LIVE_VERIFICATION.md) and [October 17 phase-support/Quick record](PHASE_SUPPORT_LIVE_VERIFICATION.md) remain evidence for those earlier builds/scenarios, including their then-verified final plan state. Latest [automatic/mixed evidence](AUTOMATIC_COMBAT_AND_MIXED_FOCUS.md#recorded-live-evidence) passes all three mixed Preview/Apply cases and a 300-second scheduled Augments/background-W -> boundary replan -> dedicated-W -> NGU hold, with +0.0027537721244143927% terminal combined error. Current-engine live AT/Wish 190 and controlled live GPS shock are not covered; native-method offline tests are separate. The latest harnesses require a separate finalizer, so the current required `24hr` NGU/auto-rebirth-off handoff remains pending.
+Use `verify.ps1` (all offline scopes by default), or narrow with `-Scope UI|Source|Native|Harness`.
+Native supports `-Suite`/`-Selector` and installed references via `NGU_IDLE_DIR` or
+`-GameFolder`. See [Testing And Save Safety](testing.md) for reports, native capture,
+fail-fast contention/defer/drift and guarded game modes. The public game-facing
+runner is `test.ps1`; it never runs an offline gate or deploys a backend.
+
+The [October 16 live record](COMBAT_PREP_LIVE_VERIFICATION.md),
+[October 17 phase-support record](PHASE_SUPPORT_LIVE_VERIFICATION.md) and
+[automatic/mixed recordings](AUTOMATIC_COMBAT_AND_MIXED_FOCUS.md#recorded-live-evidence)
+remain specific to their builds/scenarios. They do not establish current-engine
+paid AT/Wish-190/GPS-event coverage or a final-build daily cycle. The old auto-rebirth-
+off handoff is historical; [current WIP](../../wip.md) owns the final-state target.
+Runner changes/compiled tests are not actual game acceptance; Live requires a
+compatible deployed backend and no actual live transaction is certified here.
 
 ## Completed Verification
 

@@ -1,13 +1,17 @@
 # Native Titan Routes
 
 ```powershell
-& checks\TitanGold\VerifyOffline.ps1
+.\verify.ps1 -Scope Native -Suite TitanGold
 ```
 
-The approved parent verifier does not expose TitanGold. This runner uses the exact
-same `Local\NGUInjector-Executor-Offline-Verification` named mutex around BOTH the
-production rebuild and Framework fixture rebuild/run. Do not run its EXE or a
-production build unlocked. The approved parent script is not modified.
+Run from the repository root. Set `NGU_IDLE_DIR` or pass `-GameFolder` for the
+installed game references. TitanGold is part of the public Native scope; its old
+per-suite wrapper is removed. One incremental MSBuild invocation builds production
+and selected fixture dependencies, then separate programs execute under shared
+verification ownership. Do not race it with source edits, direct builds or EXEs.
+Reports retain JSON/phase logs and artifact identity; contention/defer/drift exits 2
+and appends `artifacts/agent-handoff.md`. A suite pass is not the all-scopes gate,
+deployment or live acceptance. See [Testing And Save Safety](../../docs/testing.md).
 
 The executable loads a fresh compiled production assembly and the installed game's
 managed code offline. Native eligibility, native equipment getters, real pure
@@ -54,4 +58,4 @@ presentation isolation. Native AT factors and disclosed ULP drift are external
 inputs; original Character adventure stat bodies and float arithmetic remain real.
 Timer resets are supplied observations, not proof of full native autokill reward
 execution. Complete route/combat leaf evidence and residual gaps are documented in
-`docs/route-combat-review-20261022.md`.
+[the historical route review](../../docs/route-combat-review-20261022.md).

@@ -3,13 +3,13 @@ import { policies, stagePresets } from './fixtures/activity-policy';
 import { presetLibrary } from './fixtures/global-presets';
 
 const source = {
-  Name: 'shared-policy', Version: 17, __externalUiRevision: 'a'.repeat(64),
+  Name: 'shared-policy', Version: 18, __externalUiRevision: 'a'.repeat(64),
   StageSchedulerEnabled: true, StageDurationSeconds: 1800, StageLoopStartIndex: -1,
   RebirthHistory: [{ Reason: 'User history', EnergyPriorities: ['TM', 'NGU-8'] }],
   Stages: [
-    { Name: 'User order', Percent: 100, DurationSeconds: 300, CompletionMode: 0, EnergyFocus: 1, MagicFocus: 1, GearGoal: 5, EnergyPriorities: ['NGU-8', 'TM', 'TM'], MagicPriorities: ['RIT-7', 'WAN'], Future: 'keep' },
-    { Name: 'User allocation', Percent: 100, DurationSeconds: 300, CompletionMode: 0, EnergyFocus: 3, MagicFocus: 6, GearGoal: 9, EnergyPriorities: ['AT-4', 'WAN'], MagicPriorities: ['NGU-6', 'TM'] },
-    { Name: 'Implicit defaults', Percent: 100, DurationSeconds: 300, CompletionMode: 0, EnergyFocus: 7, MagicFocus: 3, GearGoal: 11, EnergyPriorities: [], MagicPriorities: [] }
+    { Name: 'User order', Percent: 100, DurationSeconds: 300, CompletionMode: 0, EnergyFocus: 1, MagicFocus: 1, GearGoal: 5, EnergyPriorities: ['NGU-8', 'TM', 'TM'], MagicPriorities: ['RIT-7', 'WAN'], FightSchedule: null, Future: 'keep' },
+    { Name: 'User allocation', Percent: 100, DurationSeconds: 300, CompletionMode: 0, EnergyFocus: 3, MagicFocus: 6, GearGoal: 9, EnergyPriorities: ['AT-4', 'WAN'], MagicPriorities: ['NGU-6', 'TM'], FightSchedule: null },
+    { Name: 'Implicit defaults', Percent: 100, DurationSeconds: 300, CompletionMode: 0, EnergyFocus: 7, MagicFocus: 3, GearGoal: 11, EnergyPriorities: [], MagicPriorities: [], FightSchedule: null }
   ]
 };
 
@@ -40,7 +40,7 @@ async function mount(page: Page, connected = true): Promise<void> {
             protocol: { version: 3, globalPresetsVersion: 2 }, ...await cas.settingsSnapshot(settings), profiles: [], plans: [source.Name], logs: [], command_results: [],
             runtime: {
               externalUiEnabled: connected, status: connected ? 'running' : 'unloaded', protocolVersion: 3, settingsCasVersion: 1,
-              startedAt: '2026-10-17T10:00:00Z', updatedAt: new Date().toISOString(), planVersion: 17,
+              startedAt: '2026-10-17T10:00:00Z', updatedAt: new Date().toISOString(), planVersion: 18, stageTimingVersion: 1, fightScheduleVersion: 1,
               supportedCommands: ['readPlan', 'savePlan'],
               settings: { customPlanFile: source.Name, useCustomRebirthPlan: false, autoRebirth: false }
             }

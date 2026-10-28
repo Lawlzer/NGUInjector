@@ -116,9 +116,26 @@ namespace NGUInjector
                 || string.IsNullOrEmpty(_protectedPlan.Stages[index].PresetId)) return;
             var selection = saved["selectedPolicy"];
             _protectedSelectedPolicy = selection == null || selection.IsNull ? null : selection.ToString();
+            // A new entry is checkpointed before its first selection is acquired.
+            if (_protectedSelectedPolicy == null) return;
+            var issue = ValidateProtectedPresetProvenance(selection);
+            if (issue == null)
+            {
+                try
+                {
+                    // Restore decisions only. Ordinary admission must still acquire
+                    // current grants and verify every native effect; no receipt is imported.
+                    var policy = ImportExecutionSelection(selection, out _);
+                    policy.Owner = ProtectedPresetOwner;
+                    _globalPresetPolicies[policy.Preset.Id] = policy;
+                    _globalPresetApplyingPolicy = policy;
+                    _globalPresetApplyingEvent = policy.Owner + ":" + policy.Preset.Id;
+                    return;
+                }
+                catch (Exception error) { issue = error.Message; }
+            }
             _protectedSelectedPolicyBlockedEntry = AutomaticRecoveryEntry;
-            _protectedSelectedPolicyIssue = ValidateProtectedPresetProvenance(selection)
-                ?? "Review the acquired selection before resuming this entry.";
+            _protectedSelectedPolicyIssue = issue;
         }
 
         private static double ProtectedHeartbeat => (double) Stopwatch.GetTimestamp() / Stopwatch.Frequency;
@@ -198,6 +215,7 @@ namespace NGUInjector
 
             var elapsed = Character.rebirthTime.totalseconds;
             var previousEntry = _protectedScheduler.Entry;
+            var previousFightSchedule = _stageFightSchedule;
             var wasComplete = _protectedScheduler.ProtectedWorkComplete;
             var automaticBefore = _protectedScheduler.Matches(plan) && _protectedScheduler.StageIndex >= 0
                 && _protectedPlan.Stages[_protectedScheduler.StageIndex].ExecutionMode == (int)CustomStageExecutionMode.AutoAugmentsWandoos
@@ -211,11 +229,13 @@ namespace NGUInjector
             ServiceGlobalPresetNativeTargets();
             _protectedLastElapsed = elapsed;
             _protectedLastTotal = Character.totalPlaytime.totalseconds;
+            AcquireStageFightSchedule(plan);
             var changed = previousEntry != _protectedScheduler.Entry || wasComplete != _protectedScheduler.ProtectedWorkComplete;
             var saved = SaveProtectedStageProgress(changed);
             if (changed && automaticBefore != null && !saved)
             {
                 _protectedScheduler.RestoreState(plan, automaticBefore);
+                _stageFightSchedule = previousFightSchedule;
                 _automaticRecoveryRetryEntry = AutomaticRecoveryEntry;
                 _automaticRecoveryRetryAt = CombatPrepClock + 1;
                 SetResourceExecution(ResourceExecutionState.Failed, AutomaticRecoveryEntry,
@@ -257,6 +277,7 @@ namespace NGUInjector
             _protectedPersistenceError = string.Empty;
             _protectedOuterCheckpointIssue = null;
             _protectedSelectedPolicy = _protectedSelectedPolicyBlockedEntry = _protectedSelectedPolicyIssue = null;
+            _stageFightSchedule = null;
             _automaticStageSetupEntry = null;
             _automaticAtContinuation = null;
             _automaticSafeResourcesEntry = null;
@@ -270,21 +291,33 @@ namespace NGUInjector
                 {
                     var saved = JsonFiles.ParseObject(File.ReadAllText(path));
                     long rebirth;
-                    var valid = EquipmentDescriptorInteger(saved["version"], 1, 2)
+                    var envelopeValid = EquipmentDescriptorInteger(saved["version"], 1, 2)
                         && saved["plan"].IsString && saved["plan"].Value == _protectedPlanFile
-                        && saved["rebirth"].IsString && long.TryParse(saved["rebirth"].Value, out rebirth)
-                        && rebirth == _protectedRebirthNumber
+                        && saved["rebirth"].IsString && long.TryParse(saved["rebirth"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out rebirth)
                         && FiniteCheckpointNumber(saved["origin"], false)
-                        && Math.Abs(saved["origin"].AsDouble - _protectedRunOrigin) <= 5d
                         && FiniteCheckpointNumber(saved["elapsed"], true) && saved["elapsed"].AsDouble <= _protectedLastElapsed + .1d
                         && FiniteCheckpointNumber(saved["total"], true) && saved["total"].AsDouble <= _protectedLastTotal + .1d
-                        && saved["generation"].IsString && Guid.TryParseExact(saved["generation"].Value, "N", out _)
+                        && saved["generation"].IsString && Guid.TryParseExact(saved["generation"].Value, "N", out _);
+                    // Elapsed time resets on native rebirth; validate that case separately.
+                    var forward = ProtectedCheckpointForwardRebirth(saved, _protectedRebirthNumber, _protectedRunOrigin, _protectedLastTotal);
+                    var valid = (envelopeValid && saved["rebirth"].Value == _protectedRebirthNumber.ToString(CultureInfo.InvariantCulture)
+                        && Math.Abs(saved["origin"].AsDouble - _protectedRunOrigin) <= 5d || forward)
                         && _protectedScheduler.RestoreState(plan, saved["scheduler"] as JSONObject);
                     if (valid)
                     {
+                        if (forward)
+                        {
+                            _protectedScheduler = new ProtectedStageScheduler();
+                            _protectedScheduler.Update(plan, _protectedLastElapsed, ProtectedHeartbeat, false, i => false);
+                            _customStageFightKey = null;
+                            _protectedRecoveryReason = "Native rebirth advanced; a new run starts without replaying the prior entry.";
+                            SaveProtectedStageProgress(true);
+                            return;
+                        }
                         _protectedGeneration = saved["generation"].Value;
                         LoadProtectedPresetSelection(saved);
                         _customStageFightKey = saved["fightEntry"].IsString ? saved["fightEntry"].Value : null;
+                        ImportStageFightSchedule(saved["fightSchedule"]);
                         var setup = saved["automaticSetup"];
                         var entry = _protectedPlanFile + ":" + _protectedGeneration + ":" + _protectedScheduler.Entry.ToString(CultureInfo.InvariantCulture);
                         // Clean cleanup clears its marker, not evidence that this entry already acquired resources.
@@ -302,7 +335,7 @@ namespace NGUInjector
                             _automaticStageSetupStarted = CombatPrepClock - setup["elapsedSeconds"].AsDouble
                                 - Math.Max(0, Character.rebirthTime.totalseconds - setup["rebirthSeconds"].AsDouble);
                             if (setup["safeResources"].AsBool) _automaticSafeResourcesEntry = entry;
-                            if (setup["cancelled"].AsBool) _automaticCancelledEntry = entry;
+                            if (setup["cancelled"].AsBool) _automaticSafeResourcesEntry = entry;
                         }
                         else if ((saved.Linq.Any(x => x.Key == "automaticSetup") || acquiredAutomaticEntry) && _protectedScheduler.StageIndex >= 0
                             && plan.Stages[_protectedScheduler.StageIndex].ExecutionMode == (int) CustomStageExecutionMode.AutoAugmentsWandoos)
@@ -317,8 +350,16 @@ namespace NGUInjector
                             _automaticSafeResourcesEntry = entry;
                             _protectedRecoveryReason = "Legacy automatic recovery has no acquired AT targets; paid AT and Wandoos are withheld until the original deadline. Safe background resources remain available.";
                         }
+                        if (saved["automaticFightSuspended"].AsBool && acquiredAutomaticEntry)
+                        {
+                            _automaticSafeResourcesEntry = entry;
+                            _protectedRecoveryReason = "Interrupted scheduled fight continuation is session-local; only safe background work remains until the original deadline.";
+                        }
                         if (string.IsNullOrEmpty(_protectedRecoveryReason))
                             _protectedRecoveryReason = "Restored saved progress; offline time is not protected training time.";
+                        // The process was cancelled by restart. Its cleanup grant is
+                        // gone, but its pools, phase progress and original deadline remain.
+                        _protectedScheduler.AutoCleanupRecoveryRequired = false;
                     }
                     else _protectedOuterCheckpointIssue = "Saved stage progress does not match this plan/save. Original checkpoint preserved; explicit restart is required.";
                 }
@@ -334,6 +375,20 @@ namespace NGUInjector
         {
             return node != null && node.IsNumber && !double.IsNaN(node.AsDouble) && !double.IsInfinity(node.AsDouble)
                    && (!nonnegative || node.AsDouble >= 0);
+        }
+
+        private bool ProtectedCheckpointForwardRebirth(JSONObject saved, long rebirth, double origin, double total)
+        {
+            long previous;
+            return EquipmentDescriptorInteger(saved["version"], 1, 2)
+                && saved["plan"].IsString && saved["plan"].Value == _protectedPlanFile
+                && saved["generation"].IsString && Guid.TryParseExact(saved["generation"].Value, "N", out _)
+                && saved["rebirth"].IsString && long.TryParse(saved["rebirth"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out previous)
+                && rebirth > 0 && previous == rebirth - 1
+                && FiniteCheckpointNumber(saved["origin"], false) && FiniteCheckpointNumber(saved["elapsed"], true)
+                && FiniteCheckpointNumber(saved["total"], true) && saved["elapsed"].AsDouble <= saved["total"].AsDouble
+                && Math.Abs(saved["total"].AsDouble - saved["elapsed"].AsDouble - saved["origin"].AsDouble) <= 5d
+                && saved["total"].AsDouble <= total + .1d && saved["total"].AsDouble <= origin + .1d;
         }
 
         private bool TryCommitProtectedEntryChange(Action<ProtectedStageScheduler> change)
@@ -370,11 +425,18 @@ namespace NGUInjector
                 saved["elapsed"] = _protectedLastElapsed;
                 saved["total"] = _protectedLastTotal;
                 saved["fightEntry"] = _customStageFightKey ?? string.Empty;
+                var fightSchedule = ExportStageFightSchedule();
+                if (fightSchedule != null) saved["fightSchedule"] = fightSchedule;
+                saved["automaticFightSuspended"] = (_combatPrepRun?.FightSuspended == true || _combatPrepRun?.FightResuming == true)
+                    && _combatPrepRun.OwnerEntry == _protectedGeneration + ":" + _protectedScheduler.Entry.ToString(CultureInfo.InvariantCulture);
                 saved["scheduler"] = _protectedScheduler.ExportState();
                 // This SimpleJSON parser does not flush bare scalar roots. Preserve even
                 // a malformed scalar commitment while it remains quarantined.
-                if (_protectedSelectedPolicy != null)
-                    saved["selectedPolicy"] = JSONNode.Parse("{\"selection\":" + _protectedSelectedPolicy + "}")["selection"];
+                var selection = _protectedSelectedPolicy == null ? null
+                    : JSONNode.Parse("{\"selection\":" + _protectedSelectedPolicy + "}")["selection"];
+                var retainSelection = selection != null && (_protectedSelectedPolicyBlockedEntry == AutomaticRecoveryEntry
+                    || selection.IsObject && selection["owner"].Value == ProtectedPresetOwner);
+                if (retainSelection) saved["selectedPolicy"] = selection;
                 var entry = _protectedPlanFile + ":" + _protectedGeneration + ":" + _protectedScheduler.Entry.ToString(CultureInfo.InvariantCulture);
                 if (_automaticStageSetupEntry == entry)
                 {
@@ -395,6 +457,7 @@ namespace NGUInjector
                 }
                 if (_automaticAtContinuation?["entry"].Value == entry) saved["automaticAtContinuation"] = _automaticAtContinuation;
                 JsonFiles.WriteAtomic(path, saved.ToString(2));
+                if (!retainSelection) _protectedSelectedPolicy = _protectedSelectedPolicyBlockedEntry = _protectedSelectedPolicyIssue = null;
                 _protectedCheckpointDurable = true;
                 _protectedPersistenceError = string.Empty;
                 return true;
@@ -429,6 +492,7 @@ namespace NGUInjector
         private void ResetProtectedStageProgress()
         {
             _protectedScheduler = null;
+            _stageFightSchedule = null;
             _protectedPlan = null;
             _protectedSelectedPolicy = _protectedSelectedPolicyBlockedEntry = _protectedSelectedPolicyIssue = null;
             _protectedCheckpointDurable = false;
@@ -517,6 +581,7 @@ namespace NGUInjector
             var lastElapsed = _protectedLastElapsed;
             var lastTotal = _protectedLastTotal;
             var fightEntry = _customStageFightKey;
+            var fightScheduleBefore = _stageFightSchedule;
             var persistenceError = _protectedPersistenceError;
             var outerIssue = _protectedOuterCheckpointIssue;
             try
@@ -526,7 +591,7 @@ namespace NGUInjector
                 if (outerIssue != null)
                 {
                     var path = ProtectedCheckpointPath;
-                    File.Copy(path, Path.Combine(Path.GetDirectoryName(path), "stage-recovery-" + Guid.NewGuid().ToString("N") + ".json"), false);
+                    File.Copy(path, path + ".recovery.json", true);
                     _protectedOuterCheckpointIssue = null;
                     _protectedScheduler = new ProtectedStageScheduler();
                     _protectedScheduler.Update(plan, Character.rebirthTime.totalseconds, ProtectedHeartbeat, false, i => false);
@@ -539,6 +604,7 @@ namespace NGUInjector
                     _customStageFightKey = $"{Settings.CustomPlanFile}:{plan.Name}:{_protectedScheduler.StageIndex}:{_protectedGeneration}:{_protectedScheduler.Entry.ToString(CultureInfo.InvariantCulture)}";
                 _protectedLastElapsed = Character.rebirthTime.totalseconds;
                 _protectedLastTotal = Character.totalPlaytime.totalseconds;
+                AcquireStageFightSchedule(plan);
                 if (!SaveProtectedStageProgress(true))
                     throw new IOException("Stage change was not applied because its progress checkpoint could not be saved.");
             }
@@ -550,6 +616,7 @@ namespace NGUInjector
                 _protectedLastTotal = lastTotal;
                 _protectedCheckpointDurable = wasDurable;
                 _customStageFightKey = fightEntry;
+                _stageFightSchedule = fightScheduleBefore;
                 _protectedPersistenceError = persistenceError;
                 _protectedOuterCheckpointIssue = outerIssue;
                 throw;

@@ -214,7 +214,7 @@ namespace NGUInjector
             var legacyBytes = File.ReadAllBytes(path);
             Assert(store.Load("library").LoadoutPresets.Length == 0, "old plans without weighted library load empty");
             var normalized = store.ReadExternalPlan("library");
-            Assert(normalized["LoadoutPresets"].ToString() == "[]" && normalized["Version"].AsInt == 17,
+            Assert(normalized["LoadoutPresets"].ToString() == "[]" && normalized["Version"].AsInt == 18,
                 "normalized old plan reads expose an empty library without a schema bump");
             Assert(legacyBytes.SequenceEqual(File.ReadAllBytes(path)), "load and normalized read never write defaults to disk");
             var minimalPath = Path.Combine(directory, "minimal.json");

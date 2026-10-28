@@ -161,12 +161,24 @@ namespace NGUInjector.CustomPlans
                 var ids = new HashSet<string>(root["Presets"].Children.Select(row => row["Id"].Value), StringComparer.Ordinal);
                 // Only extend libraries with recognizable catalog ancestry, never custom-only or empty libraries.
                 if (seeds.Children.Any(row => ids.Contains(row["Id"].Value))
-                    || new[] {"builtin_pp", "builtin_boosts", "builtin_zone"}.Any(ids.Contains))
+                    || new[] {"builtin_pp", "builtin_boosts", "builtin_zone", "builtin_balanced"}.Any(ids.Contains))
                 {
                     foreach (var definition in seeds.Children.Where(row => row["Id"].Value == "builtin_energyCap" || row["Id"].Value == "builtin_magicCap"))
                         if (!ids.Contains(definition["Id"].Value)) root["Presets"].Add(CustomLoadoutPreset.Parse(definition).ToJson());
                     root[CapPresetsAdded] = true;
                 }
+            }
+            var priorityFields = new[] {"ResourcePrioritiesReviewed", "EnergyPriorities", "MagicPriorities"};
+            var currentDefinitions = PresetDefinitions.SeedRows().Children.ToDictionary(row => row["Id"].Value, StringComparer.Ordinal);
+            foreach (var row in root["Presets"].Children)
+            {
+                // Any explicit proposal/review belongs to the user, including empty or unreviewed arrays.
+                if (priorityFields.Any(field => Has(row, field))) continue;
+                var prior = PresetDefinitions.BeforeResourcePriorities(row["Id"].Value, Has(row, "BeardRotation"));
+                JSONNode definition;
+                if (prior == null || Canonical(row) != Canonical(prior)
+                    || !currentDefinitions.TryGetValue(row["Id"].Value, out definition)) continue;
+                foreach (var field in priorityFields) row[field] = definition[field];
             }
             foreach (var path in Directory.GetFiles(_plansDir, "*.json").OrderBy(path => path, StringComparer.Ordinal))
             {
@@ -328,7 +340,7 @@ namespace NGUInjector.CustomPlans
 
         private static CustomLoadoutPreset FromStage(CustomPlanStage stage)
         {
-            if (stage.ExecutionMode != 0 || stage.FightOnEntry || stage.BlackBarLookaheadSeconds != 5) return null;
+            if (stage.ExecutionMode != 0 || stage.FightSchedule != null || stage.BlackBarLookaheadSeconds != 5) return null;
             var policy = Policy.Value;
             var template = policy["stagePresets"].Children.FirstOrDefault(row => row["GearGoal"].AsInt == stage.GearGoal
                 && row["EnergyFocus"].AsInt == stage.EnergyFocus && row["MagicFocus"].AsInt == stage.MagicFocus);

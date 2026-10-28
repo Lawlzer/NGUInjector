@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
-  import type { JsonObject, JsonValue, PlanStageAction } from './api';
+  import { normalizeFightSchedules, type JsonObject, type JsonValue, type PlanStageAction } from './api';
   import { equal, longTarget, object, reorderStages } from './model';
   import { stageFocuses } from './options';
-  import { changeStageTiming, editDurationText, editFlexWeight, fixedSeconds, formatStageDuration, formatTime, scheduleTiming, type StageTimingKind } from './stage-duration';
+  import { changeStageTiming, editDurationText, editFlexWeight, fightDurationSeconds, fixedSeconds, formatStageDuration, formatTime, scheduleTiming, type StageTimingKind } from './stage-duration';
   import { applyStagePreset, automaticStageLabel, stageLabel, stagePresets, weightedStage } from './stage-presets';
   import GlobalPresetSelect from './GlobalPresetSelect.svelte';
   import { globalPresetRows, presetSupportsAtTargets } from './presets';
-  import { matchingPlanProgress } from './stage-bar';
+  import { matchingFightStatus, matchingPlanProgress } from './stage-bar';
   import { parsePlanProgress, planProgressDuration, stageHistoryDetails } from './plan-progress';
   import { combatPrepReconciliationReason } from './controller';
   import ActivityTiming from './ActivityTiming.svelte';
@@ -31,6 +31,8 @@
   let identities: { row: JsonObject; id: number }[] = [];
   let identityNamespace: string | undefined;
   let drafts: Record<number, { text: string; dirty: boolean; ready?: boolean; error?: string }> = {};
+  type FightField = 'DelaySeconds' | 'IntervalSeconds';
+  let fightDrafts: Record<number, Partial<Record<FightField, { text: string; error: string }>>> = {};
   const durationTimers = new Map<number, ReturnType<typeof setTimeout>>();
   let restoringDuration: number | null = null;
   let restoreVersion = 0;
@@ -54,7 +56,7 @@
   $: if (drag && (drag.plan !== plan || drag.namespace !== namespace || disabled)) cancel();
   $: if (press && (press.plan !== plan || press.namespace !== namespace || disabled)) cancel();
   $: timing = readTiming(plan);
-  $: durationDraftDirty = Object.values(drafts).some(draft => draft.dirty);
+  $: durationDraftDirty = Object.values(drafts).some(draft => draft.dirty) || Object.values(fightDrafts).some(draft => Object.keys(draft).length > 0);
   $: ondirty(durationDraftDirty);
   $: live = parsePlanProgress(progress, connected);
   $: combatPrep = object(progress.combatPrep);
@@ -62,6 +64,7 @@
   $: cleanupRecoveryRequired = connected && (progress.cleanupRecoveryRequired === true || combatPrep.cleanupRecoveryRequired === true);
   $: recoveryReason = combatPrepReconciliationReason(progress);
   $: mapped = matchingPlanProgress(plan, name, progress, connected, dirty || durationDraftDirty);
+  $: fightStatus = matchingFightStatus(plan, progress, mapped);
   $: selectedStageIndex = rows.findIndex(row => id(row) === selected);
   $: skipToSelected = selectedStageIndex >= 0 && selectedStageIndex !== mapped?.activeStageIndex;
   $: activityTiming = cleanupRecoveryRequired ? null : matchingStageActivityTiming(combatPrep, mapped);
@@ -76,7 +79,7 @@
     return ids.get(row)!;
   }
   function canonical(row: JsonObject): JsonObject {
-    const defaults: JsonObject = { Name: '', ExecutionMode: 0, AdventureDynamicWeight: 0, Percent: 100, DurationSeconds: 0, DurationUnit: '%', CompletionMode: 0, EnergyFocus: 0, MagicFocus: 0, GearGoal: -1, FightOnEntry: false, EnergyPriorities: [], MagicPriorities: [], BlackBarLookaheadSeconds: 5 };
+    const defaults: JsonObject = { Name: '', ExecutionMode: 0, AdventureDynamicWeight: 0, Percent: 100, DurationSeconds: 0, DurationUnit: '%', CompletionMode: 0, EnergyFocus: 0, MagicFocus: 0, GearGoal: -1, FightSchedule: null, EnergyPriorities: [], MagicPriorities: [], BlackBarLookaheadSeconds: 5 };
     return {
       ...row,
       ...Object.fromEntries(Object.entries(defaults).map(([key, fallback]) => [key, row[key] ?? fallback])),
@@ -90,9 +93,10 @@
   }
   function reconcile(value: JsonObject, scope: string): JsonObject[] {
     const focused = typeof document === 'undefined' ? null : document.activeElement;
-    const focusedKey = typeof HTMLInputElement !== 'undefined' && focused instanceof HTMLInputElement && focused.hasAttribute('data-duration-key') && list?.contains(focused)
+    const focusedKey = typeof HTMLInputElement !== 'undefined' && focused instanceof HTMLInputElement && (focused.hasAttribute('data-duration-key') || focused.hasAttribute('data-fight-field')) && list?.contains(focused)
       ? Number(focused.closest('[data-stage]')?.getAttribute('data-stage')) : null;
-    const nextRows = Array.isArray(value.Stages) ? value.Stages.map(object) : [];
+    const normalized = normalizeFightSchedules(value);
+    const nextRows = Array.isArray(normalized.Stages) ? normalized.Stages.map(object) : [];
     const sameScope = identityNamespace === scope;
     const previous = sameScope ? identities : [];
     const used = new Set<number>();
@@ -108,7 +112,7 @@
       next.forEach((entry, i) => { entry.id = previous[i].id; used.add(entry.id); });
     }
     // Changed sequences require unique matches, never a positional guess.
-    for (const compare of [equal, (a: JsonObject, b: JsonObject) => equal(canonical(a), canonical(b))]) {
+    for (const compare of [equal, (a: JsonObject, b: JsonObject) => equal(canonical(a), canonical(b)), (a: JsonObject, b: JsonObject) => typeof object(a.FightSchedule).Id === 'string' && object(a.FightSchedule).Id === object(b.FightSchedule).Id]) {
       for (const entry of next.filter(entry => !entry.id)) {
         const matches = previous.filter(old => !used.has(old.id) && compare(old.row, entry.row));
         if (matches.length !== 1 || next.filter(candidate => !candidate.id && compare(matches[0].row, candidate.row)).length !== 1) continue;
@@ -129,7 +133,11 @@
     if (Object.entries(drafts).some(([key, draft]) => draft.dirty && !retained.has(Number(key)))) {
       error = sameScope ? 'Duration draft cancelled: its stage could not be identified safely after readback.' : 'Duration draft cancelled because the plan changed.';
     }
+    if (Object.entries(fightDrafts).some(([key, draft]) => Object.keys(draft).length > 0 && !retained.has(Number(key)))) {
+      error = sameScope ? 'Fight timing draft cancelled: its stage could not be identified safely after readback.' : 'Fight timing draft cancelled because the plan changed.';
+    }
     drafts = Object.fromEntries(Object.entries(drafts).filter(([key]) => retained.has(Number(key))));
+    fightDrafts = Object.fromEntries(Object.entries(fightDrafts).filter(([key]) => retained.has(Number(key))));
     identities = next;
     identityNamespace = scope;
     const version = ++restoreVersion;
@@ -138,7 +146,7 @@
       if (version !== restoreVersion || identityNamespace !== scope) return;
       // Moving keyed DOM nodes can blur an input in Chromium. That is not a user commit.
       if (document.activeElement === focused || document.activeElement === document.body) {
-        list?.querySelector<HTMLInputElement>(`[data-stage="${focusedKey}"] input[data-duration-key]`)?.focus({ preventScroll: true });
+        if (focused instanceof HTMLInputElement && focused.isConnected) focused.focus({ preventScroll: true });
       }
       restoringDuration = null;
     });
@@ -166,7 +174,7 @@
   function addStage(): void {
     if (!globalPresetRows(presetLibrary).some(row => row.Id === plan.ActivePresetId)) { error = 'Choose an active saved global preset in Misc > Gear settings before adding an inherited stage.'; return; }
     error = '';
-    const row = weightedStage({ Percent: 10, DurationSeconds: 300, DurationUnit: 'min' });
+    const row = weightedStage({ Percent: 10, DurationSeconds: 300, DurationUnit: 'min', FightSchedule: null });
     const key = id(row);
     onchange({ ...plan, Stages: [...rows, row] });
     selected = key;
@@ -193,6 +201,7 @@
   const numeric = (event: Event): JsonValue => value(event).trim() && Number.isFinite(Number(value(event))) ? Number(value(event)) : value(event);
   function emit(next: JsonObject): void {
     if (disabled) return;
+    next = normalizeFightSchedules(next);
     error = '';
     // A field edit replaces its object, but must not replace the row's DOM identity.
     const nextRows = (next.Stages as JsonObject[]);
@@ -208,7 +217,41 @@
   function patch(row: JsonObject, changes: JsonObject): void {
     const index = rows.indexOf(row);
     if (index < 0) return;
-    emit({ ...plan, Stages: rows.map(item => item === row ? { ...item, ...changes } : item) });
+    emit({ ...plan, Version: 18, Stages: rows.map(item => item === row ? { ...item, ...changes } : item) });
+  }
+  function discardFight(key: number, field?: FightField): void {
+    const next = { ...fightDrafts[key] };
+    if (field) delete next[field];
+    fightDrafts = { ...fightDrafts, [key]: field ? next : {} };
+  }
+  function toggleFights(row: JsonObject, enabled: boolean): void {
+    discardFight(id(row));
+    patch(row, { FightSchedule: enabled ? { Id: crypto.randomUUID(), Anchor: 0, DelaySeconds: 0, IntervalSeconds: 0 } : null });
+  }
+  function changeFight(row: JsonObject, field: FightField, text: string): void {
+    if (disabled) return;
+    let error = '';
+    try { fightDurationSeconds(text, Number(object(row.FightSchedule)[field]), field === 'IntervalSeconds'); }
+    catch (err) { error = (err as Error).message; }
+    const key = id(row);
+    fightDrafts = { ...fightDrafts, [key]: { ...fightDrafts[key], [field]: { text, error } } };
+  }
+  function commitFight(key: number, field: FightField): void {
+    if (disabled || restoringDuration === key) return;
+    const row = rows.find(row => id(row) === key), draft = fightDrafts[key]?.[field];
+    if (!row || !draft || row.FightSchedule == null) return;
+    try {
+      const schedule = object(row.FightSchedule);
+      const seconds = fightDurationSeconds(draft.text, Number(schedule[field]), field === 'IntervalSeconds');
+      patch(row, { FightSchedule: { ...schedule, [field]: seconds } });
+      discardFight(key, field);
+    } catch (err) { fightDrafts = { ...fightDrafts, [key]: { ...fightDrafts[key], [field]: { ...draft, error: (err as Error).message } } }; }
+  }
+  async function blurFight(event: FocusEvent, key: number, field: FightField): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement, scope = durationScope;
+    if (restoringDuration === key) return;
+    await tick();
+    if (input.isConnected && document.activeElement !== input && scope === durationScope) commitFight(key, field);
   }
   function beginDuration(key: number): void {
     const index = rows.findIndex(row => id(row) === key);
@@ -304,7 +347,7 @@
     const from = rows.indexOf(row);
     if (disabled || from < 0 || to < 0 || to >= rows.length || from === to) return;
     const key = id(row);
-    emit(reorderStages(plan, from, to));
+    emit(reorderStages({ ...plan, Stages: rows }, from, to));
     announcement = `${stageLabel(row)} moved to stage ${to + 1}.`;
     await tick();
     list?.querySelector<HTMLButtonElement>(`[data-select="${key}"]`)?.focus({ preventScroll: true });
@@ -442,6 +485,7 @@
       <div class="live-meter" role="progressbar" aria-label={`Stage ${mapped.activeStageIndex + 1} progress`} aria-valuemin="0" aria-valuemax="100" aria-valuenow={livePercent ?? undefined} aria-valuetext={mapped.stages[mapped.activeStageIndex].presetBlocker || `${mapped.status}: ${mapped.stages[mapped.activeStageIndex].name}; ${livePercent === null ? 'progress not reported' : `${livePercent}% complete`}`}><span style:width={`${livePercent ?? 0}%`}></span></div>
       {#if mapped.stages[mapped.activeStageIndex].presetBlocker}<span class="live-note preset-blocker" role="status">{mapped.stages[mapped.activeStageIndex].presetBlocker}</span>{/if}
       {#if activityTiming?.current}<span class="activity-now">Now: {activityTiming.current.kind} / {activityDuration(activityTiming.current.elapsedSeconds)}</span>{/if}
+      {#if fightStatus}<span class="live-note" role="status">{fightStatus}</span>{/if}
     </div>
   {:else if mapped?.status === 'disabled'}
     <span class="live-note">Stages disabled</span>
@@ -499,11 +543,27 @@
       </div>
       {/if}
       <div class="stage-fields">
-        <label class="check" title={automatic ? 'Fight prep and boss push once before fresh planning. Entry preparation consumes the total elapsed budget.' : 'Fight prep and boss push once, then stage gear. No power fruits or digger upgrades.'}><input aria-label="Fight on entry" type="checkbox" checked={row.FightOnEntry === true} on:change={event => patch(row, { FightOnEntry: event.currentTarget.checked })} />Fight on entry</label>
+        <label class="check"><input aria-label="Fights enabled" type="checkbox" {disabled} checked={row.FightSchedule != null} on:change={event => toggleFights(row, event.currentTarget.checked)} />Fights</label>
+        {#if row.FightSchedule != null}
+          {@const schedule = object(row.FightSchedule)}
+          <label>Start from<select aria-label="Start from" {disabled} value={schedule.Anchor} on:change={event => patch(row, { FightSchedule: { ...schedule, Anchor: Number(value(event)) } })}><option value={0}>Stage entry</option><option value={1}>Augments started</option></select></label>
+          {#each ['DelaySeconds', 'IntervalSeconds'] as field}
+            {@const fightField = field as FightField}
+            {@const draft = fightDrafts[key]?.[fightField]}
+            <div>
+              {#if fightField === 'IntervalSeconds'}<label class="check"><input type="checkbox" aria-label="Repeat fights" {disabled} checked={Number(schedule.IntervalSeconds) > 0} on:change={event => { discardFight(key, 'IntervalSeconds'); patch(row, { FightSchedule: { ...schedule, IntervalSeconds: event.currentTarget.checked ? 180 : 0 } }); }} />Repeat fights</label>{/if}
+              {#if fightField === 'DelaySeconds' || Number(schedule.IntervalSeconds) > 0}
+                <label>{fightField === 'DelaySeconds' ? 'First fight after' : 'Repeat every'}<input type="text" spellcheck="false" {disabled} data-fight-field={field} value={draft?.text ?? formatTime(Number(schedule[field]))} aria-invalid={!!draft?.error} aria-describedby={draft?.error ? `fight-error-${key}-${field}` : undefined} on:input={event => changeFight(row, fightField, value(event))} on:blur={event => blurFight(event, key, fightField)} on:keydown={event => { if (event.key === 'Enter') { event.preventDefault(); commitFight(key, fightField); } if (event.key === 'Escape') { event.preventDefault(); discardFight(key, fightField); } }} /></label>
+                {#if draft?.error}<small id={`fight-error-${key}-${field}`} class="notice error" role="alert">{draft.error}</small>{/if}
+              {/if}
+            </div>
+          {/each}
+        {/if}
       </div>
+      {#if row.FightSchedule != null && alreadyCurrent}<p class="live-note">Timing changes apply on the next entry or restart. Turning fights off stops future fights.</p>{/if}
       <div class="panel-actions">
         <button type="button" class="ghost" class:active={plan.StageLoopStartIndex === index} aria-pressed={plan.StageLoopStartIndex === index} on:click={() => onchange({ ...plan, StageLoopStartIndex: plan.StageLoopStartIndex === index ? -1 : index })}>Repeat from here</button>
-        <button type="button" class="danger" disabled={rows.length <= 1} on:click={() => emit(reorderStages(plan, rows.indexOf(row), null))}>Remove stage</button>
+        <button type="button" class="danger" disabled={rows.length <= 1} on:click={() => emit(reorderStages({ ...plan, Stages: rows }, rows.indexOf(row), null))}>Remove stage</button>
       </div>
     </section>
   {/each}

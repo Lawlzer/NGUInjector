@@ -82,6 +82,10 @@ namespace NGUInjector
 {
     internal partial class Main
     {
+        internal static bool SaveTestActive => false;
+        internal static bool SaveTestCaptureAllowed => true;
+        internal static JSONObject GetSaveTestRuntime() => new JSONObject();
+        internal static Main reference;
         internal enum ExecutionLifecycle { Running, Quiescing, LoadingSave }
         internal static Character Character;
         private readonly string _dir;

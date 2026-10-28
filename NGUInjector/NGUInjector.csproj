@@ -141,6 +141,7 @@
     <Compile Include="Managers\CustomStageAllocator.cs" />
     <Compile Include="Managers\ProtectedStageScheduler.cs" />
     <Compile Include="Main.ProtectedTiming.cs" />
+    <Compile Include="Main.ScheduledFights.cs" />
     <Compile Include="Managers\GearOptimizer.cs" />
     <Compile Include="Managers\GearOptimizer.Presets.cs" />
     <Compile Include="Managers\GearOptimizer.RouteSelection.cs" />
@@ -172,8 +173,10 @@
     <Compile Include="Main.ExecutionIngress.cs" />
     <Compile Include="Main.ExecutionTelemetry.cs" />
     <Compile Include="Main.SaveSafety.cs" />
+    <Compile Include="Main.SaveTests.cs" />
+    <Compile Include="SaveTestBundle.cs" />
     <Compile Include="SaveSafetyCatalog.cs" />
-    <Compile Include="FiniteActionLedger.cs" />
+    <Compile Include="FiniteActionIdentity.cs" />
     <Compile Include="Main.FiniteActions.cs" />
     <Compile Include="Main.ActionSetup.cs" />
     <Compile Include="Main.PurchaseActions.cs" />
@@ -196,6 +199,7 @@
     <Compile Include="Main.CustomPrep.cs" />
     <Compile Include="Main.ExternalUi.cs" />
     <Compile Include="Main.Logging.cs" />
+    <Compile Include="AutomationErrorLog.cs" />
     <Compile Include="Main.Lifecycle.cs" />
     <Compile Include="Main.Profiles.cs" />
     <Compile Include="Main.Telemetry.cs" />

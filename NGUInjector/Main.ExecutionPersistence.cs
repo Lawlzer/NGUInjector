@@ -22,8 +22,6 @@ namespace NGUInjector
             internal string Kind, Path;
             internal JSONObject Exact;
             internal SelectedSetupRequirements Setup;
-            internal JSONNode Process;
-            internal Equipment[] ProcessInstances;
             internal ExecutionDomain RecoveryDomains;
             internal Dictionary<ResourceTarget, long[]> Resources;
             internal object[] ResourceObjects;
@@ -31,8 +29,6 @@ namespace NGUInjector
         private ExecutionRebindReview _executionRebindReview;
         private string _standaloneSelectedPolicy;
         private string _standaloneSelectionIssue;
-        private string _standaloneSelectionRevision;
-        private bool _standaloneSelectionLoaded;
         private string ExecutionPersistenceEntry => _protectedScheduler == null ? null : AutomaticRecoveryEntry;
 
         private static int SelectionInt(JSONNode value, int minimum, int maximum)
@@ -93,9 +89,8 @@ namespace NGUInjector
 
         private static ExecutionDomain PresetResourceReviewDomains(CustomLoadoutPreset preset)
         {
-            var weights = preset.Weights;
-            return (weights[0] + weights[6] + weights[7] + weights[8] + weights[9] > 0 ? ExecutionDomain.Energy : 0)
-                | (weights[1] + weights[2] + weights[6] + weights[8] > 0 ? ExecutionDomain.Magic : 0);
+            return (preset.ControlsResourceLane(true) ? ExecutionDomain.Energy : 0)
+                | (preset.ControlsResourceLane(false) ? ExecutionDomain.Magic : 0);
         }
 
         private void CaptureExecutionReviewResources(ExecutionRebindReview review)
@@ -276,7 +271,9 @@ namespace NGUInjector
                 var values = amounts.Children.Select(SelectionLong).ToArray();
                 var os = SelectionInt(activities["os"], 0, 2);
                 var aug = SelectionInt(activities["augmentId"], -1, 100);
-                if (os != capture.Snapshot.WandoosOs || aug >= 0 && !capture.Snapshot.Augments.Any(x => x.Id == aug))
+                var wandoos = values[2] > 0 || values[3] > 0 || resolved.ResourcePrioritiesReviewed
+                    && ((resolved.EnergyPriorities?.Contains("WAN") ?? false) || (resolved.MagicPriorities?.Contains("WAN") ?? false));
+                if (wandoos && os != capture.Snapshot.WandoosOs || aug >= 0 && !capture.Snapshot.Augments.Any(x => x.Id == aug))
                     throw new InvalidOperationException("Acquired AUG/OS is unavailable; no new choice was made.");
                 candidate.Activities = new PresetActivityAllocation { Os = os, AugmentId = aug,
                     TimeMachineEnergy = values[0], TimeMachineMagic = values[1], WandoosEnergy = values[2], WandoosMagic = values[3],
@@ -300,23 +297,18 @@ namespace NGUInjector
         {
             if (args != null && (!args.IsObject || args.Count != 0)) throw new FormatException("Preview rebind accepts no arguments.");
             if (_protectedOuterCheckpointIssue != null) throw new InvalidOperationException(_protectedOuterCheckpointIssue);
-            EnsureStandaloneSelectionLoaded();
-            // Route quarantine blocks adventure independently of the selected preset.
-            if (_importedRouteCommitments != null) return PreviewRouteExecutionRebind();
             var scheduled = Settings.UseCustomRebirthPlan
                 && (_protectedSelectedPolicyBlockedEntry == ExecutionPersistenceEntry && _protectedSelectedPolicyIssue != null
                     || _protectedScheduler != null && !_protectedScheduler.Finished && _protectedSelectedPolicy != null);
             var selection = scheduled ? _protectedSelectedPolicy : _standaloneSelectedPolicy;
             if (!scheduled && FocusSetupCurrent(_focusSetupSelection)) return PreviewExactExecutionRebind("focus");
-            if (!scheduled && _standaloneSelectionIssue == null && _executionExactPending?.Count > 0)
-                return PreviewExactExecutionRebind(null);
             if (selection == null || !scheduled && _standaloneSelectionIssue == null && _globalPresetManualId == null)
                 throw new InvalidOperationException("No acquired selection requires review.");
             var saved = JsonFiles.ParseObject(selection);
             var policy = ImportExecutionSelection(saved, out var capture);
             var owner = saved["owner"].Value;
             if (!scheduled && Settings.UseCustomRebirthPlan) throw new InvalidOperationException("Pause the plan before reviewing the dashboard selection.");
-            var revision = scheduled ? JsonFiles.ComputeRevision(File.ReadAllBytes(ProtectedCheckpointPath)) : _standaloneSelectionRevision;
+            var revision = scheduled ? JsonFiles.ComputeRevision(File.ReadAllBytes(ProtectedCheckpointPath)) : ExecutionSelectionRevision(selection);
             var review = new ExecutionRebindReview { Token = Guid.NewGuid().ToString("N"), Revision = revision, Selection = selection,
                 Owner = owner, Policy = policy, Material = capture.Material, Native = ExecutionRebindNativeKey(),
                 Permissions = ExecutionRebindPermissions(),
@@ -347,22 +339,11 @@ namespace NGUInjector
                 throw new InvalidOperationException("Selection review expired or authority changed; preview again.");
             if (review.Exact != null) return ApplyExactExecutionRebind(review);
             if (review.Kind == "restart") return ApplyExecutionRestart(review);
-            if (review.Kind == "routes")
-            {
-                if (JsonFiles.ComputeRevision(File.ReadAllBytes(review.Path)) != review.Revision || ExactExecutionMaterialKey() != review.Material
-                    || ExecutionRebindNativeKey() != review.Native || !review.ProcessInstances.SequenceEqual(CurrentExecutionEquipmentInstances()))
-                    throw new InvalidOperationException("Route review evidence changed; preview again.");
-                _executionRebindReview = null;
-                ImportRouteExecutionCommitments(review.Process);
-                if (!RebindRouteExecutionCommitments()) throw new InvalidOperationException(_routeCommitmentIssue);
-                if (Path.GetFileName(review.Path).StartsWith("lifecycle-", StringComparison.Ordinal))
-                { var ended = JsonFiles.ParseObject(review.Process.ToString()); ended["active"] = false; JsonFiles.WriteAtomic(review.Path, ended.ToString(2)); }
-                return "Acquired route process and original history reviewed for this session.";
-            }
             var scheduled = review.Owner == ProtectedPresetOwner;
-            var path = scheduled ? ProtectedCheckpointPath : StandaloneSelectionPath;
-            if (path == null || JsonFiles.ComputeRevision(File.ReadAllBytes(path)) != review.Revision
-                || (scheduled ? _protectedSelectedPolicy : _standaloneSelectedPolicy) != review.Selection)
+            var selection = scheduled ? _protectedSelectedPolicy : _standaloneSelectedPolicy;
+            if (selection != review.Selection || (scheduled
+                ? ProtectedCheckpointPath == null || JsonFiles.ComputeRevision(File.ReadAllBytes(ProtectedCheckpointPath)) != review.Revision
+                : ExecutionSelectionRevision(selection) != review.Revision))
                 throw new InvalidOperationException("Checkpoint changed; preview the current selection again.");
             var policy = ImportExecutionSelection(JsonFiles.ParseObject(review.Selection), out var capture);
             if (capture.Material != review.Material || ExecutionRebindNativeKey() != review.Native

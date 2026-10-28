@@ -182,13 +182,17 @@ public static partial class Program
             Set(rows[0], "maxLevel", 4L); Set(rows[11], "maxLevel", 2L);
             var capture = CallMain("CaptureCombatPrep", .03, .07, null); var before = CallMain("CombatPrepSupportKey");
             Set(typeof(PresetIntegrationChecks), foreign ? "ForeignPodRefresh" : "FailPodRefresh", true);
-            StartServerPolicy(capture, Phase("Wandoos", "wandoos-planned", 60));
+            Exception rejected = null;
+            try { StartServerPolicy(capture, Phase("Wandoos", "wandoos-planned", 60)); }
+            catch (Exception error) { rejected = error; }
+            Equal(foreign, rejected != null, "only foreign support interference rejects native run admission: " + rejected);
             var run = Get(MainInstance, "_combatPrepRun");
             Equal(false, Get(run, "SetupVerified"), "support failure never verifies the phase prerequisites");
             Equal(-1, Get(run, "AppliedResourcePhase"), "unverified support cannot credit resource application");
             Equal(0L, Get(Get(Character, "wandoos98"), "wandoosEnergy"), "unverified support never funds W");
             if (foreign)
             {
+                Equal(true, rejected.ToString().Contains("Unexpected foreign support mutation"), "foreign native callback is rejected by the real support guard");
                 Equal("ForeignConflict", Get(Get(MainInstance, "_presetSupportOutcome"), "Disposition").ToString(), "shared actuator rejects foreign partial evidence");
                 Equal(2L, Get(rows[11], "curLevel"), "foreign inactive level survives failed acquisition cleanup");
             }
@@ -246,6 +250,7 @@ public static partial class Program
             }
             else if (foreign == "claim")
             {
+                Equal(false, CallMain("CombatPrepRequirementsVerified", run, ScheduledPhase(run)), "foreign support claim denies current phase prerequisites");
                 Equal(false, Get(run, "SetupVerified"), "foreign support claim withholds phase setup proof");
                 Equal(-1, Get(run, "AppliedResourcePhase"), "foreign support claim withholds dependent resource credit");
                 Equal(committedWrites, ResourceCommittedWrites, "foreign support claim performs no dependent resource writes");

@@ -4,12 +4,20 @@ NGUInjector is an automation platform for the steam version of NGU Idle.
 
 ## Verification And Diagnostics
 
-`test-all.ps1` runs the offline verification suite; `diagnostics.ps1` observes live
-allocations, gear, support, and save safety without changing the game. Explicit
-`test-all.ps1 -Mode Prepare` adds a verified local native backup and guarded
-longest-playtime recovery. Destructive live fixtures remain blocked until native
-save/cloud/account and automation checkpoint isolation is available. See
-[Test-All And Save Safety](docs/test-all.md) for commands, reports, and limits.
+`verify.ps1` runs offline checks: `-Scope All` is the default, with `UI`, `Source`,
+`Native` and `Harness` available for focused work. Native accepts `-Suite` and
+`-Selector`; set `NGU_IDLE_DIR` or pass `-GameFolder` for installed game references.
+Reports retain JSON, phase logs and tested artifact identity; verification never
+deploys or controls the game. Contention, explicit defer or source/artifact drift
+returns exit 2 and appends evidence to `artifacts/agent-handoff.md`.
+
+`test.ps1` is game-facing only: read-only Diagnostics by default, or explicit
+Inspect, Prepare, Live and Restore modes. Prepare captures a fresh native backup;
+loading a longer-playtime save and Live require `-ConfirmLiveSaveLoad`. Native
+offline progress, Steam Cloud and achievements are accepted side effects, not
+rolled back. Live requires a compatible deployed backend; no actual live transaction
+is certified by this runner/documentation change. See [Testing And Save Safety](docs/testing.md)
+for commands, confirmation, restoration and evidence limits.
 
 ## External Desktop UI
 
@@ -22,7 +30,7 @@ From this repository root:
 # Development with hot reload:
 .\start-ui.ps1 -Dev
 # Checks without launching or modifying the game:
-.\verify-ui.ps1
+.\verify.ps1 -Scope UI
 ```
 
 The controller uses the existing `%USERPROFILE%\Desktop\NGUInjector` runtime folder. Enable external UI mode in the controller **before injecting**. If an injector is already running, unload it first; settings/plans are protected against offline writes while it owns the directory. Opening the controller does not automatically inject, restart NGU, or enable automation.

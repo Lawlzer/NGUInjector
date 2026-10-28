@@ -10,7 +10,7 @@ const settings = (): JsonObject => ({
   _energyNguWeights: [0, 0, 0, 0, 1, 0, 1, 0, 0], _magicNguWeights: [1, 0, 0, 0, 0, 0, 0]
 });
 const plan = (): JsonObject => ({
-  Version: 17, Name: 'selected', __externalUiRevision: 'a'.repeat(64),
+  Version: 18, Name: 'selected', __externalUiRevision: 'a'.repeat(64),
   StageDurationSeconds: 1800, Stages: [{ Name: 'Fixed', Percent: 100, DurationSeconds: 60, DurationUnit: 's' }]
 });
 
@@ -86,7 +86,7 @@ describe('global NGU settings validation', () => {
     expect(validateSettings(source, {})).toBeUndefined();
     expect(stringifyJson(source)).toBe(before);
   });
-  it.each([14, 15, 16, 17])('does not require NGU arrays on plan version %s', Version => {
+  it.each([14, 15, 16, 17, 18])('does not require NGU arrays on plan version %s', Version => {
     const source = { ...plan(), Version }, before = stringifyJson(source);
     expect(validatePlan(source)).toBeUndefined();
     expect(stringifyJson(source)).toBe(before);

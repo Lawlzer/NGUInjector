@@ -2,6 +2,13 @@
 
 Combat execution is updated for the October 22 shared-executor slice; the mixed-focus and live records retain their original build scope. This guide does not certify the game's present configuration. The [phase-support record](PHASE_SUPPORT_LIVE_VERIFICATION.md) and [October 16 Combat record](COMBAT_PREP_LIVE_VERIFICATION.md) remain historical evidence, not verification of this cutover.
 
+Use [Testing And Save Safety](testing.md) for current `verify.ps1` offline scopes
+and guarded `test.ps1` game modes. Old command lines, counts and handoffs in the
+recorded evidence below remain historical, not instructions to run removed wrappers
+or change the current game. The [current WIP](../../wip.md) and newer
+[action/session contract](action-state-simplification-20261023.md) override stale
+restart/durability status. This runner/documentation change certifies no actual live transaction.
+
 **The combat slice passes offline native acceptance, not the full release/live gate.**
 Current-resource handoff avoids empty/refill, paused still-owned borrowed fields
 return independently, and verified retained focus admits public Preview/Start.
@@ -160,7 +167,7 @@ The final full `verify-ui.ps1 -IncludeInjector -BrowserTests` pass succeeded: 14
 
 After the controlled harness, `24hr` was enabled at its actual post-merge Energy NGU row (zero-based index 3), automatic rebirth was disabled, Quick was cleared, and no Combat/cleanup owner remained active. Normal Adventure/boost/pit/blood preferences were restored and progress quicksaved. The eight temporary test plans were removed through the normal delete command; reports/backups remain available.
 
-Runtime report: `phase-support-final-20261017-182100.json`. The desktop UI was reopened against the real selected plan rather than a deleted test definition. `combined-native-20261017-182207-dashboard.{png,json}` shows `24hr` RUNNING, Auto-rebirth Off, Quick None and positive Energy/Magic NGU allocation. Fresh runtime is the authority after this historical observation. Optional follow-ups are in [temp.md](../../temp.md).
+Runtime report: `phase-support-final-20261017-182100.json`. The desktop UI was reopened against the real selected plan rather than a deleted test definition. `combined-native-20261017-182207-dashboard.{png,json}` shows `24hr` RUNNING, Auto-rebirth Off, Quick None and positive Energy/Magic NGU allocation. Fresh runtime is the authority after this historical observation. Optional follow-ups and decisions are in [future work](future-work.md); required acceptance and the intended final state are in [current WIP](../../wip.md). The old auto-rebirth-off handoff is not operative.
 
 ## Source Map
 

@@ -20,6 +20,7 @@ namespace NGUInjector
         internal void RefreshFocusEquipmentForChecks() { RunCustomFocusEquipmentRefresh(); }
         internal static SupportSelection CaptureSupportForChecks() { return CaptureSupportState().Selection; }
         internal void SetManualAdventureSetupActiveForChecks(bool active) { _manualAdventureSetupActive = active; }
+        internal void SetManualTitanActiveForChecks(bool active) { _manualTitanActive = active; }
     }
 
     internal static class EquipmentSetupChecks
@@ -28,6 +29,7 @@ namespace NGUInjector
         private static readonly DateTime Entry = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         private static readonly int[] BaseIds = {0, 3, 6, 7, 8, 9};
         private static readonly int[] BaseWeights = {20, 20, 15, 15, 15, 15};
+        private static Main.ExecutionClaim _focusGuardClaim;
 
         private static void Equal<T>(T expected, T actual, string name)
         {
@@ -77,7 +79,7 @@ namespace NGUInjector
                 ExactSupportLifecycle, ExactSupportRetryAndForeign, SelectionPersistencePrecedesMutation,
                 SlowFocusGuardsEntry, SlowFocusGuardsRefresh,
                 InactiveManualAdventureAllowsFocusEntry, InactiveManualAdventureAllowsFocusRefresh,
-                SlowFocusUsesAppliedOwner, FocusActivationUsesSharedSetup, FocusActivationWaitsForLocks,
+                SlowFocusUsesAppliedOwner, FocusActivationUsesSharedSetup, FocusActivationWaitsForClaims,
                 MagicFocusPreservesUnownedAllocations, MagicFocusRejectsCapacityBeforeRecall, MagicFocusRejectsUnaccountedRes3,
                 MagicFocusUsesUnmatchedMetadataGear, QuickAllocationMatchesStandardStage, QuickRemainsManualIndefinitely,
                 RapidSustainHasNoEquipment
@@ -457,8 +459,17 @@ namespace NGUInjector
             Main.Settings.ManualAdventureEnabled = guard == 1 && enabled;
             Main.reference.SetManualAdventureSetupActiveForChecks(guard == 1 && enabled);
             Main.reference.Blocked = guard == 2 && enabled;
-            LoadoutManager.CurrentLock = guard == 3 && enabled ? LockType.Titan : LockType.None;
-            DiggerManager.CurrentLock = guard == 4 && enabled ? LockType.Yggdrasil : LockType.None;
+            Main.reference.SetManualTitanActiveForChecks(guard == 3 && enabled);
+            if (guard == 4)
+            {
+                if (enabled)
+                    _focusGuardClaim = Main.reference.BeginExecutionClaim("support-check", "focus-refresh", Main.ExecutionDomain.Support, () => true);
+                else
+                {
+                    Equal(true, Main.reference.EndExecutionClaim(_focusGuardClaim, reconcile: false), "focus guard retires its current support claim");
+                    _focusGuardClaim = null;
+                }
+            }
         }
 
         private static void SlowFocusGuardsEntry()
@@ -581,26 +592,45 @@ namespace NGUInjector
             Equal(1, EquipmentRecording.Gear.Count, "slow refresh never repeats activation gear");
         }
 
-        private static void FocusActivationWaitsForLocks()
+        private static void FocusActivationWaitsForClaims()
         {
-            foreach (var gearLock in new[] {true, false})
+            foreach (var domain in new[] {Main.ExecutionDomain.Gear, Main.ExecutionDomain.Support})
             {
                 EquipmentRecording.Reset(true);
                 Main.Character = new FocusCharacter();
                 Main.reference = new Main();
-                if (gearLock) LoadoutManager.CurrentLock = LockType.Titan;
-                else DiggerManager.CurrentLock = LockType.Yggdrasil;
+                Main.Character.NGU.skills[0].energy = 1000;
+                Main.Character.NGU.magicSkills[2].magic = 700;
+                var head = new ih {slot = -1, id = 1, equipment = new Equipment {type = part.Head}};
+                var replacement = new ih {slot = 0, id = 2, equipment = new Equipment {type = part.Head}};
+                EquipmentRecording.ExactLoadout = new[] {head};
+                EquipmentRecording.SelectedGear = new[] {replacement};
+                var claim = Main.reference.BeginExecutionClaim("setup-check", "focus-activation", domain, () => true);
+                var before = Main.CaptureSupportForChecks().StableKey;
                 var result = Main.reference.ApplyCustomFocusGoal(CustomFocusGoal.EnergyNgu);
-                Equal(gearLock ? "setup waiting for loadout lock Titan" : "setup waiting for digger lock Yggdrasil", result, "focus activation reports blocking lock");
-                Equal("idle", Main.reference.GetCustomFocusStatus(), "blocked activation does not enter pending or applied state");
-                Equal((CustomFocusGoal?) null, Main.reference.GetActiveCustomFocusGoal(), "blocked activation does not claim requested goal");
+                Equal(true, result.Contains("temporary setup claim is waiting for its exact acquired selection"), "focus activation reports the current claim boundary: " + domain);
+                Equal("failed", Main.reference.GetCustomFocusStatus(), "blocked activation cannot claim applied readiness");
+                Equal(string.Empty, Main.reference.GetAppliedCustomFocusGoal(), "blocked activation has no applied owner");
+                Equal(true, Main.reference.FocusActivationPendingForChecks, "blocked activation retains only current-session retry intent");
+                Equal(true, Main.reference.ExecutionOwnsDomain(domain), "focus request does not retire another setup claim");
                 Equal(0, EquipmentRecording.Beards.Count, "blocked activation does not apply beards");
                 Equal(0, EquipmentRecording.Diggers.Count, "blocked activation does not apply diggers");
-                NoGear("blocked focus activation");
-                LoadoutManager.CurrentLock = DiggerManager.CurrentLock = LockType.None;
+                Equal(before, Main.CaptureSupportForChecks().StableKey, "blocked activation preserves exact current support");
+                Equal(0, EquipmentRecording.ExactApplications.Count, "blocked activation never applies selected gear");
+                Equal(true, LoadoutManager.ExactLoadoutMatches(new[] {head}), "blocked activation retains the current equipped instance");
+                Equal(0, Main.Character.EnergyRecalls + Main.Character.MagicRecalls, "blocked activation never recalls resource lanes");
+                Sequence(new[] {1000L, 700L}, new[] {Main.Character.NGU.skills[0].energy, Main.Character.NGU.magicSkills[2].magic},
+                    "blocked activation preserves existing allocations in both lanes");
+                Equal(true, Main.reference.EndExecutionClaim(claim, reconcile: false), "current owner can retire its claim without applying a successor");
+                Equal(0, EquipmentRecording.ExactSupport.Count, "claim retirement alone cannot fabricate setup progress");
                 Main.reference.ApplyCustomFocusGoal(CustomFocusGoal.EnergyNgu);
                 Equal("applied", Main.reference.GetCustomFocusStatus(), "unblocked activation completes immediately");
+                Equal(1, EquipmentRecording.ExactApplications.Count, "unblocked activation applies the proposed gear change exactly once");
+                Equal(true, ReferenceEquals(replacement.equipment, EquipmentRecording.ExactLoadout.Single().equipment),
+                    "unblocked activation equips the selected instance rather than keeping the old no-op setup");
                 Equal(1, EquipmentRecording.Diggers.Count, "blocked activation did not consume entry");
+                Equal(DesiredSupport(Main.SetupForFocus(CustomFocusGoal.EnergyNgu)).StableKey,
+                    Main.CaptureSupportForChecks().StableKey, "unblocked activation installs exact projected support");
             }
         }
 

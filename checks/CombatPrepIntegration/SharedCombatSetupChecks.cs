@@ -93,10 +93,9 @@ public static partial class Program
         if (!ObserveCombatOs) return;
         CombatOsInvocations++;
         var run = Get(MainInstance, "_combatPrepRun");
-        var pin = Parse(File.ReadAllText(Path.Combine((string)Get(MainType, "_dir"), "combat-prep-os.json")));
-        Equal(Get(run, "Id"), JsonValue(pin, "runId"), "native OS invocation has its actual durable run identity before reset");
-        Equal(true, JsonValue(pin, "action").EndsWith(":OS:1", StringComparison.Ordinal), "OS pin durably identifies this finite action");
+        Equal(false, Get(run, "OsInvoked"), "native OS entry belongs to the current unconsumed session step");
         Equal(true, Get(run, "SetupVerified"), "native OS invocation requires actual verified shared setup");
+        Equal(true, CallMain("CombatPrepRequirementsVerified", run, ScheduledPhase(run)), "native OS entry validates the real current setup grant");
         if (CombatOsFault == "before") throw new InvalidOperationException("fixture before native OS reset");
     }
 
@@ -122,7 +121,7 @@ public static partial class Program
         var before = Assertions;
         var failures = new List<Exception>();
         foreach (var acceptance in new Action[] { CheckCombatPartialCurrentSuccessor, CheckCombatForeignCurrentSuccessor,
-            CheckCombatReviewedRestart, CheckCombatOsOutcomes, CheckCombatOsPersistenceWait, CheckCombatLegacyOsPin,
+            CheckCombatReviewedRestart, CheckCombatOsOutcomes, CheckCombatOsLegacyStorageIgnored, CheckCombatLegacyOsPin,
             CheckCombatBorrowedTimerOutcomes, CheckCombatBorrowedPrerequisiteCallback, CheckCombatRouteScopedConflict,
             CheckCombatRetirementCallbacks, CheckCombatForeignRouteRetry, CheckCombatIdleSettingVerification,
             CheckCombatBaselineRouteEntry, CheckCombatSuspendedBaselineGrowth, CheckCombatFocusAdmission,
@@ -212,8 +211,10 @@ public static partial class Program
                     if (fault == "epoch") Set(Get(Character, "stats"), "rebirthNumber", 8L);
                     if (fault == "deadline") ControlledCombatPrepClock += 61;
                 };
-                if (fault == "deadline") Reject(() => Start(JsonValue(preview, "previewId"), FindCandidate(preview, "WandoosNoAT")), "deadline crossing during native OS effect cannot start the run");
-                else Start(JsonValue(preview, "previewId"), FindCandidate(preview, "WandoosNoAT"));
+                Exception rejected = null;
+                try { Start(JsonValue(preview, "previewId"), FindCandidate(preview, "WandoosNoAT")); }
+                catch (Exception error) { rejected = error; }
+                Equal(fault != "after", rejected != null, "only exact committed/current OS proof admits dependent work/" + fault + ": " + rejected);
                 var run = Get(MainInstance, "_combatPrepRun");
                 Equal(1, CombatOsInvocations, "OS effect invokes exactly once under " + fault);
                 if (fault == "after")
@@ -226,16 +227,22 @@ public static partial class Program
                 {
                     Equal("UnknownOutcome", Get(run, "OsOutcome"), "unverified OS/authority effect cannot admit dependent resources");
                     Equal(0L, Get(Get(Character, "wandoos98"), "wandoosEnergy"), "unverified OS cannot fund W energy");
+                    Equal("cancelled", Get(run, "Status"), "unverified OS retires only this bounded preparation attempt");
                 }
                 for (var retry = 0; retry < 3; retry++) ScheduledRefresh(run);
                 Equal(1, CombatOsInvocations, "executor retry never repeats irreversible OS reset under " + fault);
                 if (fault == "after") Equal(9L, Get(Get(Character, "wandoos98"), "energyLevel"), "later native W progress survives OS presentation recovery");
                 if (fault == "before")
                 {
-                    Set(MainInstance, "_combatPrepOsEpoch", null); Set(MainInstance, "_combatPrepOsPinDurable", false);
-                    Reject(() => Preview(60), "reload of invocation pin cannot authorize repeating an uncertain reset");
-                    Equal(1, CombatOsInvocations, "durable unknown invocation survives application/pin reload");
+                    CombatOsFault = null; CombatOsAfter = null;
+                    var fresh = Preview(60);
+                    Equal(1, CombatOsInvocations, "preview after cancellation never replays native OS work");
+                    Start(JsonValue(fresh, "previewId"), FindCandidate(fresh, "WandoosNoAT"));
+                    Equal(2, CombatOsInvocations, "a fresh explicit acquisition can attempt the current native OS change");
+                    Equal(false, ReferenceEquals(run, Get(MainInstance, "_combatPrepRun")), "fresh acquisition is not historical attempt restoration");
+                    Equal(1, Convert.ToInt32(Get(Get(Character, "wandoos98"), "os")), "fresh native attempt applies the selected OS exactly");
                 }
+                Equal(false, File.Exists(Path.Combine((string)Get(MainType, "_dir"), "combat-prep-os.json")), "OS outcomes create no per-action disk state/" + fault);
             }
             finally { ObserveCombatOs = false; CombatOsFault = null; CombatOsAfter = null; }
         }
@@ -293,31 +300,39 @@ public static partial class Program
 
     private static void CheckCombatLegacyOsPin()
     {
-        Setup(); ControlledCombatPrepClock = 10000; ObserveCombatOs = true; CombatOsInvocations = 0;
-        try
+        foreach (var storage in new[] { "valid", "malformed", "locked" })
         {
-            var preview = FreshCombatOsPreview();
-            Start(JsonValue(preview, "previewId"), FindCandidate(preview, "WandoosNoAT"));
-            var run = Get(MainInstance, "_combatPrepRun");
-            CallMain("CancelCombatPrep", Parse("{\"runId\":\"" + Get(run, "Id") + "\"}"));
-            var path = Path.Combine((string)Get(MainType, "_dir"), "combat-prep-os.json"); var pin = Parse(File.ReadAllText(path));
-            var legacy = "{\"version\":1,\"rebirth\":\"" + JsonValue(pin, "rebirth") + "\",\"origin\":" + Json(pin, "origin")
-                + ",\"elapsed\":" + Json(pin, "elapsed") + ",\"total\":" + Json(pin, "total") + ",\"os\":1}";
-            File.WriteAllText(path, legacy);
-            Set(MainInstance, "_combatPrepOsEpoch", null); Set(MainInstance, "_combatPrepOsPinDurable", false);
-            preview = Preview(60);
-            Equal(true, Get(MainInstance, "_combatPrepOsPinDurable"), "shipped v1 pin retains its durable same-world OS restriction");
-            foreach (var candidate in (IEnumerable)Get(Json(preview, "candidates"), "Children")) Equal("1", JsonValue(candidate, "os"), "legacy pin forbids another OS selection");
-            Equal(legacy, File.ReadAllText(path), "read-only legacy pin import never rewrites persisted bytes");
-            File.WriteAllText(path, "{invalid");
-            Set(MainInstance, "_combatPrepOsEpoch", null); Set(MainInstance, "_combatPrepOsPinDurable", false);
-            preview = Preview(60);
-            Equal(false, Get(MainInstance, "_combatPrepOsPinDurable"), "unreadable pin never fabricates durable invocation evidence");
-            foreach (var candidate in (IEnumerable)Get(Json(preview, "candidates"), "Children")) Equal("1", JsonValue(candidate, "os"), "unreadable pin permits only actual current OS");
-            Equal("{invalid", File.ReadAllText(path), "preview preserves unreadable evidence without repair writes");
-            Equal(1, CombatOsInvocations, "legacy/unreadable metadata cannot repeat the native OS reset");
+            Setup(); ControlledCombatPrepClock = 10000; ObserveCombatOs = true; CombatOsInvocations = 0;
+            FileStream held = null;
+            try
+            {
+                var preview = FreshCombatOsPreview();
+                Start(JsonValue(preview, "previewId"), FindCandidate(preview, "WandoosNoAT"));
+                var run = Get(MainInstance, "_combatPrepRun"); var w = Get(Character, "wandoos98");
+                Set(w, "energyLevel", 9L); Set(w, "magicProgress", .25f);
+                var resources = Resources(); var swaps = Swaps;
+                var path = Path.Combine((string)Get(MainType, "_dir"), "combat-prep-os.json");
+                var legacy = storage == "valid" ? "{\"version\":1,\"rebirth\":\"7\",\"origin\":1000,\"elapsed\":500,\"total\":1500,\"os\":0}" : "{invalid";
+                File.WriteAllText(path, legacy);
+                if (storage == "locked") held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+                var plan = Invoke(Get(MainType, "CustomPlanStore"), "Load", "fixture");
+                var old = ReplaceAutomaticCoordinator(plan);
+                Equal(null, Get(MainInstance, "_combatPrepRun"), "restart imports no native combat attempt/" + storage);
+                Equal(null, Get(MainInstance, "_combatPrepOsEpoch"), "restart imports no OS invocation authority/" + storage);
+                preview = Preview(60);
+                foreach (var candidate in (IEnumerable)Get(Json(preview, "candidates"), "Children")) Equal("1", JsonValue(candidate, "os"), "current native W work alone forbids destructive OS reset/" + storage);
+                Invoke(old, "TickCombatPrep");
+                Equal(1, CombatOsInvocations, "restart and stale callbacks never repeat native OS reset/" + storage);
+                Equal(9L, Get(w, "energyLevel"), "restart preserves earned native W levels/" + storage);
+                Equal(.25f, Get(w, "magicProgress"), "restart preserves native partial W progress/" + storage);
+                Equal(resources, Resources(), "restart and preview cannot import resource cleanup authority/" + storage);
+                Equal(swaps, Swaps, "restart and stale callbacks perform no historical gear swaps/" + storage);
+                Equal(false, Get(run, "SetupVerified"), "stale run loses native setup authority/" + storage);
+                held?.Dispose(); held = null;
+                Equal(legacy, File.ReadAllText(path), "retired OS metadata is never read/repaired/deleted/" + storage);
+            }
+            finally { ObserveCombatOs = false; held?.Dispose(); }
         }
-        finally { ObserveCombatOs = false; }
     }
 
     private static void CheckCombatReviewedRestart()
@@ -346,27 +361,24 @@ public static partial class Program
         Equal(null, CallMain("CombatPrepStartBlocker"), "fully verified reviewed restart clears only its accepted setup uncertainty");
     }
 
-    private static void CheckCombatOsPersistenceWait()
+    private static void CheckCombatOsLegacyStorageIgnored()
     {
         Setup(); ControlledCombatPrepClock = 10000; ObserveCombatOs = true; CombatOsInvocations = 0;
         var preview = FreshCombatOsPreview(); FileStream pinLock = null;
+        var path = Path.Combine((string)Get(MainType, "_dir"), "combat-prep-os.json"); File.WriteAllText(path, "{invalid");
         try
         {
-            CombatPrepClockRead = () => {
-                var run = Get(MainInstance, "_combatPrepRun");
-                if (run == null || !(bool)Get(run, "SetupVerified") || pinLock != null) return;
-                pinLock = new FileStream(Path.Combine((string)Get(MainType, "_dir"), "combat-prep-os.json"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-            };
+            pinLock = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
             Start(JsonValue(preview, "previewId"), FindCandidate(preview, "WandoosNoAT"));
             var current = Get(MainInstance, "_combatPrepRun"); var started = Get(current, "Started"); var deadline = Get(current, "PhaseDeadline");
-            Equal(true, pinLock != null, "persistence test locks the real runtime OS pin before authorization");
-            Equal(0, CombatOsInvocations, "failed durable authorization performs no irreversible reset");
-            Equal(0, Convert.ToInt32(Get(Get(Character, "wandoos98"), "os")), "failed persistence retains native OS");
-            pinLock.Dispose(); pinLock = null; CombatPrepClockRead = null;
+            Equal(1, CombatOsInvocations, "locked retired OS history cannot withhold the current native action");
+            Equal(1, Convert.ToInt32(Get(Get(Character, "wandoos98"), "os")), "native OS reset follows current verified setup despite retired storage");
             ScheduledRefresh(current);
-            Equal(1, CombatOsInvocations, "same acquired run invokes OS once after durable authorization recovers");
-            Equal(started, Get(current, "Started"), "persistence retry preserves run entry");
-            Equal(deadline, Get(current, "PhaseDeadline"), "persistence retry never renews phase timing");
+            Equal(1, CombatOsInvocations, "same acquired session never repeats the native OS reset");
+            Equal(started, Get(current, "Started"), "refresh preserves the original run entry");
+            Equal(deadline, Get(current, "PhaseDeadline"), "refresh never renews phase timing");
+            pinLock.Dispose(); pinLock = null;
+            Equal("{invalid", File.ReadAllText(path), "native OS work neither repairs nor rewrites retired metadata");
         }
         finally { ObserveCombatOs = false; CombatPrepClockRead = null; pinLock?.Dispose(); }
     }

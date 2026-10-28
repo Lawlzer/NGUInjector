@@ -18,11 +18,11 @@ namespace NGUInjector
         {
             internal string Identity;
             internal RouteActionKind Kind;
-            internal bool Invoked;
+            internal bool Invoked, Committed, AuthorityCurrent;
             internal MutationDisposition Disposition;
+            internal string Reason;
             internal Exception Error;
-            internal bool Committed => Disposition == MutationDisposition.AppliedVerified
-                || Disposition == MutationDisposition.ModelAppliedRenderFailed;
+            internal bool Verified => Committed && AuthorityCurrent;
         }
         private sealed class NativeRouteAction : FiniteAction
         {
@@ -32,7 +32,6 @@ namespace NGUInjector
             internal int Os, BossId;
             internal double Bootup;
             internal string Accounting;
-            internal bool Invoked;
             internal override bool Prerequisites() => ReferenceEquals(Character, Model)
                 && ReferenceEquals(Model.bossController, Boss) && ReferenceEquals(Model.wandoos98, Wandoos)
                 && Model.adventure.zone == -1 && !Model.bossController.isFighting && !Model.bossController.nukeBoss;
@@ -41,7 +40,6 @@ namespace NGUInjector
                 + ActionNumber(Model.wandoos98.bootupTime.totalseconds) + ":" + ResourceWriter.AllocatedResourceKey();
             internal override void Invoke()
             {
-                Invoked = true;
                 if (Kind == RouteActionKind.BossNuke) Model.bossController.startNuke();
                 else if (Kind == RouteActionKind.BossFight) Model.bossController.beginFight();
                 else ResourceWriter.Execute(() => Model.wandoos98.changeOS((OSType)Os));
@@ -64,25 +62,26 @@ namespace NGUInjector
         private RouteActionResult InvokeRouteAction(string identity, ExecutionGrant grant, RouteActionKind kind, int os = 0)
         {
             if (string.IsNullOrEmpty(identity)) throw new ArgumentException("Route actions require stable identity.");
-            if (grant == null) return new RouteActionResult { Identity = identity, Kind = kind, Disposition = MutationDisposition.RejectedUnchanged };
-            PersistRouteExecutionCommitments();
+            if (grant == null) return new RouteActionResult { Identity = identity, Kind = kind,
+                Disposition = MutationDisposition.RejectedUnchanged, Reason = "Route action has no current execution grant." };
             var action = new NativeRouteAction { Kind = kind, Os = os, Model = Character, Boss = Character.bossController,
                 Wandoos = Character.wandoos98, BossId = Character.bossID, Bootup = Character.wandoos98.bootupTime.totalseconds,
                 Accounting = ResourceWriter.AllocatedResourceKey(), Footprint = grant.Domains,
                 Identity = new FiniteActionIdentity("route-" + kind, grant.Owner, grant.Acquisition, identity, identity) };
             var result = RunFiniteAction(action, grant);
             return new RouteActionResult { Identity = identity, Kind = kind,
-                Invoked = action.Invoked || result.Committed || result.Disposition == MutationDisposition.UnknownOutcome,
-                Disposition = result.Committed && !result.Verified ? MutationDisposition.UnknownOutcome : result.Disposition,
-                Error = result.Reason == null ? null : new InvalidOperationException(result.Reason) };
+                Invoked = result.Invoked, Committed = result.Committed, AuthorityCurrent = result.AuthorityCurrent,
+                Disposition = result.Disposition, Reason = result.Reason, Error = result.Error };
         }
 
         internal bool BossPushRunning => _bossPushRunning;
 
         internal void StartBossPush()
         {
+            if (!ReferenceEquals(reference, this) || _unloaded) return;
             if (_bossPushRunning || _bossPushProcess != null) return;
-            if (_routeCommitmentIssue != null) throw new InvalidOperationException(_routeCommitmentIssue);
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss)
+                throw new InvalidOperationException("Native boss combat is busy; wait for it to finish before starting a boss push.");
             CancelManualTitan("boss push");
             if (_manualTitanActive) throw new InvalidOperationException("Manual titan route must retire before boss push.");
             ResetManualAdventureSetup();
@@ -116,40 +115,39 @@ namespace NGUInjector
             _bossPushRunning = true; _bossPushStopping = _bossPushNukeStarted = false;
             _bossPushProcess.Permission = RoutePermissionKey("boss-push");
             _bossPushFightSecondsRemaining = BossPushFightWindow;
-            PersistRouteExecutionCommitments();
             Log("Starting boss push");
         }
 
         internal void StopBossPush()
         {
-            var active = _bossPushRunning || _bossPushProcess != null;
+            if (!ReferenceEquals(reference, this) || _unloaded) return;
             _bossPushStopping = true;
             if (!EndRouteProcess(_bossPushProcess)) return;
-            if (_bossPushProcess?.SettingsClaim != null) EndExecutionClaim(_bossPushProcess.SettingsClaim, false);
+            if (_bossPushProcess?.SettingsClaim != null && !EndExecutionClaim(_bossPushProcess.SettingsClaim, false)) return;
             var preparation = _bossPushProcess?.BorrowedPreparation == true;
             _bossPushProcess = null;
             _bossPushRunning = _bossPushNukeStarted = _bossPushStopping = false;
             _bossPushFightSecondsRemaining = 0;
             if (preparation) CompleteFightPreparation();
-            if (active) PersistRouteExecutionCommitments();
         }
 
         private void BossPushTick()
         {
+            if (!ReferenceEquals(reference, this) || _unloaded) return;
             try
             {
                 if (!_bossPushRunning) return;
                 if (_bossPushStopping) { StopBossPush(); return; }
                 var boss = Character.bossController;
+                if (!_bossPushProcess.Applied && (boss.isFighting || boss.nukeBoss)) return;
                 if (!_bossPushProcess.Applied && !ApplyRouteProcess(_bossPushProcess)) return;
                 if (!RouteProcessReady(_bossPushProcess)) { StopBossPush(); return; }
                 if (!_bossPushNukeStarted)
                 {
                     if (boss.isFighting || boss.nukeBoss) return;
                     var result = InvokeRouteAction(_bossPushIdentity + ":nuke", RouteProcessGrant(_bossPushProcess), RouteActionKind.BossNuke);
-                    if (!result.Committed) { StopBossPush(); return; }
+                    if (!result.Verified) { StopBossPush(); return; }
                     _bossPushNukeStarted = true;
-                    PersistRouteExecutionCommitments();
                     return;
                 }
                 if (boss.nukeBoss) return;
@@ -163,9 +161,8 @@ namespace NGUInjector
                 if (boss.isFighting) return;
                 var fight = InvokeRouteAction(_bossPushIdentity + ":fight:" + _bossPushFightOrdinal,
                     RouteProcessGrant(_bossPushProcess), RouteActionKind.BossFight);
-                if (!fight.Committed) { StopBossPush(); return; }
+                if (!fight.Verified) { StopBossPush(); return; }
                 _bossPushFightOrdinal++;
-                PersistRouteExecutionCommitments();
             }
             catch (Exception error)
             {

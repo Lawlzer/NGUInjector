@@ -1,5 +1,12 @@
 # Execution Writer Inventory
 
+> Historical, non-operative source inventory. Recheck actual production callers:
+> stale "open", "not converted" and deletion statuses below are not a current backlog.
+> [Current WIP](../../wip.md) and the newer [action/session contract](action-state-simplification-20261023.md)
+> override old implementation/durability claims. Old command lines are retained
+> evidence, not public entrypoints; use [Testing And Save Safety](testing.md).
+> This inventory grants no live authority or instruction to resume historical tasks.
+
 Source inventory for the desired-state cutover. Inventory complete does not mean
 conversion complete. Keep this distinction when updating `../../wip.md`.
 

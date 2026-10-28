@@ -42,6 +42,7 @@ internal static class Program
         Run("horizon edit reallocates without rewinding completed flex", HorizonEdit);
         Run("cosmetic edits and positional identity", CosmeticEdits);
         Run("adventure weight edits preserve scheduler identity and deadlines", AdventureWeightEdits);
+        Run("fight schedule edits preserve scheduler identity and earned progress", FightScheduleEdits);
         Run("invalid adventure weights reject transactionally", InvalidAdventureWeights);
         Run("structural edits reset explicitly", StructuralEdits);
         Run("snapshot properties are inert defensive copies", Snapshot);
@@ -580,6 +581,40 @@ internal static class Program
                 Equal(s.Entry, restored.Entry); Equal(s.EnteredAt, restored.EnteredAt);
                 Equal(s.ExpectedEndSeconds, restored.ExpectedEndSeconds);
                 Check(restored.ExportState()["timing"].Value == before["timing"].Value);
+            }
+        }
+    }
+
+    private static void FightScheduleEdits()
+    {
+        foreach (var stage in new[] {Fixed(60), Flex(), At(), new CustomPlanStage {ExecutionMode = 1, DurationSeconds = 60}})
+        {
+            var p = Plan(200, stage, Flex(), Fixed(20));
+            var s = Start(p);
+            AppliedTick(s, p, 0, 10);
+            var before = Copy(s.ExportState());
+            foreach (var schedule in new[] {
+                new CustomFightSchedule {Id = "entry", Anchor = 0},
+                new CustomFightSchedule {Id = "entry", Anchor = 1, DelaySeconds = 5, IntervalSeconds = 30},
+                new CustomFightSchedule {Id = "replacement", Anchor = 1, DelaySeconds = int.MaxValue, IntervalSeconds = int.MaxValue},
+                null })
+            {
+                p.Stages[0].FightSchedule = schedule;
+                p.ValidateFightSchedules();
+                Check(s.Matches(p) && ProtectedStageScheduler.StructureKey(p) == before["structure"].Value,
+                    "Schedule identity and timing must stay outside stage StructureKey");
+                Tick(s, p, 10);
+                var after = s.ExportState();
+                Check(after["timing"].Value == before["timing"].Value && after["earned"].ToString() == before["earned"].ToString()
+                    && after["durations"].ToString() == before["durations"].ToString(), "Schedule edits retain earned work and frozen stage budgets");
+                Equal(before["entry"].AsDouble, s.Entry); Equal(before["enteredAt"].AsDouble, s.EnteredAt);
+                Equal(before["expectedEnd"].AsDouble, s.ExpectedEndSeconds);
+                var restored = new ProtectedStageScheduler();
+                Check(restored.RestoreState(p, Copy(before)), "Schedule edits do not invalidate earned-progress checkpoints");
+                Tick(restored, p, 10);
+                Equal(s.Entry, restored.Entry); Equal(s.EnteredAt, restored.EnteredAt);
+                Equal(s.ExpectedEndSeconds, restored.ExpectedEndSeconds);
+                Check(restored.ExportState()["earned"].ToString() == before["earned"].ToString());
             }
         }
     }

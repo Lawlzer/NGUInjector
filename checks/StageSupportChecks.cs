@@ -187,7 +187,7 @@ internal static class StageSupportChecks
             {
                 Contains((string)f.Call("RunManualFightPrep"), "identified explicit request", "raw manual preparation cannot invent its own opportunity");
                 Equal(false, f.Get("_bossPushRunning"), "raw missing-request rejection starts no process");
-                Equal(null, f.Get("_fightPreparationRecord"), "raw missing-request rejection creates no durable preparation identity");
+                Equal(null, f.Get("_fightPreparationAttempt"), "raw missing-request rejection creates no session preparation identity");
             }
             var summary = manual ? f.Request("manualFightPrep", "stage-support-fight")
                 : Convert.ToString(f.Call("RunCustomPreRebirthPrepIfNeeded", f.Plan));
@@ -206,7 +206,7 @@ internal static class StageSupportChecks
             f.PrepareFight();
             var inventory = Get(f.Character, "inventory"); var head = Get(inventory, "head");
             Set(Get(f.Character, "beards"), "disabled", true);
-            Contains((string)f.Call("RunFightPrep", f.Plan, false, false, "negative required Fu", null, "disabled-required-fu"), "required fight beard does not fit", "disabled hard prerequisite rejects real identified preparation");
+            Contains((string)f.Call("RunFightPrep", f.Plan, false, "negative required Fu", null, "disabled-required-fu"), "required fight beard does not fit", "disabled hard prerequisite rejects real identified preparation");
             Equal(false, f.Get("_bossPushRunning"), "unavailable Fu never starts a native boss process");
             Equal(null, f.Get("_fightPreparationClaim"), "unavailable Fu cannot acquire a writable preparation claim");
             Equal(true, ReferenceEquals(head, Get(inventory, "head")), "hard prerequisite rejection preserves native gear");
@@ -344,7 +344,7 @@ internal static class StageSupportChecks
             f.PrepareFight();
             f.Request("manualRebirth", "stage-support-prior-rebirth");
             f.AssertPreparedFight(boundary + " actual prior preparation");
-            var priorProcess = f.Get("_bossPushProcess"); var priorRecord = f.Get("_fightPreparationRecord");
+            var priorProcess = f.Get("_bossPushProcess"); var priorAttempt = f.Get("_fightPreparationAttempt");
             var permission = boundary == "loadout" ? Get(f.Character, "inventoryController") : Get(f.Character, "beards");
             var field = boundary == "loadout" ? "midDrag" : "disabled";
             Set(permission, field, true);
@@ -353,7 +353,7 @@ internal static class StageSupportChecks
                 ? "preparation blocked: Support is locked or inventory drag is active." : "setup waiting", boundary + " lock defers an actual identified manual request");
             Equal(true, f.Get("_manualRebirthPending"), boundary + " rejected Fight takeover preserves the pending rebirth intent");
             Equal(true, ReferenceEquals(priorProcess, f.Get("_bossPushProcess")), boundary + " lock starts no replacement or unprepared process");
-            Equal(true, ReferenceEquals(priorRecord, f.Get("_fightPreparationRecord")), boundary + " rejection preserves the real prior ledger identity");
+            Equal(true, ReferenceEquals(priorAttempt, f.Get("_fightPreparationAttempt")), boundary + " rejection preserves the real prior session attempt");
             Equal("stage-before-fight", f.Get("_customEquipmentOwner"), boundary + " lock preserves previous support");
             Equal(true, f.Call("RunCustomPreRebirthPrepIfNeeded", f.Plan), boundary + " lock keeps automatic rebirth waiting");
             Equal(false, f.Get("_customPreRebirthPrepCompleted"), boundary + " lock does not falsely complete rebirth prep");
@@ -494,6 +494,8 @@ internal static class StageSupportChecks
                 StageSupportChecks.Set(Child(Character, "totalPlaytime"), "totalseconds", 100000d);
                 StageSupportChecks.Set(Child(Character, "stats"), "rebirthNumber", 7L);
                 StageSupportChecks.Set(Child(Character, "advancedTraining"), "level", new long[5]);
+                // Prep permission needs this even when support models are intentionally unavailable.
+                Child(Child(Character, "challenges"), "noRebirthChallenge");
                 var buttons = Child(Character, "buttons");
                 Child(buttons, "beards");
                 Child(buttons, "diggers");
@@ -567,12 +569,11 @@ internal static class StageSupportChecks
             var grant = Call("RouteProcessGrant", process, false);
             Equal(true, Call("ValidateExecutionGrant", grant, StageSupportChecks.Get(grant, "Domains")), label + " action grant validates through production ownership");
             Equal(true, ((IList)StageSupportChecks.Get(StageSupportChecks.Get(Character, "beards"), "activeBeards")).Contains(0), label + " actual hard-required Fu is active");
-            var record = Get("_fightPreparationRecord");
-            Equal("fight-requested", StageSupportChecks.Get(record, "After"), label + " durable preparation history precedes boss admission");
-            var identity = StageSupportChecks.Get(record, "Identity");
-            var hash = MainType.Assembly.GetType("NGUInjector.JsonFiles", true).GetMethod("ComputeRevision", All).Invoke(null,
-                new object[] { System.Text.Encoding.UTF8.GetBytes((string)StageSupportChecks.Get(identity, "Key")) });
-            Equal(true, File.ReadAllText(Path.Combine(_directory, "finite-actions-v1", hash + ".json")).Contains("fight-requested"), label + " real ledger file contains the admitted opportunity");
+            var attempt = Get("_fightPreparationAttempt");
+            Equal(true, StageSupportChecks.Get(attempt, "BossStartAttempted"), label + " session attempt records native boss admission");
+            Equal(false, StageSupportChecks.Get(attempt, "Cancelled"), label + " admitted session attempt is not cancelled");
+            Equal(Property(_main, "FightPreparationIdentity"), StageSupportChecks.Get(StageSupportChecks.Get(attempt, "Identity"), "Key"), label + " process retains the original session identity");
+            Equal(false, Directory.Exists(Path.Combine(_directory, "finite-actions-v1")), label + " native admission creates no per-action disk history");
         }
         internal void Setting(string property, object value) { _settings.GetType().GetProperty(property, All).SetValue(_settings, value); }
         internal string Status { get { return (string) MainType.GetMethod("GetCustomAutomationStatus", All).Invoke(null, null); } }
@@ -671,7 +672,8 @@ internal static class StageSupportChecks
         internal void ExpectSupportSkipped(string scenario)
         {
             var selection = Get("_inlineStageSelection");
-            Equal(true, selection != null, scenario + " acquires inline intent independently of application evidence");
+            Equal(true, selection != null, scenario + " acquires inline intent independently of application evidence; status="
+                + Status + "; inlineError=" + Get("_inlineStageSetupError"));
             Equal(Get("_customStageEquipmentKey"), StageSupportChecks.Get(selection, "Owner"), scenario + " retains the actual stage equipment owner");
             Equal(null, StageSupportChecks.Get(selection, "Applied"), scenario + " leaves unavailable setup unapplied");
             Equal(false, Call("InlineStageSetupVerified", Plan), scenario + " cannot claim verification from unavailable support");

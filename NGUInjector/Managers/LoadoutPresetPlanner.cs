@@ -125,6 +125,8 @@ namespace NGUInjector.Managers
         internal int Horizon = 3600, Swap = 5, BloodPercent = -1, Zone = -1, DiggerPercent = 75;
         internal bool PlannedSupport;
         internal bool SetupOnly;
+        // Only the copied reviewed setup request clips provisional spending; generic requests are unchanged.
+        internal bool ObjectiveSetup;
         internal double MinimumPower, MinimumToughness;
         internal int[] BeardPriority = new int[0];
         internal int[] BeardRotation;
@@ -149,6 +151,10 @@ namespace NGUInjector.Managers
         internal PresetLaneFunding PriorityFunding;
         internal double ActivityGoldSpent;
         internal double? Score;
+        // Objective-only setup rank; Score and Metrics always describe actual funded production.
+        internal double? SetupScore;
+        // Imported retained decisions have no search eligibility/rank to replay.
+        internal bool? SetupEligible;
         internal int BloodPercent, Ritual = -1, Zone = -1, Floor = -1, Evaluations = 1;
         // Acquired eligibility witnesses let execution check weighted zero-yield
         // farming goals without enumerating replacement routes.
@@ -156,7 +162,7 @@ namespace NGUInjector.Managers
         internal long Energy, MagicNgu, Blood;
         internal double Hits;
         internal long[] EnergyShares, MagicShares;
-        // A zero allocation is controlled-empty only when the lane has an objective.
+        // Empty objective-owned lanes stay controlled; explicit reviewed tokens also acquire control.
         internal bool ControlsEnergy, ControlsMagic;
         internal long EnergyPool, MagicPool;
         internal double EnergyNguPower, MagicNguPower, MagicPower, BloodBonus;
@@ -238,7 +244,14 @@ namespace NGUInjector.Managers
         internal static PresetPlan Plan(PresetSnapshot s, PresetRequest r, Stopwatch clock = null)
         {
             var weights = NormalizeWeights(r.Weights);
-            if (!CapacityOnly(weights)) RequireSupportedNguAdvance(s);
+            if (!CapacityOnly(weights) || ReviewedNguFunding(r)) RequireSupportedNguAdvance(s);
+            var reviewed = r.ResourcePrioritiesReviewed ? r : null;
+            if (reviewed != null)
+            {
+                CustomLoadoutPreset.ValidateResourcePriorities(r.EnergyPriorities, r.MagicPriorities, true);
+                // All setup search, including specialist/reference repairs, uses objectives alone.
+                r = ObjectiveRequest(r);
+            }
             if (r.Horizon < 1 || r.Horizon > 604800 || r.Swap < 0 || r.Swap > 3600 || r.BloodPercent < -1 || r.BloodPercent > 100)
                 throw new ArgumentException("Invalid horizon, swap duration, or magic split.");
             if (s.Current.Length != s.Slots.Length || s.Factors.Length != s.Slots.Length || !Legal(s, s.Current))
@@ -345,7 +358,13 @@ namespace NGUInjector.Managers
             foreach (var c in specialists) c.Score = CandidateScore(s, r, c, weights, norms);
             result.Specialists = specialists;
             result.Candidates = new[] { current, mixed };
-            result.Sequence = r.SetupOnly ? null : Sequence(s, r, result.Candidates.Concat(result.Specialists).ToArray(), weights, norms, clock, result);
+            result.Sequence = reviewed != null || r.SetupOnly ? null : Sequence(s, r, result.Candidates.Concat(result.Specialists).ToArray(), weights, norms, clock, result);
+            if (reviewed != null)
+            {
+                result.Candidates = Array.ConvertAll(result.Candidates, c => FundSetup(s, reviewed, c, weights, norms));
+                result.Specialists = Array.ConvertAll(result.Specialists, c => FundSetup(s, reviewed, c, weights, norms));
+                result.Evaluated += result.Candidates.Length + result.Specialists.Length;
+            }
             result.Milliseconds = clock.ElapsedMilliseconds;
             return result;
         }
@@ -360,7 +379,7 @@ namespace NGUInjector.Managers
         {
             clock = clock ?? Stopwatch.StartNew();
             var weights = NormalizeWeights(request.Weights);
-            if (!CapacityOnly(weights)) RequireSupportedNguAdvance(s);
+            if (!CapacityOnly(weights) || ReviewedNguFunding(request)) RequireSupportedNguAdvance(s);
             var emptySlots = s.Current.Select((x, i) => x.Id == 0 ? x
                 : new PresetItem { SourceSlot = s.Slots[i], Group = Group(s.Slots[i]), Name = "Empty" }).ToArray();
             Func<PresetCandidate, PresetCandidate> replay = policy => {
@@ -628,7 +647,29 @@ namespace NGUInjector.Managers
             double[] normalization, string key, string label, PresetCandidate policy = null, Stopwatch clock = null)
         {
             weights = Pad(weights, 0d); normalization = Pad(normalization, 1d);
-            if (policy != null) return EvaluateSelection(s, r, items, weights, normalization, key, label, policy, policy.Support);
+            if (policy != null)
+            {
+                var replay = EvaluateSelection(s, r, items, weights, normalization, key, label, policy, policy.Support);
+                replay.SetupScore = policy.SetupScore;
+                replay.SetupEligible = policy.SetupEligible;
+                if (r.ResourcePrioritiesReviewed)
+                {
+                    if (policy.SetupEligible == false)
+                    {
+                        replay.Feasible = false; replay.Score = null;
+                        replay.Warnings = replay.Warnings.Concat(new[] { "Acquired setup has no eligible objective-only score; preview again." }).ToArray();
+                    }
+                    replay.RegularEligibilityZone = policy.RegularEligibilityZone;
+                    replay.BoostEligibilityZone = policy.BoostEligibilityZone;
+                }
+                return replay;
+            }
+            if (r.ResourcePrioritiesReviewed)
+            {
+                CustomLoadoutPreset.ValidateResourcePriorities(r.EnergyPriorities, r.MagicPriorities, true);
+                var setup = Evaluate(s, ObjectiveRequest(r), items, weights, normalization, key, label, null, clock);
+                return FundSetup(s, r, setup, weights, normalization);
+            }
             PresetCandidate best = null;
             var choices = SupportAlternatives(s, r, weights);
             var evaluated = 0;
@@ -650,6 +691,7 @@ namespace NGUInjector.Managers
             weights = Pad(weights, 0d); normalization = Pad(normalization, 1d);
             s = s.ActivityCopy(); s.Available = Pad(s.Available, false); s.Reasons = Pad(s.Reasons, (string)null);
             CustomLoadoutPreset.ValidateResourcePriorities(r.EnergyPriorities, r.MagicPriorities, r.ResourcePrioritiesReviewed);
+            if (ReviewedNguFunding(r)) RequireSupportedNguAdvance(s);
             s.Available[6] &= s.TimeMachineEnergy != null && s.TimeMachineMagic != null
                 && (s.TimeMachineEnergy.Unlocked || s.TimeMachineMagic.Unlocked);
             s.Available[7] &= s.Augments.Any(x => x.Augment != null && x.Upgrade != null && (x.Augment.Unlocked || x.Upgrade.Unlocked));
@@ -820,8 +862,10 @@ namespace NGUInjector.Managers
             var energyShares = NguShares(s.EnergyNgu, s.Available[0] ? funding?.EnergyNgu ?? energy : 0, ep, AllocationLookaheadSeconds, nguBonus, energyDigger);
             var magicShares = NguShares(s.MagicNgu, s.Available[1] ? funding?.MagicNgu ?? ResourcePercent(magic, 100 - bestSplit) : 0, mp, AllocationLookaheadSeconds, nguBonus, magicDigger);
             var c = new PresetCandidate { Key = key, Label = label, Items = items.ToArray(), Metrics = metrics, ConstraintFitness = constraintFitness,
-                ControlsEnergy = weights[0] + weights[6] + weights[7] + weights[8] + weights[9] > 0,
-                ControlsMagic = weights[1] + weights[2] + weights[6] + weights[8] > 0,
+                ControlsEnergy = weights[0] + weights[6] + weights[7] + weights[8] + weights[9] > 0
+                    || r.ResourcePrioritiesReviewed && r.EnergyPriorities.Length > 0,
+                ControlsMagic = weights[1] + weights[2] + weights[6] + weights[8] > 0
+                    || r.ResourcePrioritiesReviewed && r.MagicPriorities.Length > 0,
                 BloodPercent = bestSplit, Ritual = ritual, Energy = energyShares.Sum(), MagicNgu = magicShares.Sum(), EnergyShares = energyShares, MagicShares = magicShares,
                 Blood = ritual >= 0 ? funding?.Blood ?? ResourcePercent(magic, bestSplit) : 0, Zone = zone, Floor = floor, Hits = hits, Support = support, Feasible = feasible,
                 EnergyPool = energy, MagicPool = magic, EnergyNguPower = ep, MagicNguPower = mp, NguBonus = nguBonus,
@@ -988,7 +1032,21 @@ namespace NGUInjector.Managers
                         : tier == null ? new long[2] : Share(new[] { tier.Augment.Unlocked ? (double)long.MaxValue : 0,
                             tier.Upgrade.Unlocked ? (double)long.MaxValue : 0 }, e[2], new[] { 1d, 1 });
                     a.AugmentEnergy = pair[0]; a.UpgradeEnergy = pair[1];
+                    var liquid = s.Gold;
+                    if (r.ObjectiveSetup && fixedAllocation == null)
+                    {
+                        // Provisional amounts share real liquid gold, independent of reviewed lane order.
+                        // An uncertified forecast stays uncertified, not a fabricated known-zero objective.
+                        a.TimeMachineEnergy = AffordableActivityBar(s.TimeMachineEnergy, a.TimeMachineEnergy, ep, r.Horizon, 1, ref liquid) ?? a.TimeMachineEnergy;
+                        a.TimeMachineMagic = AffordableActivityBar(s.TimeMachineMagic, a.TimeMachineMagic, mp, r.Horizon, 1, ref liquid) ?? a.TimeMachineMagic;
+                        if (tier != null)
+                        {
+                            a.AugmentEnergy = AffordableActivityBar(tier.Augment, a.AugmentEnergy, ep, r.Horizon, augSpeed, ref liquid) ?? a.AugmentEnergy;
+                            a.UpgradeEnergy = AffordableActivityBar(tier.Upgrade, a.UpgradeEnergy, ep, r.Horizon, augSpeed, ref liquid) ?? a.UpgradeEnergy;
+                        }
+                    }
                     var reduced = s.ActivityCopy(); reduced.Energy = Math.Max(0, energy - a.EnergyTotal); reduced.Magic = Math.Max(0, magic - a.MagicTotal);
+                    if (r.ObjectiveSetup && fixedAllocation == null) reduced.Gold = liquid;
                     var c = EvaluateCore(reduced, r, items, w, norms, key, label, pinned, support, funding);
                     c.Activities = a; c.EnergyPool = energy; c.MagicPool = magic;
                     var duration = Math.Max(0, r.Horizon - (c.SetupChanged ? r.Swap : 0));

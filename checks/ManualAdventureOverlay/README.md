@@ -70,7 +70,7 @@ accepting this source. No current build/assertion total is claimed. The latest
 independent iteration-8 result is 11/11 groups and 277 assertions. Rebuild before
 accepting iteration-9 composition/deletion changes.
 
-The expanded runner passes 191 compiled overlay assertions across six groups, including actual planner/preserving-actuator coverage. `verify-ui.ps1 -IncludeInjector -GameFolder 'C:\Gaming\Launchers\Steam\Steam\steamapps\common\NGU IDLE'` passes end-to-end, including 1,875 frontend tests, 148 Rust tests, the injector build, this overlay runner, the allocation-preserving gear runner and all other configured C# suites. The focused Adventure browser suite passes 46 desktop/mobile tests.
+An earlier expanded runner passed 191 compiled overlay assertions across six groups, including actual planner/preserving-actuator coverage. Its UI/native and 46-case browser results are historical, not verification of the current tree. Use `./verify.ps1 -Scope Native -Suite ManualAdventureOverlay` for current scoped verification, or `./verify.ps1` for the full offline gate.
 
 Live verification on 2026-10-19 also observed a Keep-gear toggle retaining the running 24hr plan, unchanged gear/support and funded Time Machine energy/magic lanes. Allocations continued growing across the toggle rather than returning to idle. A manual max-ITOPOD push ran with a three-death budget; exhausting that budget returned the saved mode to Optimal ITOPOD. Live snapshots are observations, not a guarantee that a later push is still active; check current `runtime.maxItopodPush` for that state.
 

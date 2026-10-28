@@ -9,10 +9,10 @@ import { stageLabel } from '../src/lib/stage-presets';
 import StageEditor from '../src/lib/StageEditor.svelte';
 
 function fixture(): { plan: JsonObject; data: JsonObject } {
-  const common = { CompletionMode: 0, EnergyPriorities: [], MagicPriorities: [] };
+  const common = { CompletionMode: 0, EnergyPriorities: [], MagicPriorities: [], FightSchedule: null };
   return {
     plan: {
-      Name: 'Display name is not the filename', Version: 17, __externalUiRevision: 'a'.repeat(64),
+      Name: 'Display name is not the filename', Version: 18, __externalUiRevision: 'a'.repeat(64),
       StageDurationSeconds: 600, StageLoopStartIndex: 1,
       Stages: [
         { ...common, Name: 'Same descriptor', Percent: 1, DurationSeconds: 120, EnergyFocus: 1, MagicFocus: 1, GearGoal: 5 },
@@ -21,7 +21,7 @@ function fixture(): { plan: JsonObject; data: JsonObject } {
       ]
     },
     data: {
-      available: true, status: 'running', planName: 'selected-file', planVersion: 17,
+      available: true, status: 'running', planName: 'selected-file', planVersion: 18,
       schedulerMode: 'stages', activeStageIndex: 1, stageProgress: .25,
       elapsedSeconds: 999999, stageElapsedSeconds: 999999, cycle: 4, repeating: true, loopStartIndex: 1,
       stages: [
@@ -308,15 +308,15 @@ describe('editor stage-bar runtime mapping', () => {
     expect(matchingPlanProgress(plan, 'Active plan', data, true, false)).toBeNull();
   });
 
-  it('accepts version 17 and its runtime string representation', () => {
+  it('accepts version 18 and its runtime string representation', () => {
     const { plan, data } = fixture();
-    for (const reported of [17, '17']) {
+    for (const reported of [18, '18']) {
       data.planVersion = reported;
       expect(match(plan, data)).toEqual(parsePlanProgress(data, true));
     }
   });
 
-  it.each([13, 14, 15, 16, 18, 999, null, 'future', 17.5])('rejects unsupported or invalid schema %j even when both sides report it', version => {
+  it.each([13, 14, 15, 16, 17, 19, 999, null, 'future', 18.5])('rejects unsupported or invalid schema %j even when both sides report it', version => {
     const { plan, data } = fixture();
     plan.Version = version;
     data.planVersion = version;
@@ -658,7 +658,7 @@ describe('manual stage commands', () => {
     const snapshot: api.NguiState = {
       connected: true, runtime_dir: 'A:/runtime', marker_enabled: true, protocol: {},
       settings: { _customPlanFile: 'selected-file', _useCustomRebirthPlan: true },
-      runtime: { startedAt: 'session-a', updatedAt: new Date().toISOString(), runtimeRevision: 1, externalUiEnabled: true, status: 'running', protocolVersion: 3, stageOverridesV1: true, supportedCommands: ['readPlan', 'setPlanStage'], planProgress: data },
+      runtime: { startedAt: 'session-a', updatedAt: new Date().toISOString(), runtimeRevision: 1, externalUiEnabled: true, status: 'running', protocolVersion: 3, stageTimingVersion: 1, fightScheduleVersion: 1, planVersion: 18, stageOverridesV1: true, supportedCommands: ['readPlan', 'setPlanStage'], planProgress: data },
       plans: [], profiles: [], logs: [], command_results: []
     };
     const backend = { ...api,
@@ -695,7 +695,7 @@ describe('manual stage commands', () => {
     vi.spyOn(backend, 'readPresetLibrary').mockResolvedValue({ Version: 1, __externalUiRevision: 'b'.repeat(64), Presets: [{ Id: 'reviewed', Name: 'Reviewed', ResourcePrioritiesReviewed: true, EnergyPriorities: [], MagicPriorities: [] }] });
     await ui.loadPlan('selected-file');
     await ui.setPlanStage('set', 0, 'entry-7');
-    if (capability === 1) {
+    if (capability === 2) {
       expect(ui.current().error).toBe('');
       expect(backend.enqueueCommand).toHaveBeenCalledExactlyOnceWith('A:/runtime', 'setPlanStage', { name: 'selected-file', expectedRevision: plan.__externalUiRevision, expectedEntry: 'entry-7', action: 'set', stageIndex: 0 });
     } else {

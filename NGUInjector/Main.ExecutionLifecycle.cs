@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Linq;
 using NGUInjector.Managers;
 
@@ -9,7 +8,6 @@ namespace NGUInjector
     {
         private double _customLastObservedRebirthSeconds = -1d;
         private LoadoutManager.SnapshotEpoch _customObservedEpoch;
-        private bool _lifecycleEvidenceCaptured;
 
         private bool ServiceLifecycleRetirement()
         {
@@ -69,25 +67,14 @@ namespace NGUInjector
             return ServiceExecutionRetirement();
         }
 
-        private void PersistLifecycleExecutionEvidence()
-        {
-            if (string.IsNullOrEmpty(_dir) || Character?.stats == null) return;
-            if (_lifecycleEvidenceCaptured) return;
-            var path = Path.Combine(_dir, "lifecycle-route-commitments-v1.json");
-            if (File.Exists(path)) File.Copy(path, path + ".previous-" + Guid.NewGuid().ToString("N"), false);
-            JsonFiles.WriteAtomic(path, ExportRouteExecutionCommitments().ToString(2));
-            _lifecycleEvidenceCaptured = true;
-        }
-
-        // Invoke only after the finite rebirth operation verified commitment, never
-        // from a clock/epoch observer. Retain old bytes while permitting a new run.
+        // Invoke immediately after verified native forward rebirth. Loading the
+        // checkpoint uses the same narrow rollover rule if this call was interrupted.
         internal void CommitExecutionRebirthCheckpoint()
         {
             if (_protectedOuterCheckpointIssue != null || _protectedScheduler == null
-                || Character?.stats == null || Character.stats.rebirthNumber == _protectedRebirthNumber) return;
-            var path = ProtectedCheckpointPath;
-            if (path != null && System.IO.File.Exists(path))
-                System.IO.File.Move(path, Path.Combine(Path.GetDirectoryName(path), "stage-rebirth-" + Guid.NewGuid().ToString("N") + ".json"));
+                || Character?.stats == null || _protectedRebirthNumber == long.MaxValue
+                || Character.stats.rebirthNumber != _protectedRebirthNumber + 1) return;
+            InitializeProtectedStageProgress(_protectedPlan);
         }
         internal void InvalidateCustomEquipmentApplication()
         {
@@ -131,19 +118,24 @@ namespace NGUInjector
 
         private void ResetCustomAutomationRuntime()
         {
-            _lifecycleEvidenceCaptured = false;
-            // Epoch observation revokes authority, not native progression or unresolved
-            // operation evidence. Producers retire stale records through their own grants.
+            // Epoch observation cancels transient intent without importing cleanup
+            // authority or changing earned stage progression.
             InvalidateExecutionObservations(ExecutionDomain.Energy | ExecutionDomain.Magic | ExecutionDomain.Res3
                 | ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.NativeSettings
                 | ExecutionDomain.Route | ExecutionDomain.FiniteAction | ExecutionDomain.Inventory);
-            // Old-epoch claims lose references, not their persisted commitments. End
-            // without reconciliation; loading/observation must never run a successor.
-            foreach (var claim in _executionClaims.Where(x => !x.Ended && !x.Epoch.Matches()).ToArray()) EndExecutionClaim(claim, false);
+            // Drop authority locally, without inspecting/releasing historical setup.
+            foreach (var claim in _executionClaims) claim.Ended = true;
+            _executionClaims.Clear();
             _executionBaseline = null; _quickExecutionClaim = null; _reviewedExactSetupPending = null;
+            _executionBaselineResourceIntent = null;
+            _executionSelections?.Clear();
+            _standaloneSelectedPolicy = _standaloneSelectionIssue = null;
+            _globalPresetPolicies?.Clear(); _retainedPresetSelections?.Clear();
+            _globalPresetReceipt = null; _globalPresetApplyingPolicy = null;
+            _globalPresetApplyingEvent = _globalPresetManualId = null;
+            _focusSetupSelection = null;
             _customRequestedFocusGoal = _customSustainedFocusGoal = _customAppliedFocusGoal = null;
-            _customFocusStatus = "needsReview";
-            _executionExactLoaded = false; _standaloneSelectionLoaded = false;
+            _customFocusStatus = "idle";
             ResetProtectedStageProgress();
             _customStageKey = null;
             _customStageEquipmentKey = null;
@@ -151,7 +143,6 @@ namespace NGUInjector
             _customIdleResourceWarningLastShown = DateTime.MinValue;
             _customLastObservedRebirthSeconds = Character == null ? -1d : Math.Max(0d, Character.rebirthTime.totalseconds);
             _customObservedEpoch = Character == null ? null : new LoadoutManager.SnapshotEpoch();
-            if (Character?.stats != null && !string.IsNullOrEmpty(_dir)) EnsureStandaloneSelectionLoaded();
             SetCustomAutomationStatus("Custom automation reset after rebirth.");
         }
     }

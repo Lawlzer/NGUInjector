@@ -81,7 +81,7 @@ describe('priority picker display', () => {
 
 describe('priority picker integration', () => {
   it.each([0, 1])('uses clear timing labels and honest relative weights for execution mode %s', ExecutionMode => {
-    const plan: JsonObject = { StageDurationSeconds: 1800, Stages: [{ ExecutionMode, Percent: 150, EnergyPriorities: ['NGU-4', 'FUTURE'], MagicPriorities: ['RIT-7'], Future: 'keep' }] };
+    const plan: JsonObject = { Version: 18, StageDurationSeconds: 1800, Stages: [{ ExecutionMode, Percent: 150, EnergyPriorities: ['NGU-4', 'FUTURE'], MagicPriorities: ['RIT-7'], FightSchedule: null, Future: 'keep' }] };
     const before = stringifyJson(plan), onchange = vi.fn();
     const body = render(StageEditor, { props: { plan, onchange } }).body;
     expect(body).toContain('<option value="fixed">Time</option>');

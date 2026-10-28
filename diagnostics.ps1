@@ -4,12 +4,18 @@
 Read-only runtime diagnostics. Returns one report object; never exits the caller.
 .DESCRIPTION
 Only runtime.json is read. No commands, settings, saves, or game state are written.
-success means every required check passed or was explicitly uncontrolled. Optional
+success means every required check passed, was explicitly uncontrolled, or was an
+EXPECTED save warning fenced by ExpectedTestSessionId. Optional
 independent NGU distribution remains INCONCLUSIVE: published caps are historical.
 Samples=1 cannot establish heartbeat progress. Freshness allows 10 seconds of age
 and 5 seconds of clock skew. A new ReportPath may be written outside RuntimeDir;
 its parent must already exist. Infrastructure/argument errors throw; observations
 (including missing/malformed runtime JSON) are returned as check results.
+ExpectedTestSessionId requires an exact running version-1 save-test session in
+every sample, with verified reset, stable fixture generation/hash, and valid save
+metadata. Only fenced behind/testing warnings are expected; raw evidence remains.
+For these warnings, scanComplete=false means the production save scan is PAUSED
+during the fixture, not complete. Scan errors and invalid metadata still fail.
 .EXAMPLE
 $report = & ./diagnostics.ps1 -ExpectedPlan 'My Plan'
 if (-not $report.success) { throw 'Runtime diagnostics did not pass.' }
@@ -20,7 +26,8 @@ param(
     [ValidateRange(1, 1000)][int]$Samples = 3,
     [ValidateRange(0, 3600)][double]$IntervalSeconds = 2,
     [string]$ExpectedPlan,
-    [string]$ReportPath
+    [string]$ReportPath,
+    [ValidatePattern('\A[0-9a-fA-F]{32}\z')][string]$ExpectedTestSessionId
 )
 
 # Keep helpers/preferences out of a parent that dot-invokes this script.
@@ -47,6 +54,7 @@ param(
     $checks = [Collections.Generic.List[object]]::new()
     $observations = [Collections.Generic.List[object]]::new()
     $sampleIndex = 0
+    $fixtureFence = $null
     function Add-Check($Id, $Status, $Message, $Evidence = $null, [bool]$Required = $true) {
         $checks.Add([pscustomobject]@{
             sample = $sampleIndex; id = $Id; status = $Status; required = $Required
@@ -108,7 +116,7 @@ param(
         return [pscustomobject]@{ beards = $beards; diggers = $diggers }
     }
     function Get-OverallStatus($Items) {
-        foreach ($status in @('FAIL', 'WAITING', 'INCONCLUSIVE', 'UNCONTROLLED')) {
+        foreach ($status in @('FAIL', 'WAITING', 'INCONCLUSIVE', 'UNCONTROLLED', 'EXPECTED')) {
             if (@($Items | Where-Object status -EQ $status).Count -gt 0) { return $status }
         }
         return 'PASS'
@@ -129,7 +137,15 @@ param(
             session = $null; runtimeRevision = $null; readable = $false; fresh = $false; running = $false
         }
         $observations.Add($observation)
-        try { $json = [IO.File]::ReadAllText($runtimePath) }
+        if ($ExpectedTestSessionId) {
+            Add-Check 'saveTestSession' 'FAIL' 'Expected save-test session cannot be verified: runtime.json was not read as an object.' @{ expectedSessionId = $ExpectedTestSessionId; session = $null }
+            $testSessionCheck = $checks[$checks.Count - 1]
+        }
+        try {
+            $stream = [IO.File]::Open($runtimePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            $reader = [IO.StreamReader]::new($stream)
+            try { $json = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        }
         catch [IO.FileNotFoundException] { Add-Check 'runtime.read' 'WAITING' 'runtime.json is not published yet.'; continue }
         catch [IO.DirectoryNotFoundException] { Add-Check 'runtime.read' 'WAITING' 'Runtime directory disappeared during sampling.'; continue }
         try { $runtime = ConvertFrom-Json -InputObject $json -AsHashtable -Depth 100 }
@@ -154,6 +170,9 @@ param(
         Add-Check 'runtime.running' $runningStatus 'Runtime and execution lifecycle must both be running.' @{
             status = $runtime.status; lifecycle = $runtime.execution.lifecycle; startupError = $runtime.startupError
         }
+        $errorStatus = if ($runtime.automationErrors -isnot [array]) { 'INCONCLUSIVE' }
+            elseif ($runtime.automationErrors.Count -gt 0) { 'FAIL' } else { 'PASS' }
+        Add-Check 'automationErrors' $errorStatus 'Injector error history must be present and empty for this session.' $runtime.automationErrors
         $execution = if ($runtime.execution -is [Collections.IDictionary]) { $runtime.execution } else { @{} }
         $domains = if ($execution.domains -is [Collections.IDictionary]) { $execution.domains } else { @{} }
         $plan = $runtime.planProgress
@@ -309,7 +328,7 @@ param(
         if ($safety.testActive -is [bool] -and $safety.testActive -and $status -eq 'PASS') { $status = 'WAITING' }
         if ($safety.scanComplete -isnot [bool] -or -not $safety.scanComplete) { if ($status -eq 'PASS') { $status = 'WAITING' } }
         if ($safety.errors -is [array] -and $safety.errors.Count -gt 0) { $status = 'FAIL' }
-        Add-Check 'saveSafety' $status 'Save-safety status; behind/testing/recovery are visible issues.' $safety
+        $safetyMessage = 'Save-safety status; behind/testing/recovery are visible issues.'
         $valid = $safety -is [Collections.IDictionary] -and (Test-JsonInteger $safety.version) -and $safety.version -eq 1 -and
             $safety.status -cin @('verified', 'behind', 'unknown', 'testing', 'recoveryRequired') -and $safety.message -is [string] -and
             $safety.testActive -is [bool] -and $safety.scanComplete -is [bool] -and $safety.errors -is [array]
@@ -334,6 +353,55 @@ param(
         $schemaStatus = if ($valid) { 'PASS' } elseif ($safety.status -ceq 'verified') { 'FAIL' } else { 'INCONCLUSIVE' }
         if ($valid -and $safety.status -ceq 'verified' -and [double]::Parse($safety.current.totalPlaytimeSeconds, [Globalization.CultureInfo]::InvariantCulture) -lt
             [double]::Parse($safety.longest.totalPlaytimeSeconds, [Globalization.CultureInfo]::InvariantCulture)) { $schemaStatus = 'FAIL' }
+        if ($ExpectedTestSessionId) {
+            $session = $runtime.saveTestSession
+            $restore = $session.restoreTarget
+            $restoreValid = $restore -is [Collections.IDictionary] -and (Test-JsonInteger $restore.version) -and $restore.version -ge 1 -and
+                $restore.playerName -is [string] -and (Test-IntegerString $restore.rebirth) -and
+                $restore.path -is [string] -and -not [string]::IsNullOrWhiteSpace($restore.path) -and
+                $restore.sha256 -is [string] -and $restore.sha256 -cmatch '\A[0-9a-fA-F]{64}\z'
+            foreach ($field in @('totalPlaytimeSeconds', 'rebirthSeconds')) {
+                $number = 0.0
+                if ($restore.$field -isnot [string] -or -not [double]::TryParse($restore.$field, [Globalization.NumberStyles]::Float,
+                    [Globalization.CultureInfo]::InvariantCulture, [ref]$number) -or -not [double]::IsFinite($number) -or $number -lt 0) { $restoreValid = $false }
+            }
+            if ($restoreValid -and [double]::Parse($restore.rebirthSeconds, [Globalization.CultureInfo]::InvariantCulture) -gt
+                [double]::Parse($restore.totalPlaytimeSeconds, [Globalization.CultureInfo]::InvariantCulture)) { $restoreValid = $false }
+            $reason = if ($session -isnot [Collections.IDictionary]) { 'saveTestSession is missing or is not an object.' }
+                elseif (-not (Test-JsonInteger $session.version) -or $session.version -ne 1 -or $session.supported -isnot [bool] -or -not $session.supported) { 'A supported version-1 saveTestSession is required.' }
+                elseif ($session.sessionId -isnot [string] -or $session.sessionId -cne $ExpectedTestSessionId) { 'saveTestSession.sessionId does not exactly match ExpectedTestSessionId.' }
+                elseif ($session.phase -isnot [string] -or $session.phase -cne 'running') { 'saveTestSession.phase must be running, not a transition, restore, or recovery phase.' }
+                elseif (-not (Test-IntegerString $session.fixtureGeneration)) { 'fixtureGeneration must be a nonnegative Int64 integer string.' }
+                elseif ($session.fixture -isnot [Collections.IDictionary] -or $session.fixture.name -isnot [string] -or [string]::IsNullOrWhiteSpace($session.fixture.name) -or
+                    $session.fixture.sha256 -isnot [string] -or $session.fixture.sha256 -cnotmatch '\A[0-9a-fA-F]{64}\z') { 'Fixture name and SHA-256 identity are missing or invalid.' }
+                elseif ($session.resetEvidence -isnot [Collections.IDictionary] -or $session.resetEvidence.verified -isnot [bool] -or -not $session.resetEvidence.verified) { 'Fixture resetEvidence.verified must be true.' }
+                elseif (-not $restoreValid) { 'restoreTarget must contain a valid decoded native save identity and path/SHA-256.' }
+                elseif (-not $valid -or $schemaStatus -eq 'FAIL') { 'Save-safety metadata is missing, invalid, or contradictory.' }
+                elseif ($safety.status -ceq 'recoveryRequired') { 'Save safety requires recovery; an expected test session cannot waive recovery.' }
+                elseif (-not $safety.testActive) { 'Save safety must report testActive=true for the expected test session.' }
+                elseif ($safety.errors.Count -gt 0) { 'Save-safety scan errors cannot be waived by an expected test session.' }
+                elseif (-not $safety.scanComplete -and $safety.status -cnotin @('behind', 'testing')) { 'Save-safety scan must be complete outside an expected behind/testing fixture warning.' }
+                elseif ($null -ne $fixtureFence -and ($session.fixtureGeneration -cne $fixtureFence.generation -or $session.fixture.sha256 -cne $fixtureFence.sha256)) { 'Fixture generation or SHA-256 changed across diagnostics samples.' }
+                else { $null }
+            $testSessionCheck.evidence = @{ expectedSessionId = $ExpectedTestSessionId; session = $session; fixtureFence = $fixtureFence }
+            if ($reason) { $testSessionCheck.message = $reason }
+            else {
+                if ($null -eq $fixtureFence) { $fixtureFence = @{ generation = $session.fixtureGeneration; sha256 = $session.fixture.sha256 } }
+                $testSessionCheck.evidence.fixtureFence = $fixtureFence
+                $testSessionCheck.status = 'PASS'
+                $testSessionCheck.message = 'Exact supported version-1 running save-test session, verified reset, valid save metadata, and stable fixture generation/SHA-256.'
+                if ($safety.status -cin @('behind', 'testing')) {
+                    $status = 'EXPECTED'
+                    $safetyMessage = 'Expected older-fixture/test warning: exact save-test session fence verified. Raw save-safety warning evidence is retained.'
+                    if (-not $safety.scanComplete) {
+                        $testSessionCheck.evidence.productionScanStatus = 'PAUSED'
+                        $safetyMessage += ' Production save scan is PAUSED during the fixture, not complete (scanComplete=false).'
+                    }
+                }
+            }
+            if (-not $valid -or -not $restoreValid) { $schemaStatus = 'FAIL' }
+        }
+        Add-Check 'saveSafety' $status $safetyMessage $safety
         Add-Check 'saveSafety.evidence' $schemaStatus 'Version-1 progress strings and longest-save identity; verified current playtime cannot be behind longest. This does not re-read or hash save files.' $safety
     }
 
@@ -361,7 +429,7 @@ param(
     if ($progressStatus -eq 'WAITING' -and $advanced) { $progressStatus = 'PASS' }
     Add-Check 'runtime.progress' $progressStatus 'Multiple samples require a progressing, non-regressing runtimeRevision; a single sample cannot establish progress.' @{ revisions = @($observations | ForEach-Object runtimeRevision) } ($Samples -gt 1)
     foreach ($check in $checks) {
-        if ($check.sample -eq 0 -or $check.id.StartsWith('runtime.') -or $check.status -ne 'PASS') { continue }
+        if ($check.sample -eq 0 -or $check.id.StartsWith('runtime.') -or $check.status -notin @('PASS', 'EXPECTED')) { continue }
         $observation = $observations[$check.sample - 1]
         if (-not $observation.fresh -or -not $observation.running -or $sessionStatus -ne 'PASS' -or ($Samples -gt 1 -and $progressStatus -ne 'PASS')) {
             $check.status = 'INCONCLUSIVE'
@@ -370,7 +438,8 @@ param(
     }
     $counts = [ordered]@{}
     foreach ($status in @('PASS', 'FAIL', 'INCONCLUSIVE', 'WAITING', 'UNCONTROLLED')) { $counts[$status] = @($checks | Where-Object status -EQ $status).Count }
-    $requiredIssues = @($checks | Where-Object { $_.required -and $_.status -notin @('PASS', 'UNCONTROLLED') })
+    if ($ExpectedTestSessionId) { $counts['EXPECTED'] = @($checks | Where-Object status -EQ 'EXPECTED').Count }
+    $requiredIssues = @($checks | Where-Object { $_.required -and $_.status -notin @('PASS', 'UNCONTROLLED', 'EXPECTED') })
     $report = [pscustomobject]@{
         version = 1; generatedAt = [datetimeoffset]::UtcNow.ToString('o'); readOnly = $true
         runtimePath = $runtimePath; expectedPlan = $ExpectedPlan; sampleCount = $Samples; intervalSeconds = $IntervalSeconds
@@ -383,6 +452,7 @@ param(
         checks = $checks.ToArray()
         issues = @($checks | Where-Object { $_.status -notin @('PASS', 'UNCONTROLLED') })
     }
+    if ($ExpectedTestSessionId) { $report | Add-Member -NotePropertyName expectedTestSessionId -NotePropertyValue $ExpectedTestSessionId }
     if ($outputPath) {
         $content = ConvertTo-Json -InputObject $report -Depth 100
         $stream = [IO.File]::Open($outputPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)

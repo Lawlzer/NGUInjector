@@ -264,7 +264,7 @@ internal static class BlackBarChecks
         Equal("", string.Join(",", (string[])Call("DefaultPriorities", Enum.Parse(focus, "None"), true)), "None does not manage resources");
         var planType = _assembly.GetType("NGUInjector.CustomPlans.CustomPlan", true);
         var plan = Activator.CreateInstance(planType);
-        Equal(17, (int) planType.GetField("Version").GetValue(plan), "new universal stage plan version");
+        Equal(18, (int) planType.GetField("Version").GetValue(plan), "new fight schedule plan version");
         var settingsType = _assembly.GetType("NGUInjector.SavedSettings", true);
         var settings = Activator.CreateInstance(settingsType, new object[] {null});
         Equal("0,0,0,0,1,0,1,0,0", string.Join(",", (int[]) settingsType.GetProperty("EnergyNguWeights").GetValue(settings)), "default global energy lane weights");
@@ -286,18 +286,30 @@ internal static class BlackBarChecks
         stageType.GetField("BlackBarLookaheadSeconds").SetValue(stage, 7);
         stageType.GetField("DurationSeconds").SetValue(stage, 61);
         stageType.GetField("DurationUnit").SetValue(stage, "min");
-        stageType.GetField("FightOnEntry").SetValue(stage, true);
+        var scheduleType = _assembly.GetType("NGUInjector.CustomPlans.CustomFightSchedule", true);
+        var schedule = Activator.CreateInstance(scheduleType);
+        scheduleType.GetField("Id").SetValue(schedule, "native-clone-schedule");
+        scheduleType.GetField("Anchor").SetValue(schedule, 1);
+        scheduleType.GetField("DelaySeconds").SetValue(schedule, 60);
+        scheduleType.GetField("IntervalSeconds").SetValue(schedule, 120);
+        var sourceField = scheduleType.GetField("SourceJson", BindingFlags.Instance | BindingFlags.NonPublic);
+        sourceField.SetValue(schedule, jsonType.GetMethod("Parse", StaticMethods).Invoke(null, new object[] {"{\"future\":9007199254740993}"}));
+        stageType.GetField("FightSchedule").SetValue(stage, schedule);
         var array = Array.CreateInstance(stageType, 1);
         array.SetValue(stage, 0);
         var serialized = storeType.GetMethod("SerializeStages", StaticMethods).Invoke(null, new object[] {array});
         var node = serialized.GetType().GetProperty("Item", new[] {typeof(int)}).GetValue(serialized, new object[] {0});
-        var restored = storeType.GetMethod("DeserializeStage", StaticMethods).Invoke(null, new[] {node});
+        var restored = storeType.GetMethod("DeserializeStage", StaticMethods).Invoke(null, new object[] {node, 0});
         Equal("WAN,NGU-4,TM", string.Join(",", (string[])stageType.GetField("EnergyPriorities").GetValue(restored)), "saved energy order round trip");
         Equal("RIT-0,WAN", string.Join(",", (string[])stageType.GetField("MagicPriorities").GetValue(restored)), "saved magic order round trip");
         Equal(7, (int)stageType.GetField("BlackBarLookaheadSeconds").GetValue(restored), "saved lookahead round trip");
         Equal(61, (int)stageType.GetField("DurationSeconds").GetValue(restored), "saved fixed seconds round trip");
         Equal("min", (string)stageType.GetField("DurationUnit").GetValue(restored), "saved display unit round trip");
-        Equal(true, (bool)stageType.GetField("FightOnEntry").GetValue(restored), "saved fight opt-in round trip");
+        var restoredSchedule = stageType.GetField("FightSchedule").GetValue(restored);
+        Equal("native-clone-schedule", (string)scheduleType.GetField("Id").GetValue(restoredSchedule), "saved schedule ID round trip");
+        Equal(1, (int)scheduleType.GetField("Anchor").GetValue(restoredSchedule), "saved schedule anchor round trip");
+        Equal(60, (int)scheduleType.GetField("DelaySeconds").GetValue(restoredSchedule), "saved schedule delay round trip");
+        Equal(120, (int)scheduleType.GetField("IntervalSeconds").GetValue(restoredSchedule), "saved schedule interval round trip");
         var native = _assembly.GetType("NGUInjector.SettingsForm", true);
         var nguPreset = native.GetMethod("StagePresetDefinition", StaticMethods).Invoke(null, new object[] {4});
         var fields = BindingFlags.Instance | BindingFlags.NonPublic;
@@ -307,7 +319,17 @@ internal static class BlackBarChecks
         var clone = native.GetMethod("CloneStage", StaticMethods).Invoke(null, new[] {restored});
         Equal(61, (int)stageType.GetField("DurationSeconds").GetValue(clone), "native row clone retains canonical seconds");
         Equal("min", (string)stageType.GetField("DurationUnit").GetValue(clone), "native row clone retains display unit");
-        Equal(true, (bool)stageType.GetField("FightOnEntry").GetValue(clone), "native row clone retains fight opt-in");
+        var clonedSchedule = stageType.GetField("FightSchedule").GetValue(clone);
+        Equal(false, ReferenceEquals(restoredSchedule, clonedSchedule), "native row clone deep copies schedule");
+        Equal("native-clone-schedule", (string)scheduleType.GetField("Id").GetValue(clonedSchedule), "native row clone retains schedule ID");
+        Equal(1, (int)scheduleType.GetField("Anchor").GetValue(clonedSchedule), "native row clone retains anchor");
+        Equal(60, (int)scheduleType.GetField("DelaySeconds").GetValue(clonedSchedule), "native row clone retains delay");
+        Equal(120, (int)scheduleType.GetField("IntervalSeconds").GetValue(clonedSchedule), "native row clone retains repeat interval");
+        Equal(false, ReferenceEquals(sourceField.GetValue(restoredSchedule), sourceField.GetValue(clonedSchedule)), "native clone owns its schedule source JSON");
+        Equal(sourceField.GetValue(restoredSchedule).ToString(), sourceField.GetValue(clonedSchedule).ToString(), "native clone preserves schedule extensions");
+        Equal(true, sourceField.GetValue(clonedSchedule).ToString().Contains("9007199254740993"), "schedule extensions retain exact integers");
+        scheduleType.GetField("DelaySeconds").SetValue(clonedSchedule, 99);
+        Equal(60, (int)scheduleType.GetField("DelaySeconds").GetValue(restoredSchedule), "editing native clone does not change its source schedule");
         Equal(true, stageType.GetField("SourceJson", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(clone) != null, "native row clone retains source extensions");
         foreach (var presetId in new[] { "@active", "named-preset" })
         {
@@ -316,13 +338,14 @@ internal static class BlackBarChecks
             array.SetValue(clone, 0);
             serialized = storeType.GetMethod("SerializeStages", StaticMethods).Invoke(null, new object[] {array});
             node = serialized.GetType().GetProperty("Item", new[] {typeof(int)}).GetValue(serialized, new object[] {0});
-            var savedClone = storeType.GetMethod("DeserializeStage", StaticMethods).Invoke(null, new[] {node});
+            var savedClone = storeType.GetMethod("DeserializeStage", StaticMethods).Invoke(null, new object[] {node, 0});
             Equal(presetId, (string)stageType.GetField("PresetId").GetValue(savedClone), "native row clone/save retains preset binding " + presetId);
         }
         var legacy = jsonType.GetMethod("Parse", StaticMethods).Invoke(null, new object[] {"{\"Name\":\"Existing stage\",\"EnergyFocus\":3}"});
-        restored = storeType.GetMethod("DeserializeStage", StaticMethods).Invoke(null, new[] {legacy});
+        restored = storeType.GetMethod("DeserializeStage", StaticMethods).Invoke(null, new object[] {legacy, 0});
         Equal(5, (int)stageType.GetField("BlackBarLookaheadSeconds").GetValue(restored), "persisted stage missing lookahead gets five-second default");
-        Equal(false, (bool)stageType.GetField("FightOnEntry").GetValue(restored), "legacy stage has no entry fight by default");
+        Equal(true, stageType.GetField("FightSchedule").GetValue(restored) == null, "legacy stage has no schedule by default");
+        Equal(true, stageType.GetField("FightOnEntry") == null, "legacy entry-fight boolean is removed from model");
         Equal(true, stageType.GetField("EnergyPriorities").GetValue(restored) == null, "persisted stage missing order keeps preset defaults");
     }
 
@@ -394,7 +417,8 @@ internal static class BlackBarChecks
             var previousSettings = settingsField.GetValue(null);
             var previousStore = storeField.GetValue(null);
             var previousReference = referenceField.GetValue(null);
-            var plansDir = Path.Combine(Path.GetTempPath(), "ngu-telemetry-" + Guid.NewGuid().ToString("N"));
+            var runtimeDir = Path.Combine(Path.GetTempPath(), "ngu-telemetry-" + Guid.NewGuid().ToString("N"));
+            var plansDir = Path.Combine(runtimeDir, "plans");
             try
             {
                 var owner = FormatterServices.GetUninitializedObject(main);
@@ -436,7 +460,7 @@ internal static class BlackBarChecks
                 settingsField.SetValue(null, previousSettings);
                 storeField.SetValue(null, previousStore);
                 referenceField.SetValue(null, previousReference);
-                if (Directory.Exists(plansDir)) Directory.Delete(plansDir, true);
+                if (Directory.Exists(runtimeDir)) Directory.Delete(runtimeDir, true);
             }
         }
         finally

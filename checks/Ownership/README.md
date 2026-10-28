@@ -14,7 +14,7 @@ $managed = "C:\Gaming\Launchers\Steam\Steam\steamapps\common\NGU IDLE\NGUIdle_Da
 & "checks\Ownership\bin\OwnershipChecks.exe" "NGUInjector\bin\Release\NGUInjector.dll" $managed
 ```
 
-Run from the repository root against a freshly built production DLL. The normal solution/project manifest includes the shared helpers and embedded activity registry; no temporary source-inclusion target is needed. Recorded full-run results belong in [completed verification](../../docs/AUTOMATION_IMPROVEMENTS.md#completed-verification), not a second fixed assertion total here. Remaining work is in [temp.md](../../../temp.md).
+Run from the repository root with `./verify.ps1 -Scope Native -Suite Ownership`. The normal solution/project manifest includes the shared helpers and embedded activity registry; no temporary source-inclusion target is needed. Recorded full-run results belong in [completed verification](../../docs/AUTOMATION_IMPROVEMENTS.md#completed-verification), not a second fixed assertion total here. Remaining work is in [the WIP](../../../wip.md).
 
 ## Review 2 Regressions
 

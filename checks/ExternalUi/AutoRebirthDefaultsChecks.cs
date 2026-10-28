@@ -49,8 +49,10 @@ namespace NGUInjector
             var store = new CustomPlanStore(Path.Combine(directory, "custom-plans"));
             Assert(new CustomPlan().AutoRebirthEnabled, "fresh plan model defaults auto-rebirth on");
             Assert(!new CustomPlan().NumberClimbEnabled, "fresh plan disables retired NUMBER climb");
-            foreach (var name in new[] {"default", "24hr", "1h-3m-rebirth", "infinite"})
-                Assert(store.Load(name).AutoRebirthEnabled == (name != "infinite"), "built-in auto-rebirth intent: " + name);
+            foreach (var name in PlanCatalogNames)
+                Assert(store.Load(name).AutoRebirthEnabled, "built-in auto-rebirth intent: " + name);
+            SeedLegacyDefault(store);
+            store.Save("infinite", CustomPlan.InfinitePlan());
             foreach (var name in new[] {store.CreatePlan("fresh-native"), store.CreateExternalPlan("fresh-external", null),
                 store.CreateExternalPlan("fresh-json", JsonFiles.ParseObject("{}"))})
                 Assert(store.Load(name).AutoRebirthEnabled && store.ReadExternalPlan(name)["AutoRebirthEnabled"].AsBool,

@@ -9,7 +9,7 @@ import PlanProgress from '../src/lib/PlanProgress.svelte';
 function snapshot(patch: JsonObject = {}): JsonObject {
   const active = typeof patch.activeStageIndex === 'number' ? patch.activeStageIndex : 2;
   return {
-    available: true, status: 'running', planName: 'Active eight-part plan', planVersion: 17,
+    available: true, status: 'running', planName: 'Active eight-part plan', planVersion: 18,
     schedulerMode: 'stages', activeStageIndex: 2, stageProgress: .25,
     elapsedSeconds: 675, stageElapsedSeconds: 75, cycle: 0, repeating: true, loopStartIndex: 5,
     stages: Array.from({ length: 8 }, (_, index) => ({
@@ -175,7 +175,7 @@ describe('runtime plan progression parser', () => {
     const view = parsePlanProgress(snapshot(), true);
     expect(view.showWaitingPlanProgress).toBe(false);
     expect(view.planName).toBe('Active eight-part plan');
-    expect(view.planVersion).toBe('17');
+    expect(view.planVersion).toBe('18');
     expect(view.activeStageIndex).toBe(2);
     expect(view.stageProgress).toBe(.25);
     expect(view.stages.map(stage => stage.state)).toEqual(['completed', 'completed', 'current', 'pending', 'pending', 'pending', 'pending', 'pending']);
@@ -646,7 +646,7 @@ describe('plan progression component', () => {
   });
 
   it.each<JsonObject>([
-    { planVersion: 14 }, { planVersion: 15 }, { planVersion: 16 }, { planVersion: 18 },
+    { planVersion: 14 }, { planVersion: 15 }, { planVersion: 16 }, { planVersion: 17 }, { planVersion: 19 },
     { schedulerMode: 'time' }, { schedulerMode: 'sequential' }, { schedulerMode: 'protected' }
   ])('rejects unsupported telemetry without current highlighting: %j', patch => {
     const data = snapshot(patch);

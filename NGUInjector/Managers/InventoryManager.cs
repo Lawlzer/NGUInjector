@@ -88,6 +88,14 @@ namespace NGUInjector.Managers
         private Cube _lastCube = null;
         private readonly FixedSizedQueue _invBoostAvg = new FixedSizedQueue(60);
         private readonly FixedSizedQueue _cubeBoostAvg = new FixedSizedQueue(60);
+        private bool _inventoryScanRunning;
+
+        private static bool RunInventoryAction(ItemActionKind kind, ih target)
+        {
+            var outcome = Main.reference?.RunInventoryLeaf(kind, target) ?? InventoryLeafOutcome.NoWork;
+            if (outcome == InventoryLeafOutcome.RescanRequired) throw new InventoryRescanRequiredException();
+            return outcome == InventoryLeafOutcome.Applied;
+        }
 
 
         //Wandoos 98, Giant Seed, Wandoos XL, Lonely Flubber, Wanderer's Cane, Guffs, Lemmi
@@ -143,32 +151,44 @@ namespace NGUInjector.Managers
         {
             if (_controller.midDrag)
                 return "Auto boost skipped: inventory drag active.";
+            if (_inventoryScanRunning)
+                return "Auto boost skipped: inventory scan active.";
 
-            var converted = _character.inventory.GetConvertedInventory().ToArray();
-            var lockedBoost = ManageLockedBoostPriority(converted);
-            if (!string.IsNullOrWhiteSpace(lockedBoost))
+            _inventoryScanRunning = true;
+            try
+            {
+                var converted = _character.inventory.GetConvertedInventory().ToArray();
+                var lockedBoost = ManageLockedBoostPriority(converted);
+                if (!string.IsNullOrWhiteSpace(lockedBoost))
+                    converted = _character.inventory.GetConvertedInventory().ToArray();
+
+                MergeBoosts(converted);
                 converted = _character.inventory.GetConvertedInventory().ToArray();
 
-            MergeBoosts(converted);
+                var boostSlots = GetCustomBoostSlots(converted);
+                foreach (var item in boostSlots)
+                {
+                    if (!_character.inventory.HasBoosts())
+                        break;
 
-            var boostSlots = GetCustomBoostSlots(converted);
-            foreach (var item in boostSlots)
-            {
-                if (!_character.inventory.HasBoosts())
-                    break;
+                    BoostNativeItem(item);
+                }
 
-                BoostNativeItem(item);
+                if (_character.inventory.HasBoosts())
+                {
+                    BoostInfinityCube();
+                }
+
+                if (!string.IsNullOrWhiteSpace(lockedBoost))
+                    return lockedBoost;
+
+                return ManageCustomBoostConversion();
             }
-
-            if (_character.inventory.HasBoosts())
+            catch (InventoryRescanRequiredException)
             {
-                BoostInfinityCube();
+                return "Auto boost skipped: inventory rescan required.";
             }
-
-            if (!string.IsNullOrWhiteSpace(lockedBoost))
-                return lockedBoost;
-
-            return ManageCustomBoostConversion();
+            finally { _inventoryScanRunning = false; }
         }
 
         private ih[] GetCustomBoostSlots(ih[] ci)
@@ -406,7 +426,7 @@ namespace NGUInjector.Managers
             if (!_character.inventory.HasBoosts())
                 return;
             for (var i = 0; i < 40 * _character.inventory.inventory.Count && _character.inventory.HasBoosts(); i++)
-                if (Main.reference?.RunInventoryLeaf(ItemActionKind.Cube, null) != true) break;
+                if (!RunInventoryAction(ItemActionKind.Cube, null)) break;
         }
 
         internal void MergeEquipped(ih[] ci)
@@ -432,13 +452,13 @@ namespace NGUInjector.Managers
         private void MergeNativeItem(ih target)
         {
             for (var i = 0; i < _character.inventory.inventory.Count; i++)
-                if (Main.reference?.RunInventoryLeaf(ItemActionKind.Merge, target) != true) break;
+                if (!RunInventoryAction(ItemActionKind.Merge, target)) break;
         }
 
         private void BoostNativeItem(ih target)
         {
             for (var i = 0; i < 40 * _character.inventory.inventory.Count && NeedsAnyBoost(target); i++)
-                if (Main.reference?.RunInventoryLeaf(ItemActionKind.Boost, target) != true) break;
+                if (!RunInventoryAction(ItemActionKind.Boost, target)) break;
         }
 
         private string SanitizeName(string name)
@@ -473,7 +493,7 @@ namespace NGUInjector.Managers
                 Log($"Turning in {questItems.Length} quest items");
             foreach (var target in questItems)
             {
-                Main.reference?.RunInventoryLeaf(ItemActionKind.Consume, target);
+                RunInventoryAction(ItemActionKind.Consume, target);
             }
         }
 
@@ -519,7 +539,7 @@ namespace NGUInjector.Managers
                 if (item.level != 100) continue;
                 var temp = _character.inventory.inventory[item.slot];
                 if (!temp.removable) continue;
-                Main.reference?.RunInventoryLeaf(ItemActionKind.Consume, item);
+                RunInventoryAction(ItemActionKind.Consume, item);
             }
         }
 

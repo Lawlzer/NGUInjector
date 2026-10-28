@@ -9,7 +9,7 @@ import JsonEditor from '../src/lib/JsonEditor.svelte';
 import { applyStagePreset } from '../src/lib/stage-presets';
 
 const plan: JsonObject = {
-  Name: 'test', Version: 17, __externalUiRevision: 'a'.repeat(64),
+  Name: 'test', Version: 18, __externalUiRevision: 'a'.repeat(64),
   StageDurationSeconds: 1800,
   GoalPresets: [{ Name: 'Default', GearGoal: 9 }], ActiveGoalPresetIndex: 0, GearGoal: 9,
   Stages: [{ Name: 'Training', Percent: 100, CompletionMode: 0, TargetAdvancedTrainingPower: '9223372036854775806', TargetAdvancedTrainingToughness: '6000', EnergyPriorities: ['AT'], MagicPriorities: ['RIT'], BlackBarLookaheadSeconds: 5 }]
@@ -98,7 +98,7 @@ describe('plan editing display', () => {
     expect(body).not.toContain('aria-expanded="true"');
     const panel = body.match(/<section[^>]*class="stage-panel[^"]*"[^>]*aria-label="Stage 1 settings"[^>]*hidden[^>]*>[\s\S]*?<\/section>/)?.[0];
     expect(panel).toBeTypeOf('string');
-    for (const label of ['Focus preset', 'Flexible weight', 'Energy focus', 'Energy priorities', 'Magic focus', 'Magic priorities', 'Fight on entry']) {
+    for (const label of ['Focus preset', 'Flexible weight', 'Energy focus', 'Energy priorities', 'Magic focus', 'Magic priorities', 'Fights enabled']) {
       expect(panel).toContain(`aria-label="${label}"`);
     }
     expect(panel).toContain('Finish stage by');
@@ -212,7 +212,7 @@ describe('plan editing display', () => {
     expect(panel).not.toContain('Gear goal');
     expect(panel).not.toContain('Black-bar lookahead');
     expect(panel).not.toContain('Cap buffer');
-    expect(panel).toMatch(/aria-label="Fight on entry"[^>]*checked/);
+    expect(panel).toMatch(/aria-label="Fights enabled"[^>]*checked/);
     expect(stringifyJson(custom)).toBe(before);
     expect(body).not.toContain('>Gear settings</summary>');
     expect(body).not.toContain('aria-label="Active preset"');
@@ -275,7 +275,7 @@ describe('plan editing display', () => {
 
   it('removes raw runtime chatter while keeping manual action safety gates', () => {
     const progress = {
-      available: true, status: 'running', planName: 'test', planVersion: 17, schedulerMode: 'stages',
+      available: true, status: 'running', planName: 'test', planVersion: 18, schedulerMode: 'stages',
       activeStageIndex: 0, stageProgress: .5, protectedWorkComplete: false, protectedSecondsRemaining: 0,
       reason: 'Waiting for mandatory AT targets', timingReason: 'Restored saved progress; offline time is not protected training time.',
       lastStageOverride: 'skip stage 5 at 21748.141743334127', stages: [{ index: 0, state: 'current' }]

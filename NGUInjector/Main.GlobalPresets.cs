@@ -79,6 +79,49 @@ namespace NGUInjector
             internal PresetSupport BaselineSupport;
             internal bool SupportRouteRetired;
             internal ManualSupportRouteClaim ManualSupportRoute;
+            internal Dictionary<ResourceTarget, long[]> RetirementAllocations;
+            internal object[] RetirementResourceObjects, RetirementRouteObjects, RetirementSupportObjects;
+            internal long[] RetirementAtTargets;
+            internal bool RetirementLazyPurchased, RetirementLazyEnabled, RetirementAutoAdvance, RetirementAttack, RetirementBeast;
+            internal string RetirementIssue;
+        }
+
+        private void ObserveGlobalPresetRetirementFootprint(GlobalPresetReceipt receipt)
+        {
+            receipt.RetirementAllocations = ResourceWriter.CaptureAllocations(Character);
+            receipt.RetirementResourceObjects = ResourceWriter.CaptureResourceContext(Character);
+            receipt.RetirementRouteObjects = CombatPrepAdventureRouteObjects();
+            receipt.RetirementSupportObjects = SupportObjects();
+            receipt.RetirementAtTargets = Character.advancedTraining.levelTarget.ToArray();
+            receipt.RetirementAutoAdvance = Character.advancedTraining.autoAdvance;
+            receipt.RetirementAttack = Character.adventure.autoattacking;
+            receipt.RetirementBeast = Character.adventure.beastModeOn;
+            receipt.RetirementLazyPurchased = Character.arbitrary.boughtLazyITOPOD;
+            receipt.RetirementLazyEnabled = Character.arbitrary.lazyITOPODOn;
+        }
+
+        private bool GlobalPresetRetirementAllocationsMatch(GlobalPresetReceipt receipt)
+        {
+            if (receipt.RetirementAllocations == null || receipt.RetirementAtTargets == null
+                || receipt.RetirementAutoAdvance != Character.advancedTraining.autoAdvance
+                || !receipt.RetirementAtTargets.SequenceEqual(Character.advancedTraining.levelTarget)) return false;
+            var observed = ResourceWriter.CaptureAllocations(Character);
+            var at = Character.advancedTraining; var stage = receipt.Policy.Stage;
+            var completed = stage?.CompletionMode == (int)CustomStageCompletionMode.AdvancedTrainingStats
+                && !GlobalPresetRequiresNativeTargets(stage) && !at.autoAdvance;
+            // Native hitTarget returns a completed mandatory bar to idle without an
+            // injector receipt. This proves retirement only, never old-policy replay.
+            foreach (var pair in receipt.RetirementAllocations)
+            {
+                if (!observed.TryGetValue(pair.Key, out var current)) return false;
+                if (pair.Value == null) { if (current != null) return false; else continue; }
+                if (current == null || pair.Value.Length != current.Length) return false;
+                for (var i = 0; i < current.Length; i++)
+                    if (pair.Value[i] != current[i] && !(completed && pair.Key == ResourceTarget.AdvancedTraining
+                        && i < 2 && pair.Value[i] > 0 && current[i] == 0
+                        && (i == 0 ? stage.TargetAdvancedTrainingToughness : stage.TargetAdvancedTrainingPower) > 0)) return false;
+            }
+            return true;
         }
 
         private bool GlobalPresetTransitionStillOwned(GlobalPresetReceipt receipt) => receipt.TransitionGear != null
@@ -86,8 +129,7 @@ namespace NGUInjector
             && !receipt.TransitionGear.Where((x, i) => LoadoutPresetPrimitiveKey(x.equipment) != receipt.TransitionMaterial[i]).Any()
             && CaptureSupportState().StableKey == receipt.TransitionSupport;
 
-        private static bool GlobalPresetHasMagicObjective(GlobalPresetPolicy policy) => policy.ExecutionPreset.Weights
-            .Where((value, index) => value > 0 && (index == 1 || index == 2 || index == 6 || index == 8)).Any();
+        private static bool GlobalPresetHasMagicObjective(GlobalPresetPolicy policy) => policy.ExecutionPreset.ControlsResourceLane(false);
 
         private Action<ih[], SupportSelection> BeginPresetSetupTransition()
         {
@@ -414,10 +456,15 @@ namespace NGUInjector
 
         private void WriteGlobalPresetTarget(GlobalPresetNativeTargets lease, int index, long value)
         {
+            var before = lease.Targets[index];
             var grant = ResolveExecutionGrantCore(lease.Owner, null, ExecutionDomain.NativeSettings,
                 () => GlobalPresetNativeTargetLeaseCurrent(lease) && !lease.Training.autoAdvance, null, null, true);
             var result = ApplyExecutionSetting(grant, () => lease.Targets[index] = value, () => lease.Targets[index] == value);
             if (!result.Verified) throw new ResourceMutationException(result);
+            var receipt = _globalPresetReceipt;
+            if (receipt?.Owner == lease.Owner && GlobalPresetEpochMatches(receipt.Policy)
+                && receipt.RetirementAtTargets?[index] == before)
+                receipt.RetirementAtTargets[index] = value;
         }
 
         internal bool ServiceExecutionRetirement()
@@ -988,8 +1035,8 @@ namespace NGUInjector
                 _globalPresetPendingSearch = new GlobalPresetPendingSearch { Event = eventKey, Definition = definition, Context = context,
                     Epoch = new LoadoutManager.SnapshotEpoch(), Capture = capture, Plan = baseline };
             var plan = reuse ? LoadoutPresetPlanner.ReplayExecution(capture.Snapshot, request, baseline, timer) : baseline;
-            var candidate = policy == null ? plan.Candidates.Where(x => x.Feasible && x.Score.HasValue)
-                .OrderByDescending(x => x.Score.Value).FirstOrDefault() : ReplayGlobalPreset(policy, preset, capture, liveResources: true);
+            var candidate = policy == null ? LoadoutPresetSetupCandidates(plan.Candidates, request.ResourcePrioritiesReviewed).FirstOrDefault()
+                : ReplayGlobalPreset(policy, preset, capture, liveResources: true);
             if (candidate == null) throw new InvalidOperationException("No feasible global preset policy was found.");
             blocker = LoadoutPresetApplyBlocker(candidate);
             if (blocker != null) throw new InvalidOperationException("Preset equip blocked: " + blocker);
@@ -1053,6 +1100,7 @@ namespace NGUInjector
                 Gear = _manualAdventureBaseline.Gear, Support = GlobalPresetSupportState(),
                 Allocations = GlobalPresetAllocationState(), EnergyAllocations = GlobalPresetLaneState(true),
                 MagicAllocations = GlobalPresetLaneState(false) };
+            ObserveGlobalPresetRetirementFootprint(_globalPresetReceipt);
             if (!GlobalPresetHasMagicObjective(policy) && _executionBaselineResourceIntent?.Magic == true
                 && _executionBaselineResourceIntent.Desired[ResourceTarget.BloodRitual].Any(x => x > 0))
             {
@@ -1258,10 +1306,16 @@ namespace NGUInjector
         private void RunCustomAutoBoost()
         {
             var receipt = _globalPresetReceipt;
-            if (receipt?.Policy.MaterialPersistencePending == true)
+            var pending = RetainedExecutionPresetPolicies()
+                .Concat(receipt?.Policy == null ? new GlobalPresetPolicy[0] : new[] { receipt.Policy })
+                .Where(x => x.MaterialPersistencePending).Distinct().ToArray();
+            if (pending.Length != 0)
             {
-                PersistApprovedExecutionMaterialRevision(receipt.Policy, receipt.Owner);
-                receipt.Policy.MaterialPersistencePending = false;
+                foreach (var selected in pending)
+                {
+                    PersistApprovedExecutionMaterialRevision(selected, selected.Owner);
+                    selected.MaterialPersistencePending = false;
+                }
                 return; // Retry storage, never the already-committed native effect.
             }
             if (_focusSetupSelection?.PersistencePending == true)
@@ -1275,28 +1329,29 @@ namespace NGUInjector
                 && GlobalPresetEpochMatches(receipt.Policy) && GlobalPresetGearMatches(receipt)) return;
             var owned = receipt != null && GlobalPresetReceiptValid(receipt.Owner, false, true);
             var policy = receipt?.Policy;
-            var revisePreset = policy?.Items != null && policy.Material != null && GlobalPresetEpochMatches(policy)
-                && !receipt.Policy.Items.Where((item, i) => LoadoutPresetPrimitiveKey(item) != receipt.Policy.Material[i]).Any();
-            var approvedBefore = revisePreset ? policy.Material.ToArray() : null;
+            var owner = receipt?.Owner; var acquisition = policy?.Acquisition;
+            var observePreset = policy?.Preset.AutoUpdate == true && !string.IsNullOrEmpty(owner) && !string.IsNullOrEmpty(acquisition)
+                && policy.Owner == owner
+                && policy.Items != null && policy.Material != null && GlobalPresetEpochMatches(policy)
+                && !policy.Items.Where((item, i) => LoadoutPresetPrimitiveKey(item) != policy.Material[i]).Any();
+            var approvedBefore = observePreset ? policy.Material.ToArray() : null;
             var settings = Settings;
-            var gear = revisePreset ? LoadoutManager.CaptureExactLoadout() : null;
-            var ids = revisePreset ? receipt.Policy.Items.Select(item => item?.id ?? 0).ToArray() : null;
-            var resourceObjects = revisePreset ? ResourceWriter.CaptureResourceContext(Character) : null;
-            var accounting = revisePreset ? ResourceWriter.AllocatedResourceKey() : null;
-            var support = revisePreset ? CaptureSupportState().StableKey : null;
-            var supportObjects = revisePreset ? SupportObjects() : null;
-            var reviseInlineMaterial = CaptureInlineMaterialRevision();
-            var reviseCombatMaterial = CaptureCombatPrepMaterialRevision();
-            var reviseFocusMaterial = CaptureFocusMaterialRevision();
+            var gear = observePreset ? LoadoutManager.CaptureExactLoadout() : null;
+            var ids = observePreset ? policy.Items.Select(item => item?.id ?? 0).ToArray() : null;
+            var resourceObjects = observePreset ? ResourceWriter.CaptureResourceContext(Character) : null;
+            var accounting = observePreset ? ResourceWriter.AllocatedResourceKey() : null;
+            var support = observePreset ? CaptureSupportState().StableKey : null;
+            var supportObjects = observePreset ? SupportObjects() : null;
             try { _invManager.ManageCustomAutoBoost(); }
             finally
             {
-                reviseInlineMaterial?.Invoke();
-                reviseCombatMaterial?.Invoke();
-                reviseFocusMaterial?.Invoke();
-                // Revise the same selected instances, including a suspended baseline, without granting application authority.
-                if (revisePreset && ReferenceEquals(reference, this) && !_unloaded && ReferenceEquals(Settings, settings)
-                    && ReferenceEquals(receipt, _globalPresetReceipt) && ReferenceEquals(receipt.Policy, policy) && GlobalPresetEpochMatches(receipt.Policy)
+                // Only verified leaves approve material. This wrapper observes their
+                // approved delta to request AutoUpdate, never adopts native observations.
+                if (observePreset && ReferenceEquals(reference, this) && !_unloaded && _executionLifecycle == ExecutionLifecycle.Running
+                    && ReferenceEquals(Settings, settings) && !Controller.midDrag
+                    && ReferenceEquals(receipt, _globalPresetReceipt) && receipt.Owner == owner
+                    && ReferenceEquals(receipt.Policy, policy) && policy.Owner == owner && policy.Acquisition == acquisition
+                    && policy.Preset.AutoUpdate && GlobalPresetEpochMatches(policy)
                     && LoadoutManager.ExactLoadoutMatches(gear) && CaptureSupportState().StableKey == support
                     && ResourceWriter.AllocatedResourceKey() == accounting
                     && SupportObjects().Length == supportObjects.Length
@@ -1305,19 +1360,13 @@ namespace NGUInjector
                     && !ResourceWriter.CaptureResourceContext(Character).Where((item, i) => !ReferenceEquals(item, resourceObjects[i])).Any())
                 {
                     var instances = LoadoutPresetInstances().Values.ToArray();
-                    var material = receipt.Policy.Items.Select(LoadoutPresetPrimitiveKey).ToArray();
-                    if (!receipt.Policy.Items.Where((item, i) => (item?.id ?? 0) != ids[i]
-                            || item != null && instances.Count(value => ReferenceEquals(item, value)) != 1).Any()
-                        && !material.SequenceEqual(approvedBefore))
+                    if (!policy.Material.SequenceEqual(approvedBefore)
+                        && !policy.Items.Where((item, i) => LoadoutPresetPrimitiveKey(item) != policy.Material[i] || (item?.id ?? 0) != ids[i]
+                             || item != null && instances.Count(value => ReferenceEquals(item, value)) != 1).Any())
                     {
-                        receipt.Policy.Material = material; // Causal revision of the SAME instances, not a replacement decision.
-                        ApproveExecutionPolicyMaterialRevision(receipt.Policy);
-                        if (receipt.Policy.Preset.AutoUpdate)
-                        {
-                            _globalPresetSelectionEvent = receipt.Policy.Acquisition;
-                            if (owned) InvalidateCustomEquipmentApplication();
-                            else { _customEquipmentApplicationInvalidated = true; _customLastQuickResourceRefresh = DateTime.MinValue; }
-                        }
+                        _globalPresetSelectionEvent = acquisition;
+                        if (owned && GlobalPresetReceiptValid(owner, false, true)) InvalidateCustomEquipmentApplication();
+                        else { _customEquipmentApplicationInvalidated = true; _customLastQuickResourceRefresh = DateTime.MinValue; }
                     }
                 }
             }
@@ -1439,6 +1488,12 @@ namespace NGUInjector
         private bool RetirePreviousGlobalPresetStageRoute(string successor)
         {
             var receipt = _globalPresetReceipt;
+            if (receipt?.RetirementIssue != null && receipt.Policy.Epoch.Matches() && receipt.Owner != successor)
+            {
+                SuspendProtectedStageProgress();
+                SetResourceExecution(ResourceExecutionState.NeedsUser, successor, receipt.RetirementIssue);
+                return false;
+            }
             if (receipt == null || receipt.Owner == "dashboard" || receipt.Owner == successor || Character.adventure.zone == -1
                 || ExecutionRouteClaimActive || ManualAdventureOverlayActive && _manualAdventureOverlayRouteZone == Character.adventure.zone
                 || !receipt.Policy.ExecutionPreset.Weights.Skip(3).Take(3).Any(x => x > 0)) return true;
@@ -1446,6 +1501,7 @@ namespace NGUInjector
             var owner = _customStageEquipmentKey;
             var file = Settings.CustomPlanFile;
             ExecutionClaim retirement = null;
+            var mutationStarted = false;
             try
             {
                 // Restart withdraws forward baseline authority, not the exact applied
@@ -1459,15 +1515,18 @@ namespace NGUInjector
                 var owned = CaptureAppliedPresetRouteRetirement(retirement,
                     () => ExecutionClaimCurrent(retirement) && LoadoutPresetClock < expires);
                 if (!owned()) throw new InvalidOperationException("Previous farming setup or route changed; review the current owner.");
+                mutationStarted = true;
                 ApplyExecutionClaim(retirement, new SelectedSetupRequirements { ControlsGear = false,
                     Support = CaptureSupportState().Selection, Recall = GearRecallFootprint.None, RetireRoute = true,
-                    RouteRetirementAuthorized = owned });
+                    Authorized = owned, RouteRetirementAuthorized = owned });
                 return true;
             }
             catch (Exception error)
             {
                 SuspendProtectedStageProgress();
-                SetResourceExecution(ResourceExecutionState.Waiting, successor, "Scheduled preset route handoff waiting: " + error.Message);
+                var message = "Scheduled preset route handoff blocked: " + error.Message;
+                if (mutationStarted) receipt.RetirementIssue = message;
+                SetResourceExecution(ResourceExecutionState.NeedsUser, successor, message);
                 return false;
             }
             finally { EndExecutionClaim(retirement, false); }
@@ -1791,6 +1850,7 @@ namespace NGUInjector
             receipt.MagicAllocations = GlobalPresetLaneState(false);
             receipt.Support = GlobalPresetSupportState();
             receipt.Execution = baseline;
+            ObserveGlobalPresetRetirementFootprint(receipt);
             receipt.AppliedEnergyWeights = Settings.EnergyNguWeights.ToArray();
             receipt.AppliedMagicWeights = Settings.MagicNguWeights.ToArray();
             var foreignSetup = SelectedSetupConflicts.TryGetValue(Character, out var yielded) && yielded.Rebirth == Character.stats.rebirthNumber

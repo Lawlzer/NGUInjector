@@ -6,7 +6,7 @@ using System.Reflection;
 using System.Runtime.Serialization;
 
 // Data and command-file boundaries only. Production selection, claims, grants,
-// preparation records, command admission and native boss leaves remain real.
+// preparation attempts, command admission and native boss leaves remain real.
 public static class NativeFightFixture
 {
     private const BindingFlags All = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
@@ -26,9 +26,10 @@ public static class NativeFightFixture
 
     public static void ObserveFiniteResult(object result)
     {
-        if ((bool)Get(result, "Committed") && (bool)Get(result, "Durable")) return;
-        Console.WriteLine("Native finite result: " + Get(result, "Disposition") + "; committed=" + Get(result, "Committed")
-            + "; durable=" + Get(result, "Durable") + "; reason=" + Get(result, "Reason") + "; error=" + Get(result, "Error"));
+        if ((bool)Get(result, "Committed") && (bool)Get(result, "AuthorityCurrent")) return;
+        Console.WriteLine("Native finite result: " + Get(result, "Disposition") + "; invoked=" + Get(result, "Invoked")
+            + "; committed=" + Get(result, "Committed") + "; authorityCurrent=" + Get(result, "AuthorityCurrent")
+            + "; reason=" + Get(result, "Reason") + "; error=" + Get(result, "Error"));
         var character = Get(result.GetType().DeclaringType, "Character"); var adventure = Get(character, "adventure");
         Console.WriteLine("Native pill post-state: blood=" + Get(Get(character, "bloodMagic"), "bloodPoints") + "; "
             + string.Join("; ", new[] { "attack", "defense", "maxHP", "regen" }.Select(name => name + "=" + ((float)Get(adventure, name)).ToString("R")
@@ -142,8 +143,16 @@ public static class NativeFightFixture
                 .GetValue(indexer.GetValue(result, new object[] { "message" })).ToString();
             if (!(bool)success.GetType().GetProperty("AsBool", All).GetValue(success))
                 throw new InvalidOperationException(message + diagnostic);
-            if (Get(main, "_currentExecutionCommandId") != null || !File.Exists(Path.Combine(claims, opportunity + ".accepted.json")))
-                throw new InvalidOperationException("Native request did not retain durable acceptance or clear its dispatch scope.");
+            if (Get(main, "_currentExecutionCommandId") != null || !File.Exists(Path.Combine(claims, opportunity + ".claimed")) || File.Exists(path))
+                throw new InvalidOperationException("Native request did not retain its command-ID claim or clear its dispatch scope.");
+            var resultBytes = File.ReadAllText(resultPath);
+            var attempt = Get(main, "_fightPreparationAttempt"); var process = Get(main, "_bossPushProcess");
+            File.WriteAllText(path, "{\"id\":\"" + opportunity + "\",\"command\":\"" + command + "\",\"args\":{}}");
+            LastCommandMessage = null;
+            type.GetMethod("ProcessExternalUiCommand", All).Invoke(main, new object[] { path });
+            if (File.Exists(path) || LastCommandMessage != null || File.ReadAllText(resultPath) != resultBytes
+                || !ReferenceEquals(attempt, Get(main, "_fightPreparationAttempt")) || !ReferenceEquals(process, Get(main, "_bossPushProcess")))
+                throw new InvalidOperationException("A duplicate command ID replayed native preparation or rewrote its result.");
             return message;
         }
         finally

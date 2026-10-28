@@ -33,7 +33,7 @@ namespace NGUInjector.CustomPlans
         // Source travels with the model/row, never with its position in an array.
         [NonSerialized] internal JSONObject SourceJson;
         [NonSerialized] internal string RuntimeRevision;
-        public int Version = 17;
+        public int Version = 18;
         public string Name = "default";
         public string ActivePresetId = string.Empty;
         public string[] PresetMigrationIssues = new string[0];
@@ -73,8 +73,22 @@ namespace NGUInjector.CustomPlans
         public CustomLoadoutPreset[] LoadoutPresets = new CustomLoadoutPreset[0];
 
         public bool PrepRequireMaxedFruit;
+        public int RebirthPrepStartSeconds = 0;
 
         public CustomRebirthHistoryEntry[] RebirthHistory = new CustomRebirthHistoryEntry[0];
+
+        internal void ValidateFightSchedules()
+        {
+            var ids = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+            foreach (var stage in Stages ?? new CustomPlanStage[0])
+            {
+                var schedule = stage?.FightSchedule;
+                if (schedule == null) continue;
+                schedule.Validate();
+                if (!ids.Add(schedule.Id))
+                    throw new FormatException("FightSchedule IDs must be unique within a plan: " + schedule.Id);
+            }
+        }
 
         internal static CustomPlanStage[] DefaultNumberClimbStages()
         {
@@ -152,6 +166,71 @@ namespace NGUInjector.CustomPlans
             return LongNguPlan("24hr", true, 86400);
         }
 
+        internal static CustomPlan NumberIncreasePlan(string name, int durationSeconds, int prepSeconds)
+        {
+            var earlySeconds = prepSeconds - 60;
+            var stages = new System.Collections.Generic.List<CustomPlanStage>
+            {
+                NumberIncreaseStage("Time Machine + Blood", earlySeconds / 4, CustomStageFocus.TimeMachine,
+                    Managers.GearOptimizationGoal.TimeMachine, true),
+                NumberIncreaseStage("Augments + Blood", earlySeconds / 4, CustomStageFocus.Augments,
+                    Managers.GearOptimizationGoal.Augments, true),
+                NumberIncreaseStage("Wandoos + Blood", earlySeconds - 2 * (earlySeconds / 4), CustomStageFocus.Wandoos,
+                    Managers.GearOptimizationGoal.Wandoos, true),
+                NumberIncreaseStage("Final Augments + Blood", 60, CustomStageFocus.Augments,
+                    Managers.GearOptimizationGoal.Augments, false)
+            };
+            if (durationSeconds > prepSeconds)
+                stages.Add(NumberIncreaseStage("Rebirth prep hold", 0, CustomStageFocus.Augments,
+                    Managers.GearOptimizationGoal.Augments, false));
+            return new CustomPlan
+            {
+                Name = name,
+                AutoRebirthEnabled = true,
+                AutoIronPillEnabled = false,
+                AutoBloodSpellsEnabled = true,
+                BloodSpaghettiGoalPercent = 0,
+                BloodCounterfeitGoalPercent = 0,
+                TimeTriggerEnabled = true,
+                TimeTriggerSeconds = durationSeconds,
+                NumberTriggerEnabled = true,
+                NumberMultiplierTarget = 1.000001,
+                NumberClimbEnabled = false,
+                TriggerMode = 1,
+                StageSchedulerEnabled = true,
+                StageDurationSeconds = durationSeconds,
+                StageLoopStartIndex = -1,
+                RebirthPrepStartSeconds = prepSeconds,
+                PrepRequireMaxedFruit = false,
+                GearGoal = (int) Managers.GearOptimizationGoal.Augments,
+                GoalPresets = new[]
+                {
+                    new CustomGoalLoadoutPreset {Name = "Default", GearGoal = (int) Managers.GearOptimizationGoal.Augments}
+                },
+                Stages = stages.ToArray()
+            };
+        }
+
+        private static CustomPlanStage NumberIncreaseStage(string name, int seconds, CustomStageFocus focus,
+            Managers.GearOptimizationGoal gearGoal, bool lockedTimeMachineFallback)
+        {
+            return new CustomPlanStage
+            {
+                Name = name,
+                Percent = 1,
+                DurationSeconds = seconds,
+                DurationUnit = seconds > 0 ? "s" : "%",
+                EnergyFocus = (int) focus,
+                MagicFocus = (int) CustomStageFocus.BloodMagic,
+                GearGoal = (int) gearGoal,
+                UseWandoosWhenTimeMachineLocked = lockedTimeMachineFallback,
+                EnergyPriorities = focus == CustomStageFocus.TimeMachine ? new[] {"TM", "WAN", "AUG"}
+                    : focus == CustomStageFocus.Wandoos ? new[] {"WAN", "TM", "AUG"} : new[] {"AUG", "WAN", "TM"},
+                MagicPriorities = focus == CustomStageFocus.Wandoos ? new[] {"RIT", "WAN", "TM"} : new[] {"RIT", "TM", "WAN"}
+            };
+        }
+
+        // Retained only to deserialize shipped legacy plans with omitted stage/goal arrays.
         internal static CustomPlan InfinitePlan()
         {
             return LongNguPlan("infinite", false, 86400);
@@ -325,6 +404,7 @@ namespace NGUInjector.CustomPlans
         public string DurationUnit = "%";
         public int EnergyFocus;
         public int MagicFocus;
+        public bool UseWandoosWhenTimeMachineLocked;
         public int ExecutionMode = (int) CustomStageExecutionMode.Standard;
         // Empty priorities use the focus preset's default chain.
         public string[] EnergyPriorities;
@@ -332,10 +412,31 @@ namespace NGUInjector.CustomPlans
         public int BlackBarLookaheadSeconds = 5;
         public int GearGoal = -1;
         public double AdventureDynamicWeight = 0d;
-        public bool FightOnEntry;
+        public CustomFightSchedule FightSchedule;
         public int CompletionMode = (int) CustomStageCompletionMode.TimePercent;
         public long TargetAdvancedTrainingPower;
         public long TargetAdvancedTrainingToughness;
+    }
+
+    [Serializable]
+    public class CustomFightSchedule
+    {
+        [NonSerialized] internal JSONObject SourceJson;
+        public string Id = Guid.NewGuid().ToString("N");
+        // 0: stage entry; 1: first verified Augments funding in this stage entry.
+        public int Anchor;
+        public int DelaySeconds;
+        public int IntervalSeconds;
+
+        internal void Validate()
+        {
+            if (Id == null || !System.Text.RegularExpressions.Regex.IsMatch(Id, @"\A[A-Za-z0-9_-]{1,128}\z"))
+                throw new FormatException("FightSchedule.Id must contain 1 to 128 ASCII letters, digits, underscores or hyphens.");
+            if (Anchor != 0 && Anchor != 1)
+                throw new FormatException("FightSchedule.Anchor must be 0 (stage entry) or 1 (first verified Augments funding).");
+            if (DelaySeconds < 0 || IntervalSeconds < 0)
+                throw new FormatException("FightSchedule delay and interval must be nonnegative whole Int32 seconds.");
+        }
     }
 
     [Serializable]

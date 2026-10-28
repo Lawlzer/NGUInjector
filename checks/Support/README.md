@@ -1,12 +1,18 @@
 # Support Regression Checks
 
 ```powershell
-dotnet run --project checks/Support/SupportChecks.csproj -c Release
-dotnet run --project checks/Support/BeardPolicy/BeardPolicyChecks.csproj -c Release
-dotnet run --project checks/Support/BeardReceiptAvailabilityChecks.csproj -c Release
-dotnet run --project checks/SustainedFocus/SustainedFocusChecks.csproj -c Release
-dotnet run --project checks/SustainedFocus/SustainedFocusChecks.csproj -c Release -- --execution-core
+.\verify.ps1 -Scope Source
+# Native controller/receipt coverage, with NGU_IDLE_DIR or -GameFolder:
+.\verify.ps1 -Scope Native -Suite PresetIntegration -Selector '--shared-support-transition'
 ```
+
+Run from the repository root. Source includes Support, Beards, receipt availability,
+SustainedFocus and its exclusive execution-core invocation. Native runs a separate
+compiled production/fixture boundary; the focused selector is not the full suite.
+Use shared verification ownership with quiet sources, not direct overlapping builds.
+Reports, fail-fast handoff and artifact/evidence limits are in
+[Testing And Save Safety](../../docs/testing.md). Internal helpers are not public
+entrypoints; neither scope authorizes live actions or deployment.
 
 `SupportChecks` source-links the actual `DiggerAllocation`, `SupportProjection`,
 `ActivityPolicy` and JSON registry/parser. It preserves forward-drain adjacent
@@ -62,13 +68,9 @@ same source-linked assembly and shares the matrix, not a fake successor/grant.
 
 ## Hard Prerequisite Regression
 
-The supervisor's 23:10 ownership transfer in
-`docs/agent-supervision-20261022.md` assigned the narrow `Main.CustomBeards.cs`
-production fix to the existing support-test owner, `ses_e99b1b20cffekJrh85x9c1qXgB`.
-That fix is now implemented and source-verified. The waiting review coordinator
-`ses_e9bbaf7e4ffezLuCKvYzZLRIHo` should re-read this completed code, not duplicate
-the previously promised fix. No other production/core/CAS/route or shared runner/
-manifest file was edited during this production handoff.
+The historical support handoff implemented the narrow `Main.CustomBeards.cs` fix
+below. Earlier supervision assignments are evidence, not instructions to resume
+agents or duplicate completed work. Current requirements live in [WIP](../../../wip.md).
 
 Confirmed root causes and fixes:
 
@@ -106,8 +108,8 @@ remain independent gates.
 
 ## Verification 2026-10-22
 
-All commands used Release, without selectors unless stated. These are current
-source-check results, not production/native/live acceptance.
+All recorded commands used Release, without selectors unless stated. These are
+historical source-check results, not current-tree, production/native or live acceptance.
 
 | Gate | Result |
 | --- | --- |
@@ -131,6 +133,6 @@ fixture naming/unused-field warnings remain; there are no source compile errors.
 No additional production/native build or full Preset rerun was launched over the
 active shared-native child's verification. This report establishes the production
 partial's source-linked behavior, not a compiled-game artifact/MVID or combined
-native release acceptance. Any such verification must use
-`checks/VerifyExecutorOffline.ps1` and its exact named mutex. No staging, unstaging,
+native release acceptance. Current compiled verification uses
+`verify.ps1 -Scope Native` and its shared ownership. No staging, unstaging,
 commit, deployment, parent notification task, nested agent or live operation occurred.

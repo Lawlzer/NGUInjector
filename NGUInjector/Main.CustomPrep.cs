@@ -1,10 +1,8 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using NGUInjector.AllocationProfiles.RebirthStuff;
 using NGUInjector.CustomPlans;
 using NGUInjector.Managers;
-using SimpleJSON;
 
 namespace NGUInjector
 {
@@ -17,129 +15,191 @@ namespace NGUInjector
         private SelectedSetupRequirements _fightPreparationSetup;
         private ih[] _fightPreparationGear;
         private SupportSelection _fightPreparationSupport;
-        private bool _fightPreparationUpgradesDone;
-        private FiniteActionRecord _fightPreparationRecord;
-        private FiniteActionRecord _completedFightPreparationRecord;
         private bool _fightPreparationStarted;
         private string _manualRebirthOpportunity;
         private long? _manualRebirthNumber;
+
+        private sealed class FightPreparationAttempt
+        {
+            internal FiniteActionIdentity Identity;
+            internal object Settings, Boss;
+            internal string PlanFile;
+            internal bool ConsumePowerFruits, RequireMaxedFruit, BossStartAttempted, Completed, Cancelled;
+            internal bool PermissionPaused;
+            internal CustomPlan AutomaticPlan;
+            internal int GearGoal, FightScoreMode;
+            internal int UnverifiedFruit = -1;
+            internal int[] FruitHarvests;
+            internal object[] Fruits;
+            internal bool[] FruitStepsDone;
+            internal Func<bool> EntryCurrent;
+            internal RouteProcess Process;
+            internal readonly LoadoutManager.SnapshotEpoch Epoch = new LoadoutManager.SnapshotEpoch();
+        }
+        private FightPreparationAttempt _fightPreparationAttempt;
+
         private sealed class ManualFightPreparationRequest
         {
             internal FiniteActionIdentity Identity;
-            internal FiniteActionRecord Previous, Retirement;
             internal CustomPlan Plan;
             internal ih[] Gear;
             internal string[] Material;
             internal SupportSelection Support;
             internal object Settings, BossProcess, TitanProcess, CombatProcess;
-            internal string PlanFile, Entry;
-            internal double Started;
-            internal bool CancellationRequested;
+            internal string PlanFile;
+            internal bool Retired;
             internal readonly LoadoutManager.SnapshotEpoch Epoch = new LoadoutManager.SnapshotEpoch();
         }
         private ManualFightPreparationRequest _manualFightPreparationRequest;
         internal ExecutionClaim FightPreparationClaim => _fightPreparationClaim;
         internal SelectedSetupRequirements FightPreparationSetup => _fightPreparationSetup;
-        internal string FightPreparationIdentity => _fightPreparationRecord?.Identity.Key;
+        internal string FightPreparationIdentity => _fightPreparationAttempt?.Identity.Key;
+        private bool FightPreparationDependenciesReady => _fightPreparationClaim != null && !_fightPreparationClaim.SetupReleased
+            && (_fightPreparationStarted || _fightPreparationAttempt == null || ScheduledFightAdmissionPermitted(_fightPreparationAttempt.Identity))
+            && (_fightPreparationAttempt?.AutomaticPlan == null || !_fightPreparationAttempt.PermissionPaused
+                && AutomaticRebirthPreparationPermitted(_fightPreparationAttempt.AutomaticPlan))
+            && (_fightPreparationAttempt?.Process == null || !_fightPreparationAttempt.Cancelled
+                && (_fightPreparationAttempt.Process.ApplicationCurrent == null || _fightPreparationAttempt.Process.ApplicationCurrent())
+                && _fightPreparationAttempt.Process.Permission == RoutePermissionKey(_fightPreparationAttempt.Process.Owner)
+                && RouteProcessDependenciesReady(_fightPreparationAttempt.Process)
+                && SupportProjection.Evaluate(CaptureSupportContext(), _fightPreparationSetup.Support,
+                    _fightPreparationSetup.Budget, _fightPreparationSetup.EnforceSupportBudget).Feasible);
         internal bool FightPreparationVerified => _fightPreparationClaim != null && _fightPreparationSetup != null
-            && FiniteActionSetupVerified(_fightPreparationClaim, _fightPreparationSetup);
+            && FightPreparationDependenciesReady && FiniteActionSetupVerified(_fightPreparationClaim, _fightPreparationSetup);
+        internal bool FightPreparationCanRetry(string identity) => _fightPreparationAttempt?.Identity.Key == identity
+            && !_fightPreparationAttempt.Cancelled && !_fightPreparationAttempt.Completed
+            && !_fightPreparationAttempt.BossStartAttempted && _fightPreparationAttempt.Epoch.Matches()
+            && (_fightPreparationAttempt.EntryCurrent == null || _fightPreparationAttempt.EntryCurrent())
+            && ReferenceEquals(_fightPreparationAttempt.Settings, Settings) && ReferenceEquals(_fightPreparationAttempt.Boss, Character.bossController)
+            && _fightPreparationAttempt.PlanFile == Settings.CustomPlanFile;
+
         internal void CompleteFightPreparation()
         {
-            if (!BossPushRunning && !Character.bossController.isFighting && !Character.bossController.nukeBoss)
-                ReleaseFightPreparation();
+            if (!BossPushRunning && !CustomBossFightActive()) ReleaseFightPreparation();
         }
 
         private bool ObserveCustomRebirthReadiness(CustomPlan plan)
         {
-            // Confirmation and retirement must run even when an automatic stage owns
-            // the callback. Neither observation admits a rebirth or waives stage work.
-            var ready = Settings.UseCustomRebirthPlan && plan != null
-                && new CustomPlanRebirth(plan).RebirthAvailable();
-            if (!ready && !_manualRebirthPending && _manualFightPreparationRequest == null && (_customPreRebirthPrepRunning || _customPreRebirthPrepCompleted))
-                ResetCustomPreRebirthPrep();
+            var retained = RetainAutomaticFightPreparation(plan);
+            var ready = Settings.UseCustomRebirthPlan && plan != null && new CustomPlanRebirth(plan).RebirthAvailable();
+            if (!retained && !ready && !CustomRebirthPreparationDue(plan) && !_manualRebirthPending && _manualFightPreparationRequest == null
+                && (_customPreRebirthPrepRunning || _customPreRebirthPrepCompleted)) ResetCustomPreRebirthPrep();
             return ready;
+        }
+
+        private bool CustomRebirthPreparationDue(CustomPlan plan)
+        {
+            return Settings.UseCustomRebirthPlan && Settings.AutoRebirth && plan?.AutoRebirthEnabled == true
+                && plan.RebirthPrepStartSeconds > 0 && Character?.rebirthTime != null
+                && Character.rebirthTime.totalseconds >= plan.RebirthPrepStartSeconds
+                && Character.challenges?.noRebirthChallenge?.inChallenge == false
+                && CustomStageAllocator.ProtectedWorkComplete(plan);
+        }
+
+        private bool CustomRebirthFruitHarvestReserved(CustomPlan plan)
+        {
+            if (_fightPreparationAttempt?.ConsumePowerFruits == true && !_fightPreparationAttempt.Cancelled
+                && !_fightPreparationAttempt.Completed) return true;
+            if (_fightPreparationAttempt?.ConsumePowerFruits == true && _fightPreparationAttempt.Cancelled)
+                return _fightPreparationClaim != null || _bossPushProcess != null || BossPushRunning || CustomBossFightActive();
+            return Settings.UseCustomRebirthPlan && Settings.AutoRebirth && plan?.AutoRebirthEnabled == true
+                && plan.RebirthPrepStartSeconds > 0 && Character?.rebirthTime != null
+                && Character.rebirthTime.totalseconds >= plan.RebirthPrepStartSeconds;
         }
 
         internal bool RunCustomPreRebirthPrepIfNeeded(CustomPlan plan)
         {
-            if (!Settings.UseCustomRebirthPlan || plan == null)
-                return false;
+            RetainAutomaticFightPreparation(plan);
+            if (!Settings.UseCustomRebirthPlan || plan == null) return false;
             if (_manualFightPreparationRequest != null) return true;
-
-            if (_customPreRebirthPrepCompleted)
-                return false;
-
+            if (!AutomaticRebirthPreparationPermitted(plan)) return false;
+            if (_fightPreparationAttempt?.PermissionPaused == true) return true;
+            if (_customPreRebirthPrepCompleted) return false;
             if (_customPreRebirthPrepRunning)
             {
-                if (BossPushRunning || CustomBossFightActive())
-                    return true;
-
+                if (BossPushRunning || CustomBossFightActive()) return true;
+                if (!ReleaseFightPreparation()) return true;
                 _customPreRebirthPrepRunning = false;
+                if (_fightPreparationAttempt?.Cancelled == true) return true;
                 _customPreRebirthPrepCompleted = true;
-                ReleaseFightPreparation();
                 Log("Custom pre-rebirth fight prep complete");
                 return false;
             }
-
+            if (CustomBossFightActive()) return true;
             CancelManualTitan("automatic rebirth preparation");
-            RunFightPrep(plan, true, true, "Automatic rebirth prep");
+            RunFightPrep(plan, true, "Automatic rebirth prep");
+            if (_fightPreparationAttempt?.Cancelled == true)
+            {
+                if (BossPushRunning || CustomBossFightActive()) return true;
+                if (!ReleaseFightPreparation()) return true;
+                return true;
+            }
             if (!_fightPreparationStarted) return true;
             _customPreRebirthPrepRunning = BossPushRunning;
             _customPreRebirthPrepCompleted = !_customPreRebirthPrepRunning;
             return _customPreRebirthPrepRunning;
         }
 
+        private bool AutomaticRebirthPreparationPermitted(CustomPlan plan) => Settings.UseCustomRebirthPlan
+            && Settings.AutoRebirth && plan?.AutoRebirthEnabled == true
+            && Character.challenges?.noRebirthChallenge?.inChallenge == false;
+
+        private bool RetainAutomaticFightPreparation(CustomPlan plan)
+        {
+            var attempt = _fightPreparationAttempt;
+            if (attempt?.AutomaticPlan == null || attempt.Cancelled || _manualRebirthPending || _manualFightPreparationRequest != null
+                || !attempt.Epoch.Matches() || !ReferenceEquals(attempt.Settings, Settings)
+                || !ReferenceEquals(attempt.Boss, Character.bossController) || attempt.PlanFile != Settings.CustomPlanFile) return false;
+            var permitted = AutomaticRebirthPreparationPermitted(plan);
+            if (attempt.Completed)
+            {
+                if (!_customPreRebirthPrepCompleted) CustomPlanRebirth.ResetRuntimeState();
+                _customPreRebirthPrepRunning = false;
+                _customPreRebirthPrepCompleted = true;
+                return true;
+            }
+            if (permitted && !attempt.PermissionPaused) return false;
+            // Permission suspension retires authority, not the acquired options or spent fruit steps.
+            attempt.PermissionPaused = true;
+            _customPreRebirthPrepRunning = _customPreRebirthPrepCompleted = false;
+            StopBossPush();
+            if (!BossPushRunning && !CustomBossFightActive() && ReleaseFightPreparation() && permitted)
+            {
+                attempt.BossStartAttempted = false;
+                attempt.AutomaticPlan = plan;
+                attempt.PermissionPaused = false;
+            }
+            return true;
+        }
+
         internal string RunManualFightPrep()
         {
             if (string.IsNullOrEmpty(CurrentExecutionCommandId)) return "Fight preparation requires an identified explicit request.";
             if (_manualFightPreparationRequest != null) return ContinueManualFightPreparation();
-            var plan = CustomPlanStore?.Load(Settings.CustomPlanFile) ?? new CustomPlan();
             var identity = ActionIdentity("fight-preparation", "fight-preparation", CurrentExecutionCommandId);
-            if (_fightPreparationRecord?.Identity.Key == identity.Key)
-                return RunFightPrep(plan, false, false, "Manual fight prep", opportunity: CurrentExecutionCommandId);
-            if (FiniteActions.Find(identity) != null || FiniteActions.Records.Any(x => x.Identity.Kind == "preparation-handoff" && x.Identity.Opportunity == identity.Key))
-                return "Manual fight prep: retained request requires selected-setup review; no replacement was searched or fight repeated.";
+            var plan = CustomPlanStore?.Load(Settings.CustomPlanFile) ?? new CustomPlan();
+            if (_fightPreparationAttempt?.Identity.Key == identity.Key)
+                return RunFightPrep(plan, false, "Manual fight prep", opportunity: CurrentExecutionCommandId);
+            // A native fight may outlive its injector process. Do not touch its setup.
+            if (CustomBossFightActive()) return "Manual fight prep: waiting for the current native boss fight to stop.";
             try
             {
-                // Reject missing/unusable choices before changing the previous intent.
                 var policy = SetupForFocus(CustomFocusGoal.Fight);
                 var gear = SelectSetupGear((GearOptimizationGoal)policy.Stage.GearGoal, (FightScoreMode)plan.FightScoreMode);
                 var support = SelectFocusSupport(policy);
-                var failure = LoadoutManager.ValidateExactLoadout(gear);
-                if (failure == null && !LoadoutManager.ExactLoadoutMatches(gear))
-                    failure = GearOptimizer.CheckExactSwapCapacity(gear, Character.curEnergy, Character.res3.curRes3);
+                var permitted = (Settings.ManageEnergy ? GearRecallFootprint.Energy : 0) | (Settings.ManageMagic ? GearRecallFootprint.Magic : 0);
+                permitted &= (GearRecallFootprint)~_resourceSetupExecutor.Application.BlockedLanes;
+                var failure = GearOptimizer.PreflightCapacityTransition(gear, permitted).Failure;
                 if (failure != null) return "Manual fight prep: setup waiting: " + failure;
                 if (Character.buttons.beards.interactable && !support.Beards.Contains(BeardFuManchu))
                     return "Manual fight prep: setup waiting: required fight beard does not fit.";
                 PreflightExactSupport(support, ActivityPolicy.Current.DiggerBudgetFraction, true);
                 if (_fightPreparationClaim != null && (!ExecutionClaimCurrent(_fightPreparationClaim) || !ExecutionClaimSetupOwned(_fightPreparationClaim)))
-                    return "Manual fight prep: setup waiting: previous preparation authority requires review.";
-                var request = new ManualFightPreparationRequest { Identity = identity, Plan = plan, Gear = gear, Support = support,
-                    Material = gear.Select(x => LoadoutPresetPrimitiveKey(x.equipment)).ToArray(), Previous = _fightPreparationRecord ?? _completedFightPreparationRecord,
+                    return "Manual fight prep: setup waiting: previous preparation authority changed.";
+                _manualFightPreparationRequest = new ManualFightPreparationRequest { Identity = identity, Plan = plan, Gear = gear, Support = support,
+                    Material = gear.Select(x => LoadoutPresetPrimitiveKey(x.equipment)).ToArray(),
                     BossProcess = _bossPushProcess, TitanProcess = _manualTitanProcess, CombatProcess = _combatPrepRun,
-                    Settings = Settings, PlanFile = Settings.CustomPlanFile, Entry = ExecutionPersistenceEntry ?? "",
-                    Started = Character.rebirthTime.totalseconds };
-                var retirementId = new FiniteActionIdentity("preparation-handoff", identity.Owner, identity.Acquisition,
-                    request.Previous?.Identity.Key ?? _bossPushIdentity ?? "no-predecessor", identity.Key);
-                request.Retirement = FiniteActions.Find(retirementId);
-                if (request.Retirement?.State == FiniteActionState.Unknown || request.Retirement?.State == FiniteActionState.Invocation)
-                    return "Manual fight prep: previous handoff outcome requires review; no process was repeated.";
-                if (request.Retirement == null)
-                {
-                    var evidence = new JSONObject(); evidence["successor"] = identity.Key; evidence["started"] = request.Started;
-                    evidence["plan"] = request.PlanFile; evidence["entry"] = request.Entry; evidence["support"] = support.StableKey;
-                    var items = new JSONArray();
-                    foreach (var item in gear)
-                    {
-                        var row = new JSONObject(); row["slot"] = item.slot; row["id"] = item.id;
-                        row["material"] = LoadoutPresetPrimitiveKey(item.equipment); items.Add(row);
-                    }
-                    evidence["gear"] = items;
-                    request.Retirement = new FiniteActionRecord { Identity = retirementId, State = FiniteActionState.Prepared,
-                        Before = evidence.ToString(), After = "selected", Epoch = identity.Acquisition,
-                        Domains = (int)(ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route | ExecutionDomain.NativeSettings | ExecutionDomain.Inventory) };
-                }
-                _manualFightPreparationRequest = request;
+                    Settings = Settings, PlanFile = Settings.CustomPlanFile };
                 return ContinueManualFightPreparation();
             }
             catch (Exception error) { return "Manual fight prep: preparation blocked: " + error.Message; }
@@ -151,73 +211,47 @@ namespace NGUInjector
             if (request == null) return "Manual fight prep: no identified request is pending.";
             try
             {
-                if (request.CancellationRequested)
-                {
-                    ResetCustomPreRebirthPrep();
-                    return "Manual fight prep: pending request cancelled.";
-                }
                 if (!request.Epoch.Matches() || !ReferenceEquals(request.Settings, Settings) || request.PlanFile != Settings.CustomPlanFile
                     || request.Gear.Where((item, i) => LoadoutPresetPrimitiveKey(item.equipment) != request.Material[i]).Any())
-                    return "Manual fight prep: acquired request changed; review is required.";
-                if (request.Retirement.Dirty) FiniteActions.Save(request.Retirement);
-                if (request.Retirement.State == FiniteActionState.Prepared)
                 {
-                    if (request.BossProcess == null && (Character.bossController.isFighting || Character.bossController.nukeBoss))
-                        return "Manual fight prep: waiting for the current native boss owner to retire.";
-                    if (!FiniteActions.FlushDependentResults(request.Identity, request.Identity.Acquisition, request.Retirement.Domains)
-                        || FiniteActions.HasUnresolvedDependencies(request.Identity, request.Identity.Acquisition, request.Retirement.Domains))
-                        return "Manual fight prep: previous action evidence requires storage/review.";
-                    FiniteActions.Save(request.Retirement);
-                    request.Retirement.State = FiniteActionState.Invocation;
-                    request.Retirement.After = "retirement-authorized";
-                    FiniteActions.Save(request.Retirement);
+                    _manualFightPreparationRequest = null;
+                    if (request.Retired) CancelFightPreparationAttempt();
+                    return "Manual fight prep: acquired request changed; request cancelled.";
                 }
-                if (request.Retirement.State == FiniteActionState.Invocation)
+                if (CustomBossFightActive()) return "Manual fight prep: waiting for the current native boss fight to stop.";
+                if (!request.Retired)
                 {
-                    if (_bossPushProcess != null && !ReferenceEquals(_bossPushProcess, request.BossProcess))
-                        return "Manual fight prep: a different boss process owns the current prerequisites.";
-                    if (_manualTitanActive && !ReferenceEquals(_manualTitanProcess, request.TitanProcess)
+                    if (_bossPushProcess != null && !ReferenceEquals(_bossPushProcess, request.BossProcess)
+                        || _manualTitanActive && !ReferenceEquals(_manualTitanProcess, request.TitanProcess)
                         || CombatPrepActive && !ReferenceEquals(_combatPrepRun, request.CombatProcess))
-                        return "Manual fight prep: a different preparation owns the current prerequisites.";
+                    {
+                        _manualFightPreparationRequest = null;
+                        return "Manual fight prep: another process owns the prerequisites; request cancelled.";
+                    }
                     CancelManualTitan("manual fight preparation");
                     EndCombatPrep("cancelled", "Manual fight prep preempted combat prep.", false);
                     StopBossPush();
-                    if (BossPushRunning || _manualTitanActive || CombatPrepActive || Character.bossController.isFighting
-                        || Character.bossController.nukeBoss || Character.adventure.zone != -1)
-                        return "Manual fight prep: waiting for exact previous process retirement.";
-                    if (ReferenceEquals(_fightPreparationRecord, request.Previous)) ReleaseFightPreparation();
-                    if (_fightPreparationClaim == null)
+                    if (BossPushRunning || _manualTitanActive || CombatPrepActive || CustomBossFightActive() || Character.adventure.zone != -1)
+                        return "Manual fight prep: waiting for previous process retirement.";
+                    if (!ReleaseFightPreparation()) return "Manual fight prep: waiting for previous preparation retirement.";
+                    if (UnverifiedPreparationFruitCurrent(_fightPreparationAttempt))
                     {
-                        // Reserve the now-retired footprint while result storage is
-                        // pending. No setup is applied before the tombstone is durable.
-                        ExecutionClaim next = null;
-                        next = BeginExecutionClaim(request.Identity.Owner, request.Identity.Acquisition,
-                            ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route | ExecutionDomain.FiniteAction | ExecutionDomain.Inventory,
-                            () => next == null || ReferenceEquals(_fightPreparationClaim, next)
-                                && (ReferenceEquals(_manualFightPreparationRequest, request) || _fightPreparationRecord?.Identity.Key == request.Identity.Key));
-                        _fightPreparationClaim = next;
+                        _manualFightPreparationRequest = null;
+                        return "Manual fight prep: previous fruit outcome requires review.";
                     }
-                    if (request.Previous != null)
-                    {
-                        request.Previous.State = FiniteActionState.Committed;
-                        request.Previous.After = "superseded:" + request.Identity.Key;
-                        FiniteActions.Save(request.Previous);
-                    }
-                    request.Retirement.State = FiniteActionState.Committed;
-                    request.Retirement.After = "retired";
-                    FiniteActions.Save(request.Retirement);
+                    _manualRebirthPending = false; _manualRebirthNumber = null;
+                    _customPreRebirthPrepRunning = _customPreRebirthPrepCompleted = false;
+                    if (_customSustainedFocusGoal.HasValue || _focusSetupSelection != null) ClearPersistedExecutionSelection("focus");
+                    ClearCustomSustainedFocus();
+                    _fightPreparationAttempt = null;
+                    _fightPreparationGear = request.Gear; _fightPreparationSupport = request.Support;
+                    request.Retired = true;
                 }
-                if (!PreparationRetirementDurable(request.Retirement)) return "Manual fight prep: handoff outcome requires review.";
-                // The original request is now durably superseded, not a completed
-                // rebirth instruction which could be resurrected after reload.
-                _manualRebirthPending = false; _manualRebirthNumber = null;
-                _customPreRebirthPrepRunning = _customPreRebirthPrepCompleted = false;
-                if (_customSustainedFocusGoal.HasValue || _focusSetupSelection != null) ClearPersistedExecutionSelection("focus");
-                ClearCustomSustainedFocus();
-                _fightPreparationGear = request.Gear; _fightPreparationSupport = request.Support; _fightPreparationUpgradesDone = true;
-                return RunFightPrep(request.Plan, false, false, "Manual fight prep", () => _manualFightPreparationRequest = null, request.Identity.Opportunity);
+                var summary = RunFightPrep(request.Plan, false, "Manual fight prep", () => _manualFightPreparationRequest = null, request.Identity.Opportunity);
+                if (_fightPreparationAttempt?.Cancelled == true || _fightPreparationAttempt?.Completed == true) _manualFightPreparationRequest = null;
+                return summary;
             }
-            catch (Exception error) { return "Manual fight prep: handoff/setup storage is pending: " + error.Message; }
+            catch (Exception error) { return "Manual fight prep: handoff/setup waiting: " + error.Message; }
         }
 
         internal string RunManualRebirth()
@@ -228,11 +262,13 @@ namespace NGUInjector
                 if (string.IsNullOrEmpty(CurrentExecutionCommandId)) return "Manual rebirth requires an identified explicit request.";
                 _manualRebirthOpportunity = CurrentExecutionCommandId;
                 _manualRebirthNumber = Character.stats.rebirthNumber;
+                BeginRebirthAutomationPass();
             }
+            _manualRebirthPending = true;
+            if (CustomBossFightActive()) return "Manual rebirth waiting for the current native boss fight to stop.";
             CancelManualTitan("manual rebirth");
             EndCombatPrep("cancelled", "Manual rebirth preempted combat prep.", false);
             ClearCustomSustainedFocus();
-            _manualRebirthPending = true;
             return ContinueManualRebirth();
         }
 
@@ -240,311 +276,319 @@ namespace NGUInjector
         {
             if (_manualRebirthNumber.HasValue && Character.stats.rebirthNumber != _manualRebirthNumber.Value)
             {
-                var acquisition = "rebirth:" + ActionNumber(_manualRebirthNumber.Value);
-                var identity = new FiniteActionIdentity("rebirth", "rebirth", acquisition, acquisition, "engage");
-                try
-                {
-                    var result = FiniteActions.Find(identity);
-                    if (result?.State == FiniteActionState.Committed && result.Dirty) FiniteActions.Save(result);
-                    if (!KnownRebirthResultCanFinish(result, _manualRebirthNumber.Value, Character.stats.rebirthNumber))
-                        return "Manual rebirth outcome requires review; the original native engagement will not be repeated.";
-                    CommitExecutionRebirthCheckpoint();
-                    ResetCustomPreRebirthPrep();
-                    ResetCustomAutomationRuntime();
-                    return "Manual rebirth engaged";
-                }
-                catch (Exception error) { return "Manual rebirth result/checkpoint storage is pending: " + error.Message; }
+                // Current native state retires this session request, never an imported action receipt.
+                _manualRebirthPending = false;
+                ResetCustomPreRebirthPrep();
+                ResetCustomAutomationRuntime();
+                return "Manual rebirth request retired after the native rebirth changed.";
             }
             var plan = CustomPlanStore?.Load(Settings.CustomPlanFile) ?? new CustomPlan();
-
             if (_customPreRebirthPrepRunning)
             {
-                if (BossPushRunning || CustomBossFightActive())
-                    return "Manual rebirth prep is still fighting bosses; rebirth will happen automatically when boss push finishes.";
-
+                if (BossPushRunning || CustomBossFightActive()) return "Manual rebirth prep is still fighting bosses; rebirth will happen automatically when boss push finishes.";
+                if (!ReleaseFightPreparation()) return "Manual rebirth prep is waiting for preparation retirement.";
                 _customPreRebirthPrepRunning = false;
                 _customPreRebirthPrepCompleted = true;
-                ReleaseFightPreparation();
                 Log("Manual rebirth prep complete");
             }
-
             if (!_customPreRebirthPrepCompleted)
             {
-                var prepSummary = RunFightPrep(plan, true, true, "Manual rebirth prep", opportunity: _manualRebirthOpportunity);
+                var prepSummary = RunFightPrep(plan, true, "Manual rebirth prep", opportunity: _manualRebirthOpportunity);
+                if (_fightPreparationAttempt?.Cancelled == true)
+                {
+                    ResetCustomPreRebirthPrep();
+                    return prepSummary + "; manual rebirth request cancelled.";
+                }
                 if (!_fightPreparationStarted) return prepSummary;
                 _customPreRebirthPrepRunning = BossPushRunning;
                 _customPreRebirthPrepCompleted = !_customPreRebirthPrepRunning;
-
-                if (_customPreRebirthPrepRunning)
-                    return prepSummary + "; boss push running, rebirth will happen automatically when it stops.";
+                if (_customPreRebirthPrepRunning) return prepSummary + "; rebirth will happen automatically when it stops.";
             }
-
             return TryEngageManualRebirth();
         }
 
         private string TryEngageManualRebirth()
         {
-            if (Character.bossController.isFighting || Character.bossController.nukeBoss)
-                return "Manual rebirth waiting for the boss fight to fully stop.";
-
+            if (CustomBossFightActive()) return "Manual rebirth waiting for the boss fight to fully stop.";
             var rebirth = new ManualRebirth();
             if (!rebirth.RebirthAvailable())
             {
-                _manualRebirthPending = false;
                 ResetCustomPreRebirthPrep();
                 return "Manual rebirth unavailable; minimum rebirth time or challenge state is blocking it.";
             }
-
             if (_profile.DoRebirth(rebirth))
             {
-                CommitExecutionRebirthCheckpoint();
-                _manualRebirthPending = false;
+                // Retire the request before checkpoint/history/UI work can throw.
                 ResetCustomPreRebirthPrep();
+                CommitExecutionRebirthCheckpoint();
                 ResetCustomAutomationRuntime();
                 return "Manual rebirth engaged";
             }
-
+            if (RebirthAttemptedThisPass)
+            {
+                ResetCustomPreRebirthPrep();
+                return "Manual rebirth attempt stopped without verified native completion; request cancelled.";
+            }
             return "Manual rebirth delayed by final pre-rebirth checks; will retry automatically.";
         }
 
-        private void ProcessPendingManualRebirth()
+        private bool ProcessPendingManualRebirth()
         {
             if (_manualFightPreparationRequest != null)
             {
-                settingsForm?.ReportCustomStatus(ContinueManualFightPreparation());
-                return;
+                var preparationMessage = ContinueManualFightPreparation();
+                settingsForm?.ReportCustomStatus(preparationMessage);
+                return true;
             }
-            if (!_manualRebirthPending)
-                return;
-
+            if (!_manualRebirthPending) return false;
             var message = ContinueManualRebirth();
             settingsForm?.ReportCustomStatus(message);
+            return true;
         }
 
         internal void ResetCustomPreRebirthPrep()
         {
-            if (_manualFightPreparationRequest != null)
-            {
-                var request = _manualFightPreparationRequest;
-                request.CancellationRequested = true;
-                if (request.Retirement.State == FiniteActionState.Prepared)
-                {
-                    request.Retirement.State = FiniteActionState.Rejected;
-                    request.Retirement.After = "cancelled-before-retirement";
-                    FiniteActions.Save(request.Retirement);
-                }
-                else
-                {
-                    // Withdraw the desired request, never erase unresolved native
-                    // retirement evidence or convert it back into an uninvoked action.
-                    var id = new FiniteActionIdentity("preparation-handoff-cancel", request.Identity.Owner,
-                        request.Identity.Acquisition, request.Retirement.Identity.Key, request.Identity.Key);
-                    FiniteActions.Save(new FiniteActionRecord { Identity = id, State = FiniteActionState.Committed,
-                        Before = request.Retirement.Identity.Key, After = "cancelled", Epoch = request.Identity.Acquisition,
-                        Domains = request.Retirement.Domains });
-                }
-                _manualFightPreparationRequest = null;
-            }
-            _manualRebirthPending = false;
-            _manualRebirthNumber = null;
-            _customPreRebirthPrepRunning = false;
-            _customPreRebirthPrepCompleted = false;
+            _manualFightPreparationRequest = null;
+            _manualRebirthPending = false; _manualRebirthNumber = null;
+            _customPreRebirthPrepRunning = _customPreRebirthPrepCompleted = false;
+            if (_fightPreparationAttempt != null) _fightPreparationAttempt.Cancelled = true;
             StopBossPush();
-            if (!Character.bossController.isFighting && !Character.bossController.nukeBoss)
-                ReleaseFightPreparation();
+            if (!CustomBossFightActive()) ReleaseFightPreparation();
         }
 
-        private string RunFightPrep(CustomPlan plan, bool upgradeDiggers, bool consumePowerFruits, string summaryPrefix,
+        private string RunFightPrep(CustomPlan plan, bool consumePowerFruits, string summaryPrefix,
             Action onBossPushStarted = null, string opportunity = null)
         {
             plan = plan ?? new CustomPlan();
             try
             {
                 var requested = ActionIdentity("fight-preparation", "fight-preparation", opportunity ?? "automatic:" + Settings.CustomPlanFile);
-                if (_fightPreparationRecord != null && _fightPreparationRecord.Identity.Key != requested.Key)
-                    return summaryPrefix + ": the previous identified preparation must retire first.";
-                if (_fightPreparationRecord == null)
+                var attempt = _fightPreparationAttempt;
+                if (attempt != null && attempt.Identity.Key != requested.Key)
                 {
-                    var existing = FiniteActions.Find(requested);
-                    if (existing != null && !PreparationAcquisitionCanRetry(existing))
-                        return summaryPrefix + ": retained preparation requires reviewed setup rebind; no fight or fruit was repeated.";
-                    if (existing != null) _fightPreparationRecord = existing;
-                    else
-                    {
-                        var commitment = new JSONObject(); commitment["version"] = 1;
-                        commitment["started"] = _manualFightPreparationRequest?.Identity.Key == requested.Key
-                            ? _manualFightPreparationRequest.Started : Character.rebirthTime.totalseconds;
-                        commitment["entry"] = _manualFightPreparationRequest?.Identity.Key == requested.Key
-                            ? _manualFightPreparationRequest.Entry : ExecutionPersistenceEntry ?? "";
-                        commitment["plan"] = Settings.CustomPlanFile;
-                        commitment["manualRebirth"] = _manualRebirthPending;
-                        commitment["rebirthNumber"] = ActionNumber(Character.stats.rebirthNumber);
-                        commitment["opportunity"] = requested.Opportunity;
-                        commitment["consumePowerFruits"] = consumePowerFruits;
-                        var fruitHarvests = new JSONObject();
-                        if (consumePowerFruits)
-                            foreach (var fruit in new[] { YggdrasilManager.FruitOfPowerAlphaId, YggdrasilManager.FruitOfPowerBetaId })
-                            {
-                                if (Character.yggdrasil?.fruits == null || fruit >= Character.yggdrasil.fruits.Count)
-                                    throw new InvalidOperationException("Original preparation fruit identities are unavailable.");
-                                fruitHarvests[ActionNumber(fruit)] = Character.yggdrasil.fruits[fruit].harvests;
-                            }
-                        commitment["fruitHarvests"] = fruitHarvests;
-                        commitment["upgradeDiggers"] = upgradeDiggers;
-                        commitment["requireMaxedFruit"] = plan.PrepRequireMaxedFruit;
-                        commitment["fightWindowSeconds"] = BossPushFightWindow;
-                        commitment["gearGoal"] = SetupForFocus(CustomFocusGoal.Fight).Stage.GearGoal;
-                        commitment["fightScoreMode"] = plan.FightScoreMode;
-                        _fightPreparationRecord = new FiniteActionRecord { Identity = requested, State = FiniteActionState.Prepared,
-                            Before = commitment.ToString(), After = "acquired", Epoch = requested.Acquisition,
-                            Domains = (int)(ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route | ExecutionDomain.Inventory) };
-                        FiniteActions.Save(_fightPreparationRecord);
-                    }
+                    if (_fightPreparationClaim != null || BossPushRunning || UnverifiedPreparationFruitCurrent(attempt))
+                        return summaryPrefix + ": previous preparation must retire first.";
+                    _fightPreparationAttempt = attempt = null;
                 }
-                var acquired = JsonFiles.ParseObject(_fightPreparationRecord.Before);
-                PreparationContinuesRebirth(_fightPreparationRecord);
-                if (_fightPreparationRecord.Dirty) FiniteActions.Save(_fightPreparationRecord);
+                if (attempt?.Cancelled == true) return summaryPrefix + ": this preparation attempt was cancelled.";
+                if (attempt?.Completed == true) return summaryPrefix + ": this preparation attempt is complete.";
+                if (!_fightPreparationStarted && !ScheduledFightAdmissionPermitted(requested))
+                {
+                    CancelFightPreparationAttempt();
+                    return summaryPrefix + ": schedule admission was disabled or expired.";
+                }
+                if (attempt != null && (!attempt.Epoch.Matches() || !ReferenceEquals(attempt.Settings, Settings)
+                    || !ReferenceEquals(attempt.Boss, Character.bossController) || attempt.PlanFile != Settings.CustomPlanFile))
+                {
+                    CancelFightPreparationAttempt();
+                    return summaryPrefix + ": acquired preparation changed; attempt cancelled.";
+                }
+                if (CustomBossFightActive()) return summaryPrefix + ": waiting for the current native boss fight to stop.";
+                if (attempt == null)
+                {
+                    attempt = new FightPreparationAttempt { Identity = requested, Settings = Settings, Boss = Character.bossController, PlanFile = Settings.CustomPlanFile,
+                        // Automatic rebirth prep takes every available tier; manual rebirth retains its safety preference.
+                        ConsumePowerFruits = consumePowerFruits, RequireMaxedFruit = _manualRebirthPending && plan.PrepRequireMaxedFruit,
+                        AutomaticPlan = consumePowerFruits && opportunity == null && !_manualRebirthPending ? plan : null,
+                        GearGoal = SetupForFocus(CustomFocusGoal.Fight).Stage.GearGoal, FightScoreMode = plan.FightScoreMode };
+                    if (!consumePowerFruits && _manualFightPreparationRequest == null && _protectedScheduler != null)
+                    {
+                        var scheduler = _protectedScheduler; var entry = ExecutionPersistenceEntry;
+                        attempt.EntryCurrent = () => ReferenceEquals(scheduler, _protectedScheduler) && entry == ExecutionPersistenceEntry
+                            && !scheduler.Finished && Settings.UseCustomRebirthPlan;
+                    }
+                    if (consumePowerFruits)
+                    {
+                        var fruits = Character.yggdrasil?.fruits;
+                        if (fruits == null) throw new InvalidOperationException("Preparation fruit state is unavailable.");
+                        attempt.FruitHarvests = fruits.Select(fruit => fruit.harvests).ToArray();
+                        attempt.Fruits = fruits.Cast<object>().ToArray();
+                        attempt.FruitStepsDone = new bool[fruits.Count];
+                    }
+                    _fightPreparationAttempt = attempt;
+                }
+                if (!FightPreparationFruitsCurrent(attempt))
+                {
+                    CancelFightPreparationAttempt();
+                    return summaryPrefix + ": original fruit opportunity changed; attempt cancelled.";
+                }
                 if (_fightPreparationSetup == null)
                 {
-                    if (!_fightPreparationUpgradesDone)
-                    {
-                        if (acquired["upgradeDiggers"].AsBool) PurchaseActionDiggers(true, 0d);
-                        _fightPreparationUpgradesDone = true;
-                    }
                     ResetCustomIronPillPrep();
-                    if (_fightPreparationGear == null)
-                        _fightPreparationGear = SelectSetupGear((GearOptimizationGoal)acquired["gearGoal"].AsInt, (FightScoreMode)acquired["fightScoreMode"].AsInt);
+                    if (_fightPreparationGear == null) _fightPreparationGear = SelectSetupGear((GearOptimizationGoal)attempt.GearGoal, (FightScoreMode)attempt.FightScoreMode);
                     if (_fightPreparationSupport == null) _fightPreparationSupport = SelectFocusSupport(SetupForFocus(CustomFocusGoal.Fight));
                     if (Character.buttons.beards.interactable && !_fightPreparationSupport.Beards.Contains(BeardFuManchu))
                     {
                         _fightPreparationSupport = null;
                         return summaryPrefix + ": required fight beard does not fit.";
                     }
-                    if (_fightPreparationClaim == null)
-                        _fightPreparationClaim = BeginExecutionClaim(requested.Owner, requested.Acquisition, ExecutionDomain.Gear | ExecutionDomain.Support
-                            | ExecutionDomain.Route | ExecutionDomain.FiniteAction | ExecutionDomain.Inventory, () => _fightPreparationRecord != null);
-                    _fightPreparationSetup = CreateFiniteActionSetup(_fightPreparationClaim, _fightPreparationGear, _fightPreparationSupport, true, true,
-                        Character.buttons.beards.interactable ? new[] { BeardFuManchu } : new int[0]);
+                    var permitted = (Settings.ManageEnergy ? GearRecallFootprint.Energy : 0) | (Settings.ManageMagic ? GearRecallFootprint.Magic : 0);
+                    permitted &= (GearRecallFootprint)~_resourceSetupExecutor.Application.BlockedLanes;
+                    var capacity = GearOptimizer.PreflightCapacityTransition(_fightPreparationGear, permitted);
+                    if (capacity.Failure != null) return summaryPrefix + ": setup waiting: " + capacity.Failure;
+                    PreflightExactSupport(_fightPreparationSupport, 1, true);
+                    attempt.Process = BeginRouteProcess(requested.Owner, _fightPreparationGear,
+                        domains: ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route | ExecutionDomain.FiniteAction | ExecutionDomain.Inventory,
+                        selectedSupport: _fightPreparationSupport, capacityTransition: true, resourceRecall: capacity.Recall, acquisition: requested.Acquisition);
+                    var applicationCurrent = attempt.Process.ApplicationCurrent;
+                    attempt.Process.ApplicationCurrent = () => !attempt.PermissionPaused
+                        && (attempt.AutomaticPlan == null || AutomaticRebirthPreparationPermitted(attempt.AutomaticPlan))
+                        && (applicationCurrent == null || applicationCurrent());
+                    _fightPreparationClaim = attempt.Process.Claim;
+                    if (SuspendedFightHandoff) _combatPrepRun.FightReleaseVerified = false;
+                    _fightPreparationSetup = attempt.Process.Setup;
+                    _fightPreparationSetup.ControlsSupport = true;
+                    _fightPreparationSetup.Budget = 1;
+                    _fightPreparationSetup.EnforceSupportBudget = true;
+                    _fightPreparationSetup.RequiredBeards = Character.buttons.beards.interactable ? new[] { BeardFuManchu } : new int[0];
                 }
-                if (!FightPreparationVerified || _fightPreparationRecord.After == "acquired" || _fightPreparationRecord.After == "selected")
+                if (!FightPreparationVerified)
                 {
-                    // Selection is retained even when storage or native preflight fails.
-                    // The ledger stage is durable before any native setup mutation.
-                    PersistExecutionSetupSelection("fight-prep", _fightPreparationRecord.Before, _fightPreparationSetup);
-                    _fightPreparationRecord.After = "selected"; FiniteActions.Save(_fightPreparationRecord);
-                    ApplyExecutionClaim(_fightPreparationClaim, _fightPreparationSetup);
-                    _fightPreparationRecord.After = "setup-ready"; FiniteActions.Save(_fightPreparationRecord);
+                    if (CustomBossFightActive()) return summaryPrefix + ": waiting for the current native boss fight to stop.";
+                    ApplyRouteProcess(attempt.Process);
                     if (!FightPreparationVerified) return summaryPrefix + ": waiting for verified exact fight setup.";
                 }
-                if (!_fightPreparationStarted && acquired["consumePowerFruits"].AsBool)
-                {
-                    if (!acquired["fruitHarvests"].IsObject)
-                        return summaryPrefix + ": original fruit identities require review; no new fruit opportunity was acquired.";
-                    foreach (var fruit in new[] { YggdrasilManager.FruitOfPowerAlphaId, YggdrasilManager.FruitOfPowerBetaId })
+                if (!attempt.BossStartAttempted && attempt.ConsumePowerFruits)
+                    for (var fruit = 0; fruit < attempt.Fruits.Length; fruit++)
                     {
+                        if (!FightPreparationFruitsCurrent(attempt))
+                        {
+                            CancelFightPreparationAttempt();
+                            return summaryPrefix + ": original fruit opportunity changed; attempt cancelled.";
+                        }
+                        if (attempt.FruitStepsDone[fruit]) continue;
                         var controller = Character.yggdrasilController.fruits[0];
-                        if (controller.harvestTier(fruit) < 1 || acquired["requireMaxedFruit"].AsBool && !controller.fruitMaxxed(fruit)) continue;
-                        var count = acquired["fruitHarvests"][ActionNumber(fruit)];
-                        if (!count.IsNumber || count.AsDouble < 0d || count.AsDouble > int.MaxValue || count.AsDouble != count.AsInt)
-                            return summaryPrefix + ": original fruit identity is invalid; boss entry withheld.";
-                        if (!RunFruitHarvestAction(fruit, acquired["requireMaxedFruit"].AsBool, true, _fightPreparationClaim, _fightPreparationSetup,
-                            PreparationFruitOpportunity(_fightPreparationRecord.Identity, fruit), count.AsInt))
-                            return summaryPrefix + ": fruit action is unresolved; boss entry withheld.";
+                        if (controller.harvestTier(fruit) < 1 || attempt.RequireMaxedFruit && !controller.fruitMaxxed(fruit))
+                            continue;
+                        var forceEat = fruit == YggdrasilManager.FruitOfPowerAlphaId || fruit == YggdrasilManager.FruitOfPowerBetaId;
+                        var result = RunFruitHarvestAction(fruit, attempt.RequireMaxedFruit, forceEat, _fightPreparationClaim, _fightPreparationSetup,
+                            attempt.Identity.Key + ":fruit:" + ActionNumber(fruit), attempt.FruitHarvests[fruit]);
+                        if (result.Invoked) attempt.FruitStepsDone[fruit] = true;
+                        if (!result.Verified)
+                        {
+                            if (result.Invoked)
+                            {
+                                attempt.UnverifiedFruit = fruit;
+                                CancelFightPreparationAttempt();
+                            }
+                            return summaryPrefix + (result.Invoked ? ": fruit outcome unverified; attempt cancelled." : ": waiting for fruit prerequisites.");
+                        }
                     }
+                if (!FightPreparationFruitsCurrent(attempt))
+                {
+                    CancelFightPreparationAttempt();
+                    return summaryPrefix + ": original fruit opportunity changed; attempt cancelled.";
                 }
                 if (!FightPreparationVerified) return summaryPrefix + ": fight prerequisites changed.";
-                if (!_fightPreparationStarted)
+                if (!attempt.BossStartAttempted)
                 {
-                    _fightPreparationRecord.After = "fight-requested";
-                    FiniteActions.Save(_fightPreparationRecord);
-                    StartBossPush();
-                    if (!BossPushRunning) return summaryPrefix + ": boss process admission is pending.";
+                    attempt.BossStartAttempted = true;
+                    try { StartBossPush(); }
+                    catch { CancelFightPreparationAttempt(); StopBossPush(); throw; }
+                    if (!BossPushRunning)
+                    {
+                        attempt.BossStartAttempted = false;
+                        return summaryPrefix + ": boss process admission is pending.";
+                    }
                     _fightPreparationStarted = true;
                     onBossPushStarted?.Invoke();
                 }
                 return summaryPrefix + ": boss push running.";
             }
-            catch (Exception e)
-            {
-                return summaryPrefix + ": preparation blocked: " + e.Message;
-            }
+            catch (Exception error) { return summaryPrefix + ": preparation blocked: " + error.Message; }
         }
 
-        private void ReleaseFightPreparation()
+        private bool FightPreparationFruitsCurrent(FightPreparationAttempt attempt)
         {
+            if (!attempt.ConsumePowerFruits) return true;
+            var fruits = Character.yggdrasil?.fruits;
+            return fruits != null && fruits.Count == attempt.Fruits.Length
+                && !fruits.Where((fruit, i) => !ReferenceEquals(fruit, attempt.Fruits[i])
+                    || !attempt.FruitStepsDone[i] && fruit.harvests != attempt.FruitHarvests[i]).Any();
+        }
+
+        private void CancelFightPreparationAttempt()
+        {
+            if (_fightPreparationAttempt != null) _fightPreparationAttempt.Cancelled = true;
+            if (!BossPushRunning && !CustomBossFightActive()) ReleaseFightPreparation();
+        }
+
+        private bool RetireObsoleteFightPreparation()
+        {
+            var attempt = _fightPreparationAttempt;
+            if (attempt == null) return true;
+            var obsolete = !attempt.BossStartAttempted && attempt.EntryCurrent != null && !attempt.EntryCurrent();
+            if (!obsolete && !attempt.Cancelled && !_fightPreparationStarted) return true;
+            if (obsolete && (!_protectedCheckpointDurable || !ProtectedEpochMatches() || !attempt.Epoch.Matches())) return false;
+            if (BossPushRunning || CustomBossFightActive()) return false;
+            if (obsolete && attempt.UnverifiedFruit >= 0) return false;
+            if (obsolete) attempt.Cancelled = true;
+            if (!ReleaseFightPreparation()) return false;
+            if (obsolete) _fightPreparationAttempt = null;
+            return true;
+        }
+
+        private bool ReleaseFightPreparation()
+        {
+            if (BossPushRunning || CustomBossFightActive()) return false;
+            var attempt = _fightPreparationAttempt;
+            // Boss ticks can retire the route before the readiness observer sees permission loss.
+            if (attempt?.AutomaticPlan != null && !attempt.Cancelled && !attempt.Completed
+                && !AutomaticRebirthPreparationPermitted(attempt.AutomaticPlan))
+            {
+                attempt.PermissionPaused = true;
+                _customPreRebirthPrepRunning = _customPreRebirthPrepCompleted = false;
+            }
             var claim = _fightPreparationClaim;
-            if (claim != null) EndExecutionClaim(claim, _manualFightPreparationRequest == null);
-            if (_fightPreparationRecord != null && _fightPreparationStarted)
+            var suspended = SuspendedFightHandoff ? _combatPrepRun : null;
+            var witnessed = suspended != null && !suspended.Retired && FightPreparationVerified && CombatPrepEntryAuthority(suspended)
+                && CombatPrepTargetsMatch(suspended) && Character.adventure.zone == -1;
+            var terminalGear = witnessed ? _fightPreparationSetup.Gear.ToArray() : null;
+            var terminalMaterial = terminalGear?.Select(item => LoadoutPresetPrimitiveKey(item.equipment)).ToArray();
+            var terminalSupport = witnessed ? CaptureSupportState() : null;
+            var terminalObjects = witnessed ? SupportObjects() : null;
+            var terminalConflict = SelectedSetupConflictVersion(Character);
+            if (claim != null)
             {
-                _fightPreparationRecord.State = FiniteActionState.Committed;
-                _fightPreparationRecord.After = "completed";
-                FiniteActions.Save(_fightPreparationRecord);
-                _completedFightPreparationRecord = _fightPreparationRecord;
+                var handoff = _routeHandoffPending;
+                _routeHandoffPending |= _manualFightPreparationRequest != null || suspended != null;
+                try
+                {
+                    if (_fightPreparationAttempt?.Process != null)
+                    {
+                        if (!EndRouteProcess(_fightPreparationAttempt.Process)) return false;
+                    }
+                    else if (!EndExecutionClaim(claim, _manualFightPreparationRequest == null)) return false;
+                }
+                catch (Exception error)
+                {
+                    SetResourceExecution(ResourceExecutionState.Waiting, claim.Owner, "Fight preparation retirement waiting: " + error.Message);
+                    return false;
+                }
+                finally { _routeHandoffPending = handoff; }
             }
+            if (witnessed && CombatPrepEntryAuthority(suspended) && !CustomBossFightActive() && Character.adventure.zone == -1
+                && CombatPrepGearMatches(terminalGear) && CaptureSupportState().StableKey == terminalSupport.StableKey
+                && terminalGear.Where((item, i) => LoadoutPresetPrimitiveKey(item.equipment) != terminalMaterial[i]).Any() == false
+                && SelectedSetupConflictVersion(Character) == terminalConflict)
+            {
+                suspended.FightSuccessorGear = terminalGear;
+                suspended.FightSuccessorMaterial = terminalMaterial;
+                suspended.FightSuccessorSupport = terminalSupport;
+                suspended.FightSuccessorSupportObjects = terminalObjects;
+                suspended.FightConflictVersion = terminalConflict;
+                suspended.FightReleaseVerified = true;
+            }
+            if (_fightPreparationAttempt != null && _fightPreparationStarted && !_fightPreparationAttempt.Cancelled
+                && !_fightPreparationAttempt.PermissionPaused && _fightPreparationAttempt.UnverifiedFruit < 0)
+                _fightPreparationAttempt.Completed = true;
             _fightPreparationClaim = null; _fightPreparationSetup = null;
-            _fightPreparationGear = null; _fightPreparationSupport = null; _fightPreparationUpgradesDone = false;
-            _fightPreparationRecord = null; _fightPreparationStarted = false;
-        }
-
-        internal JSONObject ExportFightPreparationCommitment()
-        {
-            var record = _fightPreparationRecord ?? _completedFightPreparationRecord;
-            if (record == null) return new JSONObject();
-            var id = record.Identity;
-            var result = new JSONObject(); result["version"] = 1;
-            result["kind"] = id.Kind; result["owner"] = id.Owner; result["acquisition"] = id.Acquisition;
-            result["entry"] = id.Entry; result["opportunity"] = id.Opportunity;
-            result["state"] = record.State.ToString(); result["stage"] = record.After;
-            result["original"] = JsonFiles.ParseObject(record.Before);
-            return result;
-        }
-
-        internal void ImportReviewedFightPreparation(JSONObject commitment, SelectedSetupRequirements setup)
-        {
-            if (commitment == null || commitment["version"].AsInt != 1 || setup == null)
-                throw new InvalidOperationException("Fight preparation semantic commitment is unavailable.");
-            var id = new FiniteActionIdentity(commitment["kind"].Value, commitment["owner"].Value,
-                commitment["acquisition"].Value, commitment["entry"].Value, commitment["opportunity"].Value);
-            var record = FiniteActions.Find(id);
-            if (id.Kind != "fight-preparation" || record == null || record.Before != commitment["original"].ToString()
-                || setup.Owner != id.Owner || setup.Acquisition != id.Acquisition
-                || id.Acquisition != "rebirth:" + ActionNumber(Character.stats.rebirthNumber))
-                throw new InvalidOperationException("Fight preparation history or selected acquisition changed.");
-            if (record.After.StartsWith("superseded:", StringComparison.Ordinal)
-                || FiniteActions.Records.Any(x => PreparationSupersessionBlocksImport(x, id)))
-                throw new InvalidOperationException("Original preparation was superseded or its handoff requires review; old rebirth intent was not resumed.");
-            var original = JsonFiles.ParseObject(record.Before);
-            var continuesRebirth = PreparationContinuesRebirth(record);
-            if (original["plan"].Value != Settings.CustomPlanFile
-                || original["entry"].Value != (ExecutionPersistenceEntry ?? "")
-                || !(original["started"].AsDouble >= 0d && original["started"].AsDouble <= Character.rebirthTime.totalseconds))
-                throw new InvalidOperationException("Fight preparation original entry/time does not match; no new budget was created.");
-            if (record.State == FiniteActionState.Unknown || record.State == FiniteActionState.Invocation || record.After == "fight-requested")
-                throw new InvalidOperationException("Started fight preparation requires route-history rebind; entry fight will not be repeated.");
-            if (record.State == FiniteActionState.Committed)
+            if (_fightPreparationAttempt?.PermissionPaused != true || _fightPreparationAttempt.Cancelled)
             {
-                _completedFightPreparationRecord = record;
-                _manualRebirthPending = original["manualRebirth"].AsBool;
-                _manualRebirthOpportunity = original["opportunity"].Value;
-                _manualRebirthNumber = _manualRebirthPending ? Character.stats.rebirthNumber : (long?)null;
-                _customPreRebirthPrepRunning = false;
-                _customPreRebirthPrepCompleted = continuesRebirth;
-                return;
+                _fightPreparationGear = null; _fightPreparationSupport = null;
             }
-            if (_fightPreparationClaim != null) throw new InvalidOperationException("A fight preparation is already admitted.");
-            ExecutionClaim rebound = null;
-            rebound = BeginExecutionClaim(id.Owner, id.Acquisition, ExecutionDomain.Gear | ExecutionDomain.Support
-                | ExecutionDomain.Route | ExecutionDomain.FiniteAction | ExecutionDomain.Inventory,
-                () => rebound == null || ReferenceEquals(_fightPreparationClaim, rebound) && ReferenceEquals(_fightPreparationRecord, record));
-            _fightPreparationRecord = record;
-            _fightPreparationClaim = rebound;
-            setup.Authorized = () => ExecutionClaimCurrent(_fightPreparationClaim);
-            _fightPreparationSetup = setup;
-            _fightPreparationGear = setup.Gear; _fightPreparationSupport = setup.Support; _fightPreparationUpgradesDone = true;
-            _manualRebirthPending = original["manualRebirth"].AsBool;
-            _manualRebirthOpportunity = original["opportunity"].Value;
-            _manualRebirthNumber = _manualRebirthPending ? Character.stats.rebirthNumber : (long?)null;
-            _fightPreparationStarted = _customPreRebirthPrepRunning = _customPreRebirthPrepCompleted = false;
+            _fightPreparationStarted = false;
+            return true;
         }
     }
 }

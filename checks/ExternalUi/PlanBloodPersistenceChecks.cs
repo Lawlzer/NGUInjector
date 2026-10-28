@@ -22,6 +22,7 @@ namespace NGUInjector
                 NGUInjector.Main.Settings = new SavedSettings(_dir);
                 NGUInjector.Main.Settings.SaveSettings();
                 NGUInjector.Main.CustomPlanStore = new CustomPlanStore(Path.Combine(_dir, "custom-plans"));
+                SeedLegacyDefault(NGUInjector.Main.CustomPlanStore);
                 CheckPlanBloodPersistence();
                 CheckAutoIronPillEnabled();
                 CheckNguWeights();
@@ -46,10 +47,12 @@ namespace NGUInjector
             var settingsPath = Path.Combine(_dir, "settings.json");
             var settingsBefore = File.ReadAllText(settingsPath);
             AssertBloodUnset(new CustomPlan(), "new Blood Magic overrides inherit globals");
-            foreach (var builtIn in new[] {"default", "24hr", "infinite", "1h-3m-rebirth"})
-                AssertBloodUnset(store.Load(builtIn), "built-in inherits globals: " + builtIn);
+            AssertBloodUnset(store.Load("24hr"), "24hr inherits global blood settings");
+            foreach (var builtIn in PlanCatalogNames.Skip(1))
+                Assert(store.Load(builtIn).AutoBloodSpellsEnabled == true && store.Load(builtIn).BloodSpaghettiGoalPercent == 0
+                    && store.Load(builtIn).BloodCounterfeitGoalPercent == 0, "NUMBER built-in overrides global goals for heavy blood: " + builtIn);
 
-            foreach (var version in new[] {14, 17})
+            foreach (var version in new[] {14, 17, 18})
             foreach (var explicitNull in new[] {false, true})
             {
                 var name = "blood-legacy-" + version + "-" + explicitNull;
@@ -74,7 +77,7 @@ namespace NGUInjector
                 Assert(loaded.AutoIronPillEnabled, "legacy automatic Iron Pill remains true");
                 var read = store.ReadExternalPlan(name);
                 Assert(PlanBloodFields.All(field => !read.Linq.Any(item => item.Key == field)), "normalized read omits all unset overrides");
-                Assert(read["Version"].AsInt == 17 && loaded.Version == 17, "Blood overrides keep schema 17");
+                Assert(read["Version"].AsInt == 18 && loaded.Version == 18, "Blood overrides use current schema 18");
                 Assert(File.ReadAllText(path) == before, "normalization reads never rewrite legacy or null plan bytes");
                 var copy = store.CreatePlan(name + "-copy", loaded);
                 AssertBloodUnset(store.Load(copy), "native copy retains fallback rather than snapshotting globals");

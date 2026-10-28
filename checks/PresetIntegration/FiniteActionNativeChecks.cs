@@ -171,6 +171,7 @@ public static partial class PresetIntegrationChecks
         var setup = ExactClaimSetup(temporary, "action-checks");
         Func<bool> verified = () => (bool)CallMain("FiniteActionSetupVerified", claim, setup);
         var withheld = CallMain("RunFiniteAction", action, NativeActionGrant(action, verified, claim));
+        Equal(false, Get(withheld, "Invoked"), "unverified exact setup never invokes native NUMBER");
         Equal(false, Property(withheld, "Verified"), "unapplied exact setup withholds native NUMBER leaf");
         Equal(100d, Get(blood, "bloodPoints"), "unverified setup spends no blood");
         CallMain("ApplyExecutionClaim", claim, setup);
@@ -182,59 +183,23 @@ public static partial class PresetIntegrationChecks
         {
             var result = CallMain("RunFiniteAction", action, NativeActionGrant(action, verified, claim));
             Equal("ModelAppliedRenderFailed", Get(result, "Disposition").ToString(), "actual native NUMBER accounting survives render exception: " + Get(result, "Reason"));
-            Equal(true, Property(result, "Verified"), "committed native result is durable before publication");
+            Equal(true, Get(result, "Invoked"), "native NUMBER result reports this call's actual invocation");
+            Equal(true, Property(result, "Verified"), "exact native commitment and current setup authorize publication");
             Equal(0d, Get(blood, "bloodPoints"), "native spell consumes blood exactly once");
             Equal(105d, Get(blood, "rebirthPower"), "native NUMBER exact addition");
-            CallMain("RunFiniteAction", action, NativeActionGrant(action, verified, claim));
-            Equal(1, renderCalls, "committed result does not re-enter native cast or rendering");
+            var stale = CallMain("RunFiniteAction", action, NativeActionGrant(action, verified, claim));
+            Equal(false, Get(stale, "Invoked"), "spent blood rejects the stale captured action before invocation");
+            Equal(false, Get(stale, "Committed"), "rejected stale action borrows no prior commitment");
+            Equal(1, renderCalls, "native preconditions prevent a repeated cast or render");
         }
         finally { Program.FiniteActionSpellRendered = null; }
         CallMain("EndExecutionClaim", claim, true);
         RunVerifiedInline(plan, "finite-action actual CURRENT B after temporary claim release");
         Equal(551, Get(Get(inventory, "head"), "id"), "finite setup exit resolves CURRENT B, not entry A");
 
-        // Hold only the result file replacement boundary, after native model writes.
-        Set(blood, "bloodPoints", 20d); action = NativeNumberLeaf("result-failure-window", 20d, 105d);
-        identity = Get(action, "Identity");
-        var hash = Invoke(Plugin.GetType("NGUInjector.JsonFiles", true), "ComputeRevision", Encoding.UTF8.GetBytes((string)Get(identity, "Key")));
-        var file = Path.Combine((string)Get(MainType, "_dir"), "finite-actions-v1", hash + ".json");
-        FileStream held = null;
-        Program.FiniteActionSpellRendered = () => held = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
-        try
-        {
-            var result = CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true));
-            Equal(true, Get(result, "Committed"), "result persistence failure retains actual native commitment");
-            Equal(false, Get(result, "Durable"), "result persistence failure withholds dependent success");
-            Set(blood, "bloodPoints", 3d);
-            var successorAction = NativeNumberLeaf("dependent-result-window", 3d, 125d);
-            var calls = NativeNumberFlushCalls;
-            var waiting = CallMain("RunFiniteAction", successorAction, NativeActionGrant(successorAction, () => true));
-            Equal(false, Get(waiting, "Committed"), "dirty committed result cannot authorize successor native spell");
-            Equal(calls, NativeNumberFlushCalls, "dependent spell is withheld before native invocation");
-            Equal(false, Property(MainInstance, "RebirthFinitePrerequisitesResolved"), "dirty committed blood result blocks dependent rebirth preparation");
-            var rebirths = Get(Get(Character, "stats"), "rebirthNumber");
-            Equal(true, CallMain("PrepareFinalRebirthAction"), "actual selected final NUMBER setup can be observed independently of pending result storage");
-            try { Equal(false, CallMain("InvokeFinalRebirthAction", "engage"), "dirty committed result withholds actual native rebirth entry"); }
-            finally { CallMain("ReleaseFinalRebirthAction"); }
-            Equal(rebirths, Get(Get(Character, "stats"), "rebirthNumber"), "result storage fault causes zero native rebirths");
-            var oldCap = (long)Get(Character, "capEnergy"); var oldPool = (long)Get(Character, "curEnergy");
-            Set(Character, "capEnergy", oldCap + 37); Set(Character, "curEnergy", oldPool + 37);
-            Set(Character, "idleEnergy", (long)Get(Character, "idleEnergy") + 37);
-            CallMain("InvalidateExecutionObservations", Domain("Energy")); CallMain("ReconcileCustomResources", plan, false);
-            Equal(0L, Get(Character, "idleEnergy"), "healthy Energy actually allocates new capacity while Magic result storage is blocked");
-            Equal(oldPool + 37 - 7, ((long[])Get(Get(Character, "advancedTraining"), "energy")).Sum()
-                + ((IList)Get(Get(Character, "NGU"), "skills")).Cast<object>().Sum(x => (long)Get(x, "energy")), "healthy lane native accounting includes grown pool, retaining basic training");
-        }
-        finally { Program.FiniteActionSpellRendered = null; held?.Dispose(); }
-        Set(MainInstance, "_finiteActionLedger", null);
-        Set(blood, "bloodPoints", 20d);
-        var imported = CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true));
-        Equal("UnknownOutcome", Get(imported, "Disposition").ToString(), "durable INVOCATION imports as unknown");
-        Equal(20d, Get(blood, "bloodPoints"), "unknown import never repeats native spell");
-        var energy = CallMain("ResolveExecutionGrant", "healthy-energy", "entry", Domain("Energy"), (Func<bool>)(() => true), null, null);
-        Equal(true, CallMain("ValidateExecutionGrant", energy, Domain("Energy")), "unresolved finite blood does not globally disable healthy Energy");
         CheckNativePitAction();
-        CheckNativeDirtyResultRecovery();
+        CheckNativeActionHistoryIgnored();
+        CheckNativeUnverifiedRetry();
         CheckNativePreparationRetry();
         CheckNativeFiniteCallbackConflicts();
         CheckNativeFruitLeaves();
@@ -262,6 +227,7 @@ public static partial class PresetIntegrationChecks
         var cost = (long)Invoke(purchases, "customPowerCost", 1);
         var action = NativeTypedLeaf("ExpPurchaseAction", "exp-purchase:0", "auto-exp", "100", "FiniteAction, NativeSettings, Energy");
         Set(action, "Stat", 0); Set(action, "Amount", 1L); Set(action, "Cost", cost); Set(action, "Currency", 1000L); Set(action, "Base", 100m);
+        Set(action, "Model", Character);
         Set(action, "Purchases", purchases); Set(action, "NativeSettings", settings); Set(action, "Input", Field(settings, "customPowerAmount"));
         Set(action, "Purchase", purchases.GetType().GetMethod("buyCustomPower", All));
         var grant = NativeActionGrant(action, () => true); Set(action, "Grant", grant);
@@ -271,17 +237,20 @@ public static partial class PresetIntegrationChecks
         {
             var result = CallMain("RunFiniteAction", action, grant);
             Equal("ModelAppliedRenderFailed", Get(result, "Disposition").ToString(), "actual native EXP accounting survives refresh failure");
-            Equal(true, Property(result, "Verified"), "native EXP cost/base/currency proof admits durable commit");
+            Equal(true, Get(result, "Invoked"), "native EXP result reports the actual purchase invocation");
+            Equal(true, Property(result, "Verified"), "native EXP cost/base/currency proof admits current commitment");
             Equal(101f, Get(Character, "energyPower"), "native EXP raises exact base stat once");
             Equal(1000L - cost, Get(Character, "realExp"), "native EXP spends exact native cost once");
             Equal(17, Get(settings, "customPowerAmount"), "still-owned EXP input is returned even after native refresh throws");
-            CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true));
-            Equal(calls + 1, Program.FiniteExpNativeCalls, "refresh failure cannot re-invoke same native EXP purchase");
+            var stale = CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true));
+            Equal(false, Get(stale, "Invoked"), "changed stat and balance reject stale EXP capture");
+            Equal(calls + 1, Program.FiniteExpNativeCalls, "stale EXP rejection has no native invocation");
         }
         finally { Program.FinitePurchaseRendered = null; }
 
         var current = NativeTypedLeaf("ExpPurchaseAction", "exp-purchase:0", "auto-exp", "101", "FiniteAction, NativeSettings, Energy");
         Set(current, "Stat", 0); Set(current, "Amount", 1L); Set(current, "Cost", cost); Set(current, "Currency", 1000L - cost); Set(current, "Base", 101m);
+        Set(current, "Model", Character);
         Set(current, "Purchases", purchases); Set(current, "NativeSettings", settings); Set(current, "Input", Field(settings, "customPowerAmount"));
         Set(current, "Purchase", purchases.GetType().GetMethod("buyCustomPower", All)); grant = NativeActionGrant(current, () => true); Set(current, "Grant", grant);
         Program.FinitePurchaseRendered = () => Set(settings, "customPowerAmount", 999);
@@ -289,6 +258,8 @@ public static partial class PresetIntegrationChecks
         {
             var result = CallMain("RunFiniteAction", current, grant);
             Equal(true, Get(result, "Committed"), "native EXP commitment is retained across foreign borrowed-input edit");
+            Equal(102f, Get(Character, "energyPower"), "fresh EXP capture buys the next exact native increment");
+            Equal(1000L - cost * 2, Get(Character, "realExp"), "fresh EXP capture spends only its current native cost");
             Equal(999, Get(settings, "customPowerAmount"), "EXP return cannot overwrite newer native input edit");
         }
         finally { Program.FinitePurchaseRendered = null; }
@@ -296,27 +267,31 @@ public static partial class PresetIntegrationChecks
         plan = SetupInlineStagePlan(); RunVerifiedInline(plan, "native exact digger baseline");
         var controller = Get(Character, "allDiggers"); var diggers = (IList)Get(Get(Character, "diggers"), "diggers");
         Set(controller, "character", Character); Child(controller, "tooltip");
-        Set(controller, "baseGoldCost", Enumerable.Repeat(10d, 12).ToList());
+        Set(controller, "baseGoldCost", Enumerable.Repeat(1e200d, 12).ToList());
+        ((IList)Get(controller, "baseGoldCost"))[0] = 10d;
+        Set(Get(MainType, "Settings"), "_upgradeDiggers", true);
+        Set(Get(MainType, "Settings"), "_moneyPitThreshold", 1e300d);
+        Set(Get(Character, "settings"), "diggersOn", true); Set(Character, "highestBoss", 100);
         var level = (long)Get(diggers[0], "maxLevel"); var price = (double)Invoke(controller, "upgradeCost", 0);
         Set(Character, "realGold", price * 5);
-        action = NativeTypedLeaf("DiggerPurchaseAction", "digger-purchase:0", "digger-purchases", level.ToString(), "FiniteAction, Support");
-        Set(action, "Id", 0); Set(action, "Level", level); Set(action, "Gold", price * 5); Set(action, "Cost", price + 1); Set(action, "Reserve", 0d);
         calls = Program.FiniteDiggerNativeCalls;
-        var rejected = CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true));
-        Equal(false, Get(rejected, "Committed"), "changed native digger price rejects before invocation");
-        Equal(calls, Program.FiniteDiggerNativeCalls, "price proof rejection produces zero native digger calls");
-        Set(action, "Cost", price);
         Program.FinitePurchaseRendered = () => { throw new InvalidOperationException("native digger model committed then refresh failed"); };
         try
         {
-            var result = CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true));
+            var result = CallMain("PurchaseActionDiggers");
             Equal("ModelAppliedRenderFailed", Get(result, "Disposition").ToString(), "native digger exact cost/level commitment survives refresh failure");
+            Equal(true, Property(result, "Verified"), "public digger service captures the real native context and grant");
             Equal(level + 1, Get(diggers[0], "maxLevel"), "native digger maxLevel increases exactly once");
             Equal(price * 4, Get(Character, "realGold"), "native digger gold debit matches exact cost");
-            CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true));
-            Equal(calls + 1, Program.FiniteDiggerNativeCalls, "same native digger purchase never repeats after refresh failure");
+            Equal(calls + 1, Program.FiniteDiggerNativeCalls, "one service pass invokes one native digger purchase");
         }
         finally { Program.FinitePurchaseRendered = null; }
+        var nextPrice = (double)Invoke(controller, "upgradeCost", 0);
+        var nextPurchase = CallMain("PurchaseActionDiggers");
+        Equal(true, Property(nextPurchase, "Verified"), "next ordinary digger pass replans after a committed render failure");
+        Equal(level + 2, Get(diggers[0], "maxLevel"), "fresh digger pass buys the next single native maximum");
+        Equal(price * 4 - nextPrice, Get(Character, "realGold"), "next digger pass spends its fresh native price without a reserve");
+        Equal(calls + 2, Program.FiniteDiggerNativeCalls, "two independent service passes invoke exactly twice");
     }
 
     private static void CheckNativeFiniteCallbackConflicts()
@@ -354,9 +329,12 @@ public static partial class PresetIntegrationChecks
                 var result = CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true, claim));
                 Equal(105d, Get(blood, "rebirthPower"), "actual original native model commits exact NUMBER before conflict/" + change);
                 Equal(false, Property(result, "Verified"), "foreign callback cannot lend fresh dependent authority/" + change);
-                Equal(true, Get(result, "Durable"), "callback conflict retains durable committed/unknown evidence/" + change);
-                CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true, claim));
-                Equal(calls + 1, NativeNumberFlushCalls, "callback conflict never repeats native effect/" + change);
+                Equal(true, Get(result, "Invoked"), "callback conflict still reports this native invocation/" + change);
+                Equal(change != "model", Get(result, "Committed"), "commitment requires proof in the observed native model/" + change);
+                Equal(false, Get(result, "AuthorityCurrent"), "foreign callback revokes current dependent authority/" + change);
+                var stale = CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true, claim));
+                Equal(false, Get(stale, "Invoked"), "stale capture cannot reenter after a foreign callback/" + change);
+                Equal(calls + 1, NativeNumberFlushCalls, "rejected stale callback retry has no native effect/" + change);
                 var energy = CallMain("ResolveExecutionGrant", "healthy-energy", "entry", Domain("Energy"), (Func<bool>)(() => true), null, null);
                 Equal(true, CallMain("ValidateExecutionGrant", energy, Domain("Energy")), "foreign callback leaves independent Energy grant healthy/" + change);
             }
@@ -402,29 +380,81 @@ public static partial class PresetIntegrationChecks
         Equal(seeds + (long)expectedSeeds, Get(ygg, "seeds"), "rejected repeated harvest changes no reward accounting");
     }
 
-    private static void CheckNativeDirtyResultRecovery()
+    private static void CheckNativeActionHistoryIgnored()
     {
-        var plan = SetupInlineStagePlan(); RunVerifiedInline(plan, "native result recovery baseline");
+        foreach (var storage in new[] { "malformed", "locked", "not-directory" })
+        {
+            var plan = SetupInlineStagePlan(); RunVerifiedInline(plan, "native ignored history/" + storage);
+            var blood = Get(Character, "bloodMagic"); Set(Get(Character, "bloodSpells"), "character", Character);
+            Set(blood, "bloodPoints", 10d); Set(blood, "rebirthPower", 0d);
+            var action = NativeNumberLeaf("current-opportunity", 10d, 0d); var id = Get(action, "Identity");
+            var hash = Invoke(Plugin.GetType("NGUInjector.JsonFiles", true), "ComputeRevision", Encoding.UTF8.GetBytes((string)Get(id, "Key")));
+            var directory = Path.Combine((string)Get(MainType, "_dir"), "finite-actions-v1");
+            var path = directory; FileStream held = null;
+            if (storage != "not-directory")
+            {
+                Directory.CreateDirectory(directory); path = Path.Combine(directory, hash + ".json");
+            }
+            File.WriteAllText(path, "{");
+            if (storage == "locked") held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+            var calls = NativeNumberFlushCalls;
+            try
+            {
+                var result = CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true));
+                Equal(true, Get(result, "Invoked"), "retired history cannot withhold current native invocation/" + storage);
+                Equal(true, Property(result, "Verified"), "current native proof ignores retired action files/" + storage);
+                Equal(10d, Get(blood, "rebirthPower"), "ignored history preserves exact NUMBER accounting/" + storage);
+                Set(blood, "bloodPoints", 5d);
+                var next = NativeNumberLeaf("current-opportunity", 5d, 10d);
+                result = CallMain("RunFiniteAction", next, NativeActionGrant(next, () => true));
+                Equal(true, Get(result, "Invoked"), "identity alone is not replay credit or a permanent ban/" + storage);
+                Equal(true, Property(result, "Verified"), "fresh native capture admits the next pass/" + storage);
+                Equal(15d, Get(blood, "rebirthPower"), "second pass adds only its observed current blood/" + storage);
+                Equal(calls + 2, NativeNumberFlushCalls, "two current opportunities invoke exactly twice/" + storage);
+                Equal(false, Get(CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true)), "Invoked"), "old native capture remains stale/" + storage);
+                var rebirths = Get(Get(Character, "stats"), "rebirthNumber");
+                try { Equal(true, CallMain("PrepareFinalRebirthAction"), "current final NUMBER setup ignores retired action storage/" + storage); }
+                finally { CallMain("ReleaseFinalRebirthAction"); }
+                Equal(rebirths, Get(Get(Character, "stats"), "rebirthNumber"), "setup proof alone never engages native rebirth/" + storage);
+            }
+            finally { held?.Dispose(); }
+            Equal("{", File.ReadAllText(path), "retired history is neither rewritten nor deleted/" + storage);
+            if (storage != "not-directory") Equal(1, Directory.GetFiles(directory).Length, "native actions create no new history files/" + storage);
+        }
+    }
+
+    private static void CheckNativeUnverifiedRetry()
+    {
+        var plan = SetupInlineStagePlan(); RunVerifiedInline(plan, "native unverified retry baseline");
         var blood = Get(Character, "bloodMagic"); Set(Get(Character, "bloodSpells"), "character", Character);
         Set(blood, "bloodPoints", 10d); Set(blood, "rebirthPower", 0d);
-        var action = NativeNumberLeaf("recover-first", 10d, 0d); var id = Get(action, "Identity");
-        var hash = Invoke(Plugin.GetType("NGUInjector.JsonFiles", true), "ComputeRevision", Encoding.UTF8.GetBytes((string)Get(id, "Key")));
-        var path = Path.Combine((string)Get(MainType, "_dir"), "finite-actions-v1", hash + ".json"); FileStream held = null;
-        Program.FiniteActionSpellRendered = () => held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var action = NativeNumberLeaf("unverified-current", 10d, 0d); var calls = NativeNumberFlushCalls;
+        Program.FiniteActionSpellRendered = () => {
+            Set(blood, "rebirthPower", 12d);
+            throw new InvalidOperationException("native accounting changed before the callback returned");
+        };
         try
         {
-            var first = CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true));
-            Equal(true, Get(first, "Committed"), "native recovery predecessor is known committed");
-            Equal(false, Get(first, "Durable"), "native recovery predecessor result initially fails storage");
+            var result = CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true));
+            Equal(true, Get(result, "Invoked"), "unverified NUMBER result reports the actual native call");
+            Equal(false, Get(result, "Committed"), "unexpected NUMBER arithmetic cannot fabricate commitment");
+            Equal(false, Property(result, "Verified"), "unverified native arithmetic grants no dependent success");
+            Equal("UnknownOutcome", Get(result, "Disposition").ToString(), "unverified accounting is scoped to this invocation");
         }
-        finally { Program.FiniteActionSpellRendered = null; held?.Dispose(); }
-        var calls = NativeNumberFlushCalls;
-        Set(blood, "bloodPoints", 5d); var next = NativeNumberLeaf("recover-second", 5d, 10d);
-        var result = CallMain("RunFiniteAction", next, NativeActionGrant(next, () => true));
-        Equal(true, Property(result, "Verified"), "bounded storage-only flush admits current native successor");
-        Equal(calls + 1, NativeNumberFlushCalls, "recovery invokes successor once, never predecessor again");
-        Equal(15d, Get(blood, "rebirthPower"), "native recovery preserves exact total accounting");
-        Equal(false, Property(CallMain("RunFiniteAction", action, NativeActionGrant(action, () => true)), "Verified"), "flushed result grants no fresh historical authority");
+        finally { Program.FiniteActionSpellRendered = null; }
+        Set(blood, "bloodPoints", 5d); var next = NativeNumberLeaf("unverified-current", 5d, 12d);
+        var retry = CallMain("RunFiniteAction", next, NativeActionGrant(next, () => true));
+        Equal(true, Property(retry, "Verified"), "fresh current native proof admits the next ordinary pass after uncertainty");
+        Equal(calls + 2, NativeNumberFlushCalls, "uncertain call and fresh retry each invoke once");
+        Equal(17d, Get(blood, "rebirthPower"), "retry preserves observed native accounting without compensation");
+        Equal(false, Directory.Exists(Path.Combine((string)Get(MainType, "_dir"), "finite-actions-v1")), "uncertain native work creates no action journal");
+        var oldCap = (long)Get(Character, "capEnergy"); var oldPool = (long)Get(Character, "curEnergy");
+        Set(Character, "capEnergy", oldCap + 37); Set(Character, "curEnergy", oldPool + 37);
+        Set(Character, "idleEnergy", (long)Get(Character, "idleEnergy") + 37);
+        CallMain("InvalidateExecutionObservations", Domain("Energy")); CallMain("ReconcileCustomResources", plan, false);
+        Equal(0L, Get(Character, "idleEnergy"), "healthy Energy allocates new native capacity after an uncertain blood action");
+        Equal(oldPool + 37 - 7, ((long[])Get(Get(Character, "advancedTraining"), "energy")).Sum()
+            + ((IList)Get(Get(Character, "NGU"), "skills")).Cast<object>().Sum(x => (long)Get(x, "energy")), "healthy lane retains exact grown-pool accounting and basic training");
     }
 
     private static void CheckNativePreparationRetry()
@@ -434,33 +464,37 @@ public static partial class PresetIntegrationChecks
         Program.FinitePreparationSelectionStarting = () => { selections++; throw new InvalidOperationException("native selection input unavailable"); };
         try
         {
-            var first = (string)CallMain("RunFightPrep", plan, false, false, "native retry", null, "explicit-native-prep-1");
+            var first = (string)CallMain("RunFightPrep", plan, false, "native retry", null, "explicit-native-prep-1");
             Check(first.Contains("native selection input unavailable"), "pre-model acquisition failure is reported without continuing");
-            var original = CallMain("ExportFightPreparationCommitment"); var identity = Property(MainInstance, "FightPreparationIdentity");
+            var attempt = Get(MainInstance, "_fightPreparationAttempt"); var identity = Property(MainInstance, "FightPreparationIdentity");
+            var score = Get(attempt, "FightScoreMode"); var requireMaxed = Get(attempt, "RequireMaxedFruit");
             Equal(swaps, Get(typeof(Program), "Swaps"), "failed acquisition performs no native gear write");
             Equal(false, Property(MainInstance, "BossPushRunning"), "failed acquisition cannot mark preparation completed or start fight");
-            var recordBytes = Json(original, "original").ToString();
-            var selectionPath = Path.Combine((string)Get(MainType, "_dir"), "execution-fight-prep-selection.json"); File.WriteAllText(selectionPath, "{}");
+            Equal(false, Get(attempt, "BossStartAttempted"), "selection failure consumes no native boss-start opportunity");
+            var selectionPath = Path.Combine((string)Get(MainType, "_dir"), "execution-fight-prep-selection.json"); File.WriteAllText(selectionPath, "{");
             Set(Get(Character, "rebirthTime"), "totalseconds", 517d); Set(Get(Character, "totalPlaytime"), "totalseconds", 1517d);
             Program.FinitePreparationSelectionStarting = () => selections++;
-            using (var held = new FileStream(selectionPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var held = new FileStream(selectionPath, FileMode.Open, FileAccess.Read, FileShare.None))
             {
-                var second = (string)CallMain("RunFightPrep", plan, false, false, "native retry", null, "explicit-native-prep-1");
-                Check(second.Contains("blocked"), "selected commitment storage failure withholds native setup/fight");
+                var second = (string)CallMain("RunFightPrep", plan, false, "native retry", null, "explicit-native-prep-1");
+                Check(second.Contains("boss push running"), "retired selection storage cannot block current session preparation: " + second);
                 Equal(identity, Property(MainInstance, "FightPreparationIdentity"), "retry preserves original preparation identity");
-                Equal(recordBytes, Json(CallMain("ExportFightPreparationCommitment"), "original").ToString(), "retry preserves original entry/start/window and options");
-                Check(Get(MainInstance, "_fightPreparationSetup") != null, "selected exact intent survives storage failure for retry/review");
-                Equal(swaps, Get(typeof(Program), "Swaps"), "selected intent is persisted before native gear effects");
+                Check(ReferenceEquals(attempt, Get(MainInstance, "_fightPreparationAttempt")), "retry retains the original bounded session attempt");
+                Equal(score, Get(attempt, "FightScoreMode"), "retry preserves the original selected score policy");
+                Equal(requireMaxed, Get(attempt, "RequireMaxedFruit"), "retry preserves the original fruit requirement");
             }
             var selected = Get(MainInstance, "_fightPreparationSetup"); var count = selections;
-            var third = (string)CallMain("RunFightPrep", plan, false, false, "native retry", null, "explicit-native-prep-1");
-            Check(third.Contains("boss push running"), "same identified process resumes after storage recovery: " + third);
-            Equal(count, selections, "storage retry reuses acquired selection without a replacement search");
+            var process = Get(MainInstance, "_bossPushProcess");
+            var third = (string)CallMain("RunFightPrep", plan, false, "native retry", null, "explicit-native-prep-1");
+            Check(third.Contains("boss push running"), "same identified session continues its current process: " + third);
+            Equal(count, selections, "continued session reuses acquired selection without a replacement search");
             Check(ReferenceEquals(selected, Get(MainInstance, "_fightPreparationSetup")), "retry retains the SAME selected setup object");
+            Check(ReferenceEquals(process, Get(MainInstance, "_bossPushProcess")), "continued session admits no replacement boss process");
             Equal(identity, Property(MainInstance, "FightPreparationIdentity"), "successful retry retains original process ID");
-            Equal(recordBytes, Json(CallMain("ExportFightPreparationCommitment"), "original").ToString(), "successful retry does not renew original preparation time/window");
+            Equal("{", File.ReadAllText(selectionPath), "session preparation never rewrites retired selection history");
             Equal(true, Property(MainInstance, "FightPreparationVerified"), "boss request follows real exact native setup verification");
             CallMain("StopBossPush");
+            Equal(false, CallMain("FightPreparationCanRetry", identity), "completed session cannot restart its bounded preparation");
         }
         finally { Program.FinitePreparationSelectionStarting = null; }
     }
@@ -538,7 +572,7 @@ public static partial class PresetIntegrationChecks
         try
         {
             var result = (string)CallMain("RequestMoneyPit");
-            Check(result.Contains("Money Pit Reward"), "model-committed native pit renderer failure still publishes durable reward: " + result
+            Check(result.Contains("Money Pit Reward"), "model-committed native pit renderer failure still publishes verified reward: " + result
                 + "; gold=" + Get(Character, "realGold") + "; total=" + Get(pit, "totalGold") + "; toss=" + Get(pit, "tossCount")
                 + "; renders=" + Program.FinitePitRenderCalls + "; error=" + (Program.LastFinitePitResult == null ? "none" : Get(Program.LastFinitePitResult, "Error")));
             Equal(true, acquired, "native pit selection actually swaps away from farming A");

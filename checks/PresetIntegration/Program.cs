@@ -22,6 +22,8 @@ public static partial class PresetIntegrationChecks
     private static int ResourceTransfers; // Counts actual SetAmount model writes, including exact releases.
     private static int AutoBoostCalls;
     private static Action AutoBoostAction;
+    private static int PresetNativeBoostCalls;
+    private static object PresetNativeBoostResult;
     private static Action<object, object> PresetEvaluationObserver;
     private static bool BlockPresetLevelGain;
     private static bool AllowPresetSettingsSave;
@@ -71,6 +73,19 @@ public static partial class PresetIntegrationChecks
             Invoke(typeof(Program), "Setup");
             Character = Get(typeof(Program), "Character"); Controller = Get(typeof(Program), "Controller"); MainInstance = Get(typeof(Program), "MainInstance");
             PrepareSupport();
+            if (args.Contains("--stage-fight-schedules"))
+            {
+                CheckStandardStageFightFunding();
+                foreach (var automatic in new[] { false, true }) CheckStageEntryPreparationReceiptFailure(automatic);
+                Console.WriteLine("PASS: " + Assertions + " stage fight scheduling assertions. No live game actions.");
+                return 0;
+            }
+            if (args.Contains("--ngu-startup-observation"))
+            {
+                CheckNguStartupObservation();
+                Console.WriteLine("PASS: " + Assertions + " native NGU startup observation assertions. No live game actions.");
+                return 0;
+            }
             if (args.Contains("--retained-farming-rebind"))
             {
                 CheckExecutionRetainedFarmingRebind();
@@ -90,6 +105,30 @@ public static partial class PresetIntegrationChecks
                 Console.WriteLine("PASS: " + Assertions + " native route executor assertions. No live game actions.");
                 return 0;
             }
+            if (args.Contains("--ordinary-tower-authority"))
+            {
+                CheckOrdinaryTowerAuthority();
+                Console.WriteLine("PASS: " + Assertions + " native ordinary-tower authority assertions. No live game actions.");
+                return 0;
+            }
+            if (args.Contains("--post-rebirth-route-handoff"))
+            {
+                CheckPostRebirthRouteHandoff();
+                Console.WriteLine("PASS: " + Assertions + " native post-rebirth route handoff assertions. No live game actions.");
+                return 0;
+            }
+            if (args.Contains("--stage-entry-handoff"))
+            {
+                CheckStageEntryHandoff();
+                Console.WriteLine("PASS: " + Assertions + " native stage entry handoff assertions. No live game actions.");
+                return 0;
+            }
+            if (args.Contains("--weighted-at-handoff"))
+            {
+                CheckWeightedAtHandoff();
+                Console.WriteLine("PASS: " + Assertions + " native weighted AT handoff assertions. No live game actions.");
+                return 0;
+            }
             if (args.Contains("--manual-titan-capacity"))
             {
                 CheckManualTitanCapacityTransition();
@@ -102,15 +141,45 @@ public static partial class PresetIntegrationChecks
                 Console.WriteLine("PASS: " + Assertions + " native capacity lifecycle assertions. No live game actions.");
                 return 0;
             }
+            if (args.Contains("--ordinary-capacity-funding"))
+            {
+                CheckOrdinaryCapacityFunding();
+                Console.WriteLine("PASS: " + Assertions + " native ordinary capacity funding assertions. No live game actions.");
+                return 0;
+            }
             if (args.Contains("--finite-action-cutover"))
             {
                 CheckFiniteActionCutover();
                 Console.WriteLine("PASS: " + Assertions + " native finite-action assertions. No live game actions.");
                 return 0;
             }
+            if (args.Contains("--fruit-capacity"))
+            {
+                CheckFruitCapacity();
+                Console.WriteLine("PASS: " + Assertions + " native fruit capacity assertions. No live game actions.");
+                return 0;
+            }
+            if (args.Contains("--rebirth-fruit-before-boss"))
+            {
+                CheckRebirthFruitBeforeBoss();
+                Console.WriteLine("PASS: " + Assertions + " native rebirth fruit-before-boss assertions. No live game actions.");
+                return 0;
+            }
+            if (args.Contains("--repeatable-purchases"))
+            {
+                CheckRepeatablePurchaseActions();
+                Console.WriteLine("PASS: " + Assertions + " native repeatable-purchase assertions. No live game actions.");
+                return 0;
+            }
+            if (args.Contains("--material-storage"))
+            {
+                CheckExecutionApprovedMaterialStorageRetry();
+                Console.WriteLine("PASS: " + Assertions + " native approved-material storage assertions. No live game actions.");
+                return 0;
+            }
             if (args.Contains("--preparation-ingress-entry"))
             {
-                CheckPreparationIngressAndEntryRegressions();
+                CheckActionPreparationIdentityRegressions();
                 Console.WriteLine("PASS: " + Assertions + " native preparation ingress/entry assertions. No live game actions.");
                 return 0;
             }
@@ -155,6 +224,12 @@ public static partial class PresetIntegrationChecks
             {
                 CheckScheduledRouteHandoff();
                 Console.WriteLine("PASS: " + Assertions + " scheduled preset farming-route handoff assertions. No live game actions.");
+                return 0;
+            }
+            if (args.Contains("--locked-time-machine-fallback"))
+            {
+                CheckLockedTimeMachineFallback();
+                Console.WriteLine("PASS: " + Assertions + " native locked Time Machine fallback assertions. No live game actions.");
                 return 0;
             }
             if (args.Contains("--inline-stage-setup"))
@@ -264,6 +339,7 @@ public static partial class PresetIntegrationChecks
             CheckPresetReviewRetryRegressions();
             CheckPresetFinalReviewRegressions();
             CheckInlineStageSetupRegressions();
+            CheckLockedTimeMachineFallback();
             CheckActiveAutomaticNumberObservation();
             CheckScheduledRouteHandoff();
             CheckAdventureSettingsIsolation();
@@ -271,7 +347,15 @@ public static partial class PresetIntegrationChecks
             CheckExecutionPersistence();
             CheckExecutionCoreCutover();
             CheckRouteExecutorCutover();
+            CheckOrdinaryTowerAuthority();
+            CheckPostRebirthRouteHandoff();
+            CheckStageEntryHandoff();
+            CheckOrdinaryCapacityFunding();
             CheckFiniteActionCutover();
+            CheckFruitCapacity();
+            CheckRebirthFruitBeforeBoss();
+            CheckRepeatablePurchaseActions();
+            CheckNguStartupObservation();
             Console.WriteLine("PASS: " + Assertions + " assertions against compiled preset adapters and native game getters. No live game actions.");
             return 0;
         }
@@ -279,8 +363,8 @@ public static partial class PresetIntegrationChecks
         finally { if (temp != null && Directory.Exists(temp)) Directory.Delete(temp, true); }
     }
 
-    public static void CountPresetSearch(Stopwatch clock) { PresetSearches++; PresetSearchObserver?.Invoke(clock); }
-    public static void CountPresetCapture(Stopwatch clock) { PresetCaptures++; PresetCaptureObserver?.Invoke(clock); }
+    public static void CountPresetSearch(Stopwatch clock) { PresetSearches++; WeightedAtBudget?.Record("plan-entry", clock); PresetSearchObserver?.Invoke(clock); }
+    public static void CountPresetCapture(Stopwatch clock) { PresetCaptures++; WeightedAtBudget?.Record("capture-entry", clock); PresetCaptureObserver?.Invoke(clock); }
     public static void ObservePresetPlanCompleted(Stopwatch clock) { PresetPlanCompletedObserver?.Invoke(clock); }
     public static void CountResourceTransfer() { ResourceTransfers++; }
     public static void CountLegacyAdventureRoute() { LegacyAdventureRoutes++; }
@@ -296,7 +380,24 @@ public static partial class PresetIntegrationChecks
     public static void ObserveAdventureZoneEntryCompleted(int zone) { AdventureZoneEntryCompletedObserver?.Invoke(zone); }
     public static void CountNativeNumberFlush() { NativeNumberFlushCalls++; }
     public static bool PresetLevelGainBlocked() { return BlockPresetLevelGain; }
-    public static void ObservePresetEvaluation(object candidate, object request) { PresetEvaluationObserver?.Invoke(candidate, request); }
+    public static void ObservePresetEvaluation(object candidate, object request)
+    {
+        if (WeightedAtBudget != null && WeightedAtBudget.Evaluations++ == 0)
+            WeightedAtBudget.Events.Add("request-horizon=" + Get(request, "Horizon"));
+        PresetEvaluationObserver?.Invoke(candidate, request);
+    }
+
+    private static void ObserveWeightedAtBudgetReturn(AssemblyDefinition plugin, MethodDefinition method, int clockParameter, bool plan)
+    {
+        foreach (var ret in method.Body.Instructions.Where(x => x.OpCode == OpCodes.Ret).ToArray())
+        {
+            var il = method.Body.GetILProcessor();
+            il.InsertBefore(ret, Instruction.Create(OpCodes.Dup));
+            il.InsertBefore(ret, Instruction.Create(OpCodes.Ldarg, method.Parameters[clockParameter]));
+            il.InsertBefore(ret, Instruction.Create(plan ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0));
+            il.InsertBefore(ret, Instruction.Create(OpCodes.Call, plugin.MainModule.ImportReference(typeof(PresetIntegrationChecks).GetMethod(nameof(ObserveWeightedAtBudgetResult), All))));
+        }
+    }
     public static string AutoBoostFixture() { AutoBoostCalls++; AutoBoostAction?.Invoke(); return "fixture auto boost"; }
     private static Assembly LoadPlugin(string path)
     {
@@ -328,6 +429,12 @@ public static partial class PresetIntegrationChecks
                 plan.Body.GetILProcessor().InsertBefore(ret, Instruction.Create(OpCodes.Call,
                     plugin.MainModule.ImportReference(typeof(PresetIntegrationChecks).GetMethod("ObservePresetPlanCompleted", All))));
             }
+            ObserveWeightedAtBudgetReturn(plugin, plan, 2, true);
+            var deadline = plugin.MainModule.GetType("NGUInjector.Main").Methods.Single(x => x.Name == "LoadoutPresetDeadline");
+            var deadlineEntry = deadline.Body.Instructions[0];
+            deadline.Body.GetILProcessor().InsertBefore(deadlineEntry, Instruction.Create(OpCodes.Ldarg_0));
+            deadline.Body.GetILProcessor().InsertBefore(deadlineEntry, Instruction.Create(OpCodes.Call,
+                plugin.MainModule.ImportReference(typeof(PresetIntegrationChecks).GetMethod(nameof(ObserveWeightedAtBudgetDeadline), All))));
             foreach (var capture in plugin.MainModule.Types.Single(x => x.FullName == "NGUInjector.Main").Methods
                 .Where(x => x.Name == "CaptureLoadoutPresetDefinition" || x.Name == "CaptureLoadoutPresetRouteExecution"))
             {
@@ -335,6 +442,7 @@ public static partial class PresetIntegrationChecks
                 capture.Body.GetILProcessor().InsertBefore(captureEntry, Instruction.Create(OpCodes.Ldarg, capture.Parameters[1]));
                 capture.Body.GetILProcessor().InsertBefore(captureEntry, Instruction.Create(OpCodes.Call,
                     plugin.MainModule.ImportReference(typeof(PresetIntegrationChecks).GetMethod("CountPresetCapture", All))));
+                ObserveWeightedAtBudgetReturn(plugin, capture, 1, false);
             }
             var adventureRoute = plugin.MainModule.Types.Single(x => x.FullName == "NGUInjector.Main")
                 .Methods.Single(x => x.Name == "TryRouteCustomAdventureGoal");
@@ -367,6 +475,27 @@ public static partial class PresetIntegrationChecks
             boost.Body.GetILProcessor().Emit(OpCodes.Call, plugin.MainModule.ImportReference(typeof(PresetIntegrationChecks).GetMethod("AutoBoostFixture", All)));
             boost.Body.GetILProcessor().Emit(OpCodes.Ret);
             typeof(Program).GetMethod("ConfigureFiniteActionPluginFixture", All)?.Invoke(null, new object[] { plugin });
+            ConfigureFruitCapacityPluginFixture(plugin);
+            ConfigureRebirthFruitPluginFixture(plugin);
+            var inventoryLeaf = plugin.MainModule.GetType("NGUInjector.Main").NestedTypes.Single(x => x.Name == "InventoryLeafAction")
+                .Methods.Single(x => x.Name == "Invoke");
+            foreach (var instruction in inventoryLeaf.Body.Instructions)
+            {
+                var call = instruction.Operand as MethodReference;
+                if (call?.DeclaringType.FullName == "InventoryController" && call.Name == "swapHead")
+                    instruction.Operand = new MethodReference("PresetNativeBoostSwapHead", call.ReturnType, call.DeclaringType) { HasThis = true };
+            }
+            var inventoryRun = plugin.MainModule.GetType("NGUInjector.Main").Methods.Single(x => x.Name == "RunInventoryLeaf");
+            var finiteRun = inventoryRun.Body.Instructions.Single(x => (x.Operand as MethodReference)?.Name == "RunFiniteAction");
+            var duplicate = Instruction.Create(OpCodes.Dup); inventoryRun.Body.GetILProcessor().InsertAfter(finiteRun, duplicate);
+            inventoryRun.Body.GetILProcessor().InsertAfter(duplicate, Instruction.Create(OpCodes.Call,
+                plugin.MainModule.ImportReference(typeof(PresetIntegrationChecks).GetMethod(nameof(ObservePresetNativeBoostResult), All))));
+            foreach (var instruction in inventoryRun.Body.Instructions.Where(x => x.Operand is Instruction && x.OpCode.Code.ToString().EndsWith("_S")))
+            {
+                var name = instruction.OpCode.Code.ToString();
+                instruction.OpCode = (OpCode)typeof(OpCodes).GetField(name.Substring(0, name.Length - 2)).GetValue(null);
+            }
+            inventoryRun.Body.MaxStackSize++;
             ConfigureRetainedFarmingPluginFixture(plugin);
             using (var bytes = new MemoryStream()) { plugin.Write(bytes); return Assembly.Load(bytes.ToArray()); }
         }
@@ -688,7 +817,13 @@ public static partial class PresetIntegrationChecks
                 CallMain("RunCustomPlanAutomation", plan);
             }
             else Invoke(MainInstance, "EquipGlobalPreset", args, null);
-            var receipt = Get(MainInstance, "_globalPresetReceipt"); var policy = Get(receipt, "Policy"); var owner = (string)Get(receipt, "Owner");
+            var receipt = Get(MainInstance, "_globalPresetReceipt");
+            if (receipt == null && scheduled) TraceFreshScheduledOverlay(plan, id + "/initial-acquisition");
+            Check(receipt != null, id + " initial base acquisition must produce a real receipt; status=" + CallMain("GetCustomAutomationStatus")
+                + "; resources=" + CallMain("GetResourceCoordinationRuntime") + "; waiting=" + Get(MainInstance, "_globalPresetWaitingReason")
+                + "; failure=" + Get(MainInstance, "_globalPresetFailure") + "; exception=" + Get(MainInstance, "_globalPresetReconcileException")
+                + "; nativeZone=" + Get(Get(Character, "adventure"), "zone") + "; ordinaryZone=" + Get(MainInstance, "_ordinaryRouteZone"));
+            var policy = Get(receipt, "Policy"); var owner = (string)Get(receipt, "Owner");
             Equal(true, CallMain("GlobalPresetReceiptValid", owner), id + " acquired base receipt");
             var historical = Get(MainInstance, "_loadoutPresetSnapshot").ToString();
             var planning = Get(MainType, "_presetPlanningCaptures"); var tables = Get(MainType, "_presetRouteTableEnumerations");
@@ -1315,6 +1450,9 @@ public static partial class PresetIntegrationChecks
             var rules = Array.CreateInstance(Plugin.GetType("NGUInjector.AdventureRule", true), 1); var rule = Activator.CreateInstance(rules.GetType().GetElementType());
             Set(rule, "Enabled", true); Set(rule, "MinPower", (beforePower + afterPower) / 2); Set(rule, "Mode", 2); Set(rule, "Zone", 0); rules.SetValue(rule, 0);
             Set(Get(MainType, "Settings"), "_customAdventureRules", rules);
+            var controller = Get(Character, "adventureController");
+            // Scene dependencies must exist before acquiring the native route witness.
+            Set(Child(controller, "enemyAI"), "player", Child(controller, "playerController"));
             var preview = CallMain("PreviewGlobalPreset", args);
             var task = Property(Json(preview, "adventureTaskKey"), "Value");
             Check(task.ToString().StartsWith("0:-1:-1:"), "preview resolves fallback before native threshold crossing " + autoUpdate);
@@ -1343,11 +1481,27 @@ public static partial class PresetIntegrationChecks
                 var temporaryHead = items[1];
                 Set(temporaryHead, "id", 551); Set(temporaryHead, "type", Get(oldHead, "type")); Set(temporaryHead, "bossRequired", 1); Set(temporaryHead, "removable", true);
                 Set(temporaryHead, "curAttack", 4000f); Set(temporaryHead, "curDefense", 4000f);
-                var controller = Get(Character, "adventureController");
-                Set(Child(controller, "enemyAI"), "player", Child(controller, "playerController"));
                 var claim = CallMain("BeginExecutionClaim", "feedback-temporary", "feedback-1", Domain("Gear, Route"), (Func<bool>)(() => true));
+                var retirement = (Func<bool>)CallMain("CaptureExecutionBaselineRouteRetirement", claim);
+                Equal(true, retirement(), "verified feedback acquisition and refresh retain exact retirement metadata before controller replacement");
+                var objectsBefore = (object[])CallMain("CombatPrepAdventureRouteObjects");
+                var map = CallMain("GlobalPresetAllocationState"); var support = CallMain("GlobalPresetSupportState");
+                var routes = AdventureZoneEntries; var transfers = ResourceTransfers; var swaps = Get(typeof(Program), "Swaps");
+                Set(Child(controller, "enemyAI"), "player", Child(controller, "playerController"));
+                var objectsAfter = (object[])CallMain("CombatPrepAdventureRouteObjects");
+                Equal("4,5", string.Join(",", Enumerable.Range(0, objectsBefore.Length).Where(i => !ReferenceEquals(objectsBefore[i], objectsAfter[i]))), "fixture replaces exactly the acquired player/enemy controller identities");
+                Equal(false, retirement(), "captured retirement witness rejects post-acquisition player/enemy replacement");
+                Equal(false, ((Func<bool>)CallMain("CaptureExecutionBaselineRouteRetirement", claim))(), "fresh witness rejects post-acquisition player/enemy replacement");
                 var temporary = ExactClaimSetup(temporaryHead, "feedback-temporary");
-                Set(temporary, "RouteRetirementAuthorized", CallMain("CaptureExecutionBaselineRouteRetirement", claim));
+                Set(temporary, "RouteRetirementAuthorized", retirement);
+                Throws(() => CallMain("ApplyExecutionClaim", claim, temporary), "current adventure owner", "foreign scene-controller replacement cannot authorize temporary gear");
+                Equal(routes, AdventureZoneEntries, "controller replacement rejection never calls the native route setter");
+                Equal(transfers, ResourceTransfers, "controller replacement rejection never changes native resource accounting");
+                Equal(swaps, Get(typeof(Program), "Swaps"), "controller replacement rejection never changes native gear");
+                Equal(map, CallMain("GlobalPresetAllocationState"), "controller replacement rejection preserves actual allocations");
+                Equal(support, CallMain("GlobalPresetSupportState"), "controller replacement rejection preserves actual support");
+                Set(controller, "playerController", objectsBefore[4]); Set(controller, "enemyAI", objectsBefore[5]);
+                Equal(true, retirement(), "restoring the exact original scene objects requires no witness adoption or rebind");
                 CallMain("ApplyExecutionClaim", claim, temporary);
                 Check(Convert.ToDouble(Invoke(Character, "totalAdvAttack")) > (double)Get(rule, "MinPower"), "temporary owner's native gear retains post-Apply rule match");
                 var library = Get(Get(MainType, "CustomPlanStore"), "<PresetLibrary>k__BackingField");
@@ -1888,12 +2042,15 @@ public static partial class PresetIntegrationChecks
             Equal(searches + 1, PresetSearches, "completed acquisition never searches again on the next tick");
         });
         run("scheduled re-equip after own boost", () => {
-            var plan = SetupCommitBudget(); CallMain("RunCustomPlanAutomation", plan);
+            var plan = SetupCommitBudget(); PreparePresetNativeBoost();
+            var challenger = ((IList)Get(Get(Character, "inventory"), "inventory"))[0];
+            Set(challenger, "capAttack", (float)Get(challenger, "curAttack") + 1000f);
+            CallMain("RunCustomPlanAutomation", plan);
             Equal(true, CallMain("GlobalPresetStageReceiptValid", plan), "boost fixture first acquires its real scheduled policy; "
                 + CallMain("GetCustomAutomationStatus") + "; " + Get(MainInstance, "_globalPresetReconcileException"));
             var oldReceipt = Get(MainInstance, "_globalPresetReceipt"); var calls = AutoBoostCalls;
             var head = Get(Get(Character, "inventory"), "head");
-            AutoBoostAction = () => { Set(head, "curAttack", (float)Get(head, "curAttack") + 1); Invoke(typeof(Program), "RefreshBonuses"); };
+            AutoBoostAction = () => ApplyPresetNativeBoost(head);
             CallMain("RunCustomAutoBoost"); AutoBoostAction = null;
             Equal(calls + 1, AutoBoostCalls, "owned boost boundary actually executes");
             Equal(true, Get(MainInstance, "_customEquipmentApplicationInvalidated"), "own boost really requests AutoUpdate re-equip");
@@ -2020,7 +2177,7 @@ public static partial class PresetIntegrationChecks
         if (failures.Count > 0) throw new Exception("Preset commit budget failures:\n" + string.Join("\n", failures));
     }
 
-    private static object SetupResourceCoordination(bool scheduled, bool autoUpdate, string demand, bool targets = false)
+    private static object SetupResourceCoordination(bool scheduled, bool autoUpdate, string demand, bool targets = false, bool nativeBoost = false)
     {
         Invoke(typeof(Program), "Setup");
         Character = Get(typeof(Program), "Character"); Controller = Get(typeof(Program), "Controller"); MainInstance = Get(typeof(Program), "MainInstance");
@@ -2082,15 +2239,22 @@ public static partial class PresetIntegrationChecks
         Set(MainInstance, "_customRuntimePlanCacheLoadedAt", DateTime.Now);
         if (demand == "iron-pill" || demand == "both")
         {
-            Set(MainInstance, "_customIronPillPlanName", Property(settings, "CustomPlanFile"));
-            Set(MainInstance, "_customIronPillPrepStartedAt", (double)Get(Get(Character, "rebirthTime"), "totalseconds"));
+            Set(plan, "AutoIronPillEnabled", true); Set(plan, "AutoBloodSpellsEnabled", true); Set(plan, "IronPillSaveSeconds", 300);
+            Set(settings, "_customAutoBloodSpellsEnabled", true); Set(settings, "_customIronPillSaveSeconds", 300);
+            Set(Get(Character, "rebirthTime"), "totalseconds", 4000d); Set(Get(Character, "totalPlaytime"), "totalseconds", 5000d);
         }
+        if (nativeBoost) PreparePresetNativeBoost();
         var args = JsonParse("{\"presetId\":\"" + id + "\",\"libraryRevision\":\"" + revision + "\"}");
         if (!targets)
         {
             var preview = CallMain("PreviewGlobalPreset", args);
             var apply = JsonParse(args.ToString().TrimEnd('}') + ",\"previewId\":" + Json(preview, "previewId") + ",\"candidateKey\":\"current\"}");
             Invoke(MainInstance, "ApplyGlobalPreset", apply, null);
+        }
+        if (demand == "iron-pill" || demand == "both")
+        {
+            CallMain("UpdateCustomIronPillPrep", plan);
+            Equal(true, MainType.GetProperty("IronPillBloodReserved", All).GetValue(null), "resource fixture acquires the real bounded Iron Pill saving window");
         }
         // Dashboard acquisition invalidates the selected-plan cache through real settings setters.
         Set(MainInstance, "_customRuntimePlanCache", plan); Set(MainInstance, "_customRuntimePlanCacheName", Property(settings, "CustomPlanFile"));
@@ -2909,6 +3073,7 @@ public static partial class PresetIntegrationChecks
             Invoke(typeof(Program), "Setup");
             Character = Get(typeof(Program), "Character"); Controller = Get(typeof(Program), "Controller"); MainInstance = Get(typeof(Program), "MainInstance");
             PrepareSupport(); SetActiveBeards();
+            PreparePresetNativeBoost();
             Set(MainInstance, "_invManager", Activator.CreateInstance(Plugin.GetType("NGUInjector.Managers.InventoryManager", true), true));
             Set(MainInstance, "_globalPresetPolicies", Activator.CreateInstance(Field(MainInstance, "_globalPresetPolicies").FieldType));
             var settings = Get(MainType, "Settings");
@@ -2950,7 +3115,7 @@ public static partial class PresetIntegrationChecks
             var searches = PresetSearches; var captures = PresetCaptures; var calls = AutoBoostCalls;
             var recalls = Get(typeof(Program), "Recalls"); var swaps = Get(typeof(Program), "Swaps");
             AutoBoostAction = () => {
-                if (changed) { Set(head, "curAttack", (float)Get(head, "curAttack") + 1); Invoke(typeof(Program), "RefreshBonuses"); }
+                if (changed) ApplyPresetNativeBoost(head);
                 if (fail) throw new InvalidOperationException("fixture auto-boost failure");
             };
             try
@@ -3027,6 +3192,7 @@ public static partial class PresetIntegrationChecks
         Invoke(typeof(Program), "Setup");
         Character = Get(typeof(Program), "Character"); Controller = Get(typeof(Program), "Controller"); MainInstance = Get(typeof(Program), "MainInstance");
         PrepareSupport(); SetActiveBeards();
+        PreparePresetNativeBoost();
         Set(MainInstance, "_invManager", Activator.CreateInstance(Plugin.GetType("NGUInjector.Managers.InventoryManager", true), true));
         Set(MainInstance, "_globalPresetPolicies", Activator.CreateInstance(Field(MainInstance, "_globalPresetPolicies").FieldType));
         var settings = Get(MainType, "Settings");
@@ -3071,7 +3237,7 @@ public static partial class PresetIntegrationChecks
         Equal(false, CallMain("GlobalPresetStageReceiptValid", plan), "restored but invalidated stage cannot claim training credit");
         var calls = AutoBoostCalls; var captures = PresetCaptures; var recalls = Get(typeof(Program), "Recalls");
         var allocations = CallMain("GlobalPresetAllocationState");
-        AutoBoostAction = () => { Set(head, "curAttack", (float)Get(head, "curAttack") + 1); Invoke(typeof(Program), "RefreshBonuses"); };
+        AutoBoostAction = () => ApplyPresetNativeBoost(head);
         try
         {
             CallMain("RunCustomAutoBoost");
@@ -3126,6 +3292,49 @@ public static partial class PresetIntegrationChecks
         finally { AutoBoostAction = null; }
     }
 
+    private static void PreparePresetNativeBoost()
+    {
+        Set(Character, "itemInfo", Get(Controller, "itemInfo")); Child(Character, "purchases");
+        ListField(Get(Get(Character, "inventory"), "itemList"), "itemMaxxed", 1000);
+        Set(Child(Character, "allItemList"), "character", Character);
+        ListField(Child(Character, "beastQuest"), "quirkLevel", 300);
+        ListField(Get(Get(Character, "adventure"), "itopod"), "perkLevel", 300);
+        foreach (var name in new[] { "itopod", "beastQuestPerkController" })
+        {
+            var perks = name == "itopod" ? Get(Get(Character, "adventureController"), name) : Get(Character, name);
+            Set(perks, "character", Character); ListField(perks, "effectPerLevel", 300);
+            ListField(perks, name == "itopod" ? "perkDifficultyReq" : "quirkDifficultyReq", 300);
+        }
+        Set(Get(Get(Character, "allChallenges"), "level100Challenge"), "maxCompletions", 10);
+        var head = Get(Get(Character, "inventory"), "head");
+        Set(head, "capAttack", (float)Get(head, "curAttack") + 1000f);
+        Equal(1f, Invoke(Get(Character, "allItemList"), "boostBonus"), "preset boost fixture retains the actual native boost multiplier");
+    }
+
+    private static void ApplyPresetNativeBoost(object equipment, int targetSlot = -1, int boostId = 1, float amount = 1f, string expectedOutcome = "Applied")
+    {
+        var bag = (IList)Get(Get(Character, "inventory"), "inventory");
+        var slot = Enumerable.Range(0, bag.Count).First(i => (int)Get(bag[i], "id") == 0);
+        var boost = Invoke(typeof(Program), "Blank", equipment.GetType());
+        Set(boost, "id", boostId); Set(boost, "removable", true); Set(boost, boostId == 1 ? "capAttack" : "spec1Cap", amount);
+        Set(boost, "type", Enum.Parse(Field(boost, "type").FieldType, boostId == 1 ? "atkBoost" : "specBoost")); bag[slot] = boost;
+        var target = Invoke(Plugin.GetType("NGUInjector.Extensions", true), "GetInventoryHelper", equipment, targetSlot);
+        var calls = PresetNativeBoostCalls; PresetNativeBoostResult = null;
+        var outcome = CallMain("RunInventoryLeaf", Enum.Parse(MainType.GetNestedType("ItemActionKind", All), "Boost"), target);
+        // The unavailable inventory refresh normally rebuilds the native getter cache.
+        Invoke(typeof(Program), "RefreshBonuses");
+        Equal(expectedOutcome, outcome.ToString(), "real inventory leaf reports its verified-model/rescan control outcome");
+        Equal(calls + 1, PresetNativeBoostCalls, "one preset boost invokes its retained native controller once");
+        Equal(0, Get(bag[slot], "id"), "native preset boost consumes its exact donor");
+        Equal(true, Property(PresetNativeBoostResult, "Verified"), "preset material approval requires exact native model and current authority proof");
+    }
+
+    public static void CountPresetNativeBoost() { PresetNativeBoostCalls++; }
+    public static void ObservePresetNativeBoostResult(object result) { PresetNativeBoostResult = result; }
+    public static void PresetNativeBoostHeadRefresh() { Invoke(typeof(Program), "RefreshBonuses"); }
+    public static float PresetNativeBoostRandomValue() => .5f;
+    public static T PresetNativeBoostRandomState<T>() => default(T);
+
     private static void CheckScheduledIronPillReservation()
     {
         var before = Assertions;
@@ -3157,6 +3366,11 @@ public static partial class PresetIntegrationChecks
         Sequence(Child(Character, "beastQuest"), "quirkLevel", 92, 0L);
         Equal(10d, Invoke(ritualController, "bloodAdded"), "Iron Pill fixture uses native productive blood getter");
         Equal(1f, Invoke(ritualController, "currentCost"), "Iron Pill fixture uses native ritual cost getter");
+        Set(Get(Character, "rebirthTime"), "totalseconds", 4000d); Set(Get(Character, "totalPlaytime"), "totalseconds", 5000d);
+        var blood = Get(Character, "bloodMagic"); var spells = Child(Character, "bloodSpells");
+        Set(spells, "character", Character); Set(bloodController, "spells", spells); Set(spells, "adventureSpellCooldown", 3600);
+        Set(Child(blood, "adventureSpellTime"), "totalseconds", 3600d);
+        Set(blood, "bloodPoints", 7d); Set(blood, "rebirthPower", 11d);
 
         var store = Get(MainType, "CustomPlanStore");
         var library = Get(store, "<PresetLibrary>k__BackingField"); var root = Invoke(library, "ReadExternalLibrary");
@@ -3170,7 +3384,7 @@ public static partial class PresetIntegrationChecks
         var stages = Array.CreateInstance(stage.GetType(), 1); stages.SetValue(stage, 0);
         Set(plan, "Stages", stages); Set(plan, "StageSchedulerEnabled", true); Set(plan, "StageLoopStartIndex", -1);
         Set(plan, "AutoActivateFruits", false); Set(plan, "AutoRebirthEnabled", false); Set(plan, "TimeTriggerEnabled", false);
-        Set(plan, "AutoIronPillEnabled", false); // Drive reservation state directly, without spell casting or cooldown UI.
+        Set(plan, "AutoIronPillEnabled", false); // Acquire the unreserved baseline before starting the real saving window.
         CallMain("RunCustomPlanAutomation", plan);
         Equal(true, CallMain("GlobalPresetStageReceiptValid", plan), "zero-blood weighted stage acquires a valid receipt");
         var receipt = Get(MainInstance, "_globalPresetReceipt"); var policy = Get(receipt, "Policy");
@@ -3185,9 +3399,13 @@ public static partial class PresetIntegrationChecks
         var originalMagic = CallMain("GlobalPresetLaneState", false); var originalSupport = CallMain("GlobalPresetSupportState");
         var historical = Get(MainInstance, "_loadoutPresetSnapshot").ToString();
         var searches = PresetSearches; var captures = PresetCaptures; var swaps = Get(typeof(Program), "Swaps");
-        Set(MainInstance, "_customIronPillPlanName", Property(settings, "CustomPlanFile"));
-        Set(MainInstance, "_customIronPillPrepStartedAt", (double)Get(Get(Character, "rebirthTime"), "totalseconds"));
-        Equal(true, MainType.GetProperty("IronPillBloodReserved", All).GetValue(null), "native reservation fields activate Iron Pill overlay");
+        Set(plan, "AutoIronPillEnabled", true); Set(plan, "AutoBloodSpellsEnabled", true); Set(plan, "IronPillSaveSeconds", 300);
+        var flushes = NativeNumberFlushCalls; CallMain("UpdateCustomIronPillPrep", plan);
+        Equal(true, MainType.GetProperty("IronPillBloodReserved", All).GetValue(null), "real acquired saving window activates Iron Pill overlay");
+        Equal(flushes + 1, NativeNumberFlushCalls, "saving entry invokes the actual native NUMBER flush once");
+        Equal(0d, Get(blood, "bloodPoints"), "saving entry spends only the banked native blood");
+        Equal(18d, Get(blood, "rebirthPower"), "saving entry preserves exact native NUMBER arithmetic");
+        Equal("saving", Property(Json(JsonParse(File.ReadAllText(Path.Combine((string)Get(MainType, "_dir"), "iron-pill-window-v1.json"))), "phase"), "Value"), "reservation uses the one bounded saving checkpoint");
         for (var refresh = 0; refresh < 2; refresh++)
         {
             var refreshRecalls = (int)Get(typeof(Program), "Recalls"); var refreshTransfers = ResourceTransfers;
@@ -3760,6 +3978,7 @@ public static partial class PresetIntegrationChecks
                 Set(items[i], "spec1Cap", 10000000f); Set(items[i], "spec2Cur", 0f); Set(items[i], "spec3Cur", 0f);
                 Set(items[i], "curAttack", i == 2 ? 1e20f : 1f); Set(items[i], "curDefense", i == 2 ? 1e20f : 1f);
             }
+            PreparePresetNativeBoost();
             var store = Get(MainType, "CustomPlanStore");
             var library = Activator.CreateInstance(Plugin.GetType("NGUInjector.CustomPlans.PresetLibraryStore", true), All, null,
                 new[] { Get(typeof(Program), "Temp"), Get(store, "_plansDir") }, null);
@@ -3808,8 +4027,8 @@ public static partial class PresetIntegrationChecks
                 var calls = AutoBoostCalls; var boostRecalls = Get(typeof(Program), "Recalls");
                 // Boost the owned item and an inventory challenger so restoration must change the cap decision.
                 AutoBoostAction = () => {
-                    Set(selected, "spec1Cur", 5000000f); Set(challenger, "spec1Cur", 8000000f);
-                    Invoke(typeof(Program), "RefreshBonuses");
+                    ApplyPresetNativeBoost(selected, -1, 27, 1000000f);
+                    ApplyPresetNativeBoost(challenger, 3, 27, 5000000f);
                 };
                 try { CallMain("RunCustomAutoBoost"); }
                 finally { AutoBoostAction = null; }
@@ -3825,7 +4044,9 @@ public static partial class PresetIntegrationChecks
                 Equal(boostRecalls, Get(typeof(Program), "Recalls"), label + " boosting never recalls");
                 Equal(swaps + 1, Get(typeof(Program), "Swaps"), label + " boosting never equips");
                 CallMain("RunManualGlobalPresetRefresh");
-                Equal(searches + 2, PresetSearches, label + " owned boost causes exactly one reoptimization");
+                Equal(searches + 2, PresetSearches, label + " owned boost causes exactly one reoptimization; waiting="
+                    + Get(MainInstance, "_globalPresetWaitingReason") + "; failure=" + Get(MainInstance, "_globalPresetFailure")
+                    + "; exception=" + Get(MainInstance, "_globalPresetReconcileException") + "; resources=" + Get(MainInstance, "_resourceExecutionReason"));
                 Equal(swaps + 2, Get(typeof(Program), "Swaps"), label + " reoptimization performs the new cap swap");
                 Check(ReferenceEquals(challenger, Get(inventory, "head")), label + " re-equip selects the newly strongest cap item");
                 Check(!ReferenceEquals(receipt, Get(MainInstance, "_globalPresetReceipt")), label + " re-equip installs a fresh receipt");
@@ -4420,6 +4641,34 @@ public static partial class PresetIntegrationChecks
         using (var game = AssemblyDefinition.ReadAssembly(path))
         {
             CaptureRetainedFarmingGameMethods(game);
+            var inventory = game.MainModule.GetType("InventoryController");
+            var nativeHead = inventory.Methods.Single(x => x.Name == "swapHead" && x.Parameters.Count == 0);
+            nativeHead.Name = "PresetNativeBoostSwapHead";
+            nativeHead.Body.GetILProcessor().InsertBefore(nativeHead.Body.Instructions[0], Instruction.Create(OpCodes.Call,
+                game.MainModule.ImportReference(typeof(PresetIntegrationChecks).GetMethod(nameof(CountPresetNativeBoost), All))));
+            var bagSwap = inventory.Methods.Single(x => x.Name == "swapItems" && x.Parameters.Count == 0);
+            bagSwap.Body.GetILProcessor().InsertBefore(bagSwap.Body.Instructions[0], Instruction.Create(OpCodes.Call,
+                game.MainModule.ImportReference(typeof(PresetIntegrationChecks).GetMethod(nameof(CountPresetNativeBoost), All))));
+            var headFacade = new MethodDefinition("swapHead", nativeHead.Attributes, nativeHead.ReturnType);
+            headFacade.Body.GetILProcessor().Emit(OpCodes.Ret); inventory.Methods.Add(headFacade);
+            Boundary(game.MainModule, inventory.Methods.Single(x => x.Name == "updateHead"), nameof(PresetNativeBoostHeadRefresh), false);
+            foreach (var instruction in inventory.Methods.Where(x => x.Name == "degradeBoost").SelectMany(x => x.Body.Instructions))
+            {
+                var call = instruction.Operand as MethodReference;
+                if (call?.DeclaringType.FullName != "UnityEngine.Random") continue;
+                if (call.Name == "set_state") { instruction.OpCode = OpCodes.Pop; instruction.Operand = null; }
+                else if (call.Name == "get_value")
+                {
+                    instruction.OpCode = OpCodes.Call;
+                    instruction.Operand = game.MainModule.ImportReference(typeof(PresetIntegrationChecks).GetMethod(nameof(PresetNativeBoostRandomValue), All));
+                }
+                else if (call.Name == "get_state")
+                {
+                    var state = new GenericInstanceMethod(game.MainModule.ImportReference(typeof(PresetIntegrationChecks).GetMethod(nameof(PresetNativeBoostRandomState), All)));
+                    state.GenericArguments.Add(call.ReturnType); instruction.OpCode = OpCodes.Call; instruction.Operand = state;
+                }
+                else throw new InvalidOperationException("Unsupported native preset boost RNG boundary: " + call.FullName);
+            }
             // Read literal thresholds from original native IL, independent of the production table.
             var adventure = game.MainModule.Types.Single(t => t.Name == "AdventureController");
             var manage = adventure.Methods.Single(m => m.Name == "manageFight");
@@ -4547,6 +4796,8 @@ public static partial class PresetIntegrationChecks
                 }
             }
             typeof(Program).GetMethod("ConfigureFiniteActionGameFixture", All)?.Invoke(null, new object[] { game });
+            ConfigureRebirthFruitGameFixture(game);
+            typeof(Program).GetMethod("ConfigureRepeatablePurchaseGameFixture", All)?.Invoke(null, new object[] { game });
             typeof(PresetIntegrationChecks).GetMethod("ConfigureRouteCombatGameFixture", All)?.Invoke(null, new object[] { game });
             ConfigureRetainedFarmingGameFixture(game);
             using (var bytes = new MemoryStream()) { game.Write(bytes); return Assembly.Load(bytes.ToArray()); }

@@ -93,6 +93,10 @@ namespace NGUInjector
             result["state"] = _resourceExecutionState.ToString();
             result["owner"] = _resourceExecutionOwner;
             result["reason"] = _resourceExecutionReason;
+            result["blocked"] = _resourceExecutionState == ResourceExecutionState.NeedsUser
+                || _resourceExecutionState == ResourceExecutionState.Failed
+                || _resourceExecutionState == ResourceExecutionState.Waiting
+                    && _resourceExecutionReason.StartsWith("Preset allocation blocked:", StringComparison.Ordinal);
             result["ironPill"] = CustomIronPillPrepActive();
             result["bloodGoals"] = CustomBloodGoalCatchUpRequested(Settings?.UseCustomRebirthPlan == true ? _customRuntimePlanCache : null);
             if (_presetExecutionBlock != null)
@@ -149,6 +153,7 @@ namespace NGUInjector
                     _retainedPresetSelections?.Remove("dashboard");
                     ClearCustomSustainedFocus(); _globalPresetManualId = null;
                 }
+                if (ServiceSuspendedCombatPrep()) return;
                 ServiceAutomaticRecovery();
                 if (CombatPrepActive)
                 {
@@ -172,7 +177,8 @@ namespace NGUInjector
                 _resourceDemandIdentity = identity;
                 _customLastQuickResourceRefresh = now;
                 if (Settings.UseCustomRebirthPlan && plan == null) plan = LoadRuntimeCustomPlan();
-                if (Settings.UseCustomRebirthPlan && plan?.StageSchedulerEnabled == true) GetProtectedStage(plan);
+                var currentStage = Settings.UseCustomRebirthPlan && plan?.StageSchedulerEnabled == true ? GetProtectedStage(plan) : null;
+                if (currentStage?.Stage.ExecutionMode == (int)CustomStageExecutionMode.Standard && ServiceStageFightSchedule(plan)) return;
                 ServiceExecutionNativeSettings();
                 if (CombatPrepActive) return;
                 if (CustomQuickResourceRefreshBlocked(plan))
@@ -264,7 +270,7 @@ namespace NGUInjector
             return allocation;
         }
 
-        // Developer evidence only: never project caught stacks into status/UI text.
+        // Keep detailed exceptions separate from the concise automation status.
         private string _globalPresetReconcileException;
 
         private bool ReconcileGlobalPreset(string owner, string id, CustomPlanStage stage, int horizon, string reason)
@@ -369,6 +375,7 @@ namespace NGUInjector
             catch (Exception error)
             {
                 _globalPresetReconcileException = error.ToString();
+                LogError("Preset reconciliation: " + owner, error);
                 if (!(error is FormatException) && !(error is SelectedSetupAuthorityException)
                     && !(error is ResourceMutationException) && !(error is SupportApplicationException))
                 {

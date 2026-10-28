@@ -63,14 +63,17 @@ namespace NGUInjector
             {
                 var directory = Path.Combine(Environment.ExpandEnvironmentVariables("%userprofile%/Desktop"), "NGUInjector");
                 Directory.CreateDirectory(directory);
-                _injectorLease = JsonFiles.AcquireInjectorLease(directory);
+                _injectorLease = Loader.AdoptSaveTestLease() ?? JsonFiles.AcquireInjectorLease(directory);
                 if (reference != null && !ReferenceEquals(reference, this))
                     throw new InvalidOperationException("An injector instance is already active.");
                 reference = this;
+                AutomationErrorLog.Clear();
                 _dir = directory;
                 _profilesDir = Path.Combine(_dir, "profiles");
                 _customPlansDir = Path.Combine(_dir, "custom-plans");
+                var saveTestStartupAllowed = InitializeSaveTestStartup();
                 InitializeExternalUi();
+                if (!saveTestStartupAllowed) return;
 
                 var logDir = Path.Combine(_dir, "logs");
                 if (!Directory.Exists(logDir))
@@ -78,10 +81,10 @@ namespace NGUInjector
                     Directory.CreateDirectory(logDir);
                 }
 
-                OutputWriter = new StreamWriter(Path.Combine(logDir, "inject.log")) {AutoFlush = true};
-                LootWriter = new StreamWriter(Path.Combine(logDir, "loot.log")) {AutoFlush = true};
-                CombatWriter = new StreamWriter(Path.Combine(logDir, "combat.log")) {AutoFlush = true};
-                AllocationWriter = new StreamWriter(Path.Combine(logDir, "allocation.log")) {AutoFlush = true};
+                OutputWriter = new StreamWriter(Path.Combine(logDir, "inject.log"), SaveTestInternalRestart) {AutoFlush = true};
+                LootWriter = new StreamWriter(Path.Combine(logDir, "loot.log"), SaveTestInternalRestart) {AutoFlush = true};
+                CombatWriter = new StreamWriter(Path.Combine(logDir, "combat.log"), SaveTestInternalRestart) {AutoFlush = true};
+                AllocationWriter = new StreamWriter(Path.Combine(logDir, "allocation.log"), SaveTestInternalRestart) {AutoFlush = true};
                 PitSpinWriter = new StreamWriter(Path.Combine(logDir, "pitspin.log"), true) {AutoFlush = true};
 
                 if (!Directory.Exists(_profilesDir))
@@ -213,7 +216,7 @@ namespace NGUInjector
                         WishSortPriorities = false,
                         HackAdvance = false,
                         UseCustomRebirthPlan = false,
-                        CustomPlanFile = "default",
+                        CustomPlanFile = "24hr",
                         CustomAdventureEnabled = false,
                         CustomAdventureMode = 0,
                         CustomAdventureMaxItopodDeaths = 3,
@@ -236,7 +239,6 @@ namespace NGUInjector
                 }
 
                 Settings.EnsureGlobalNguWeightsSaved();
-                EnsureStandaloneSelectionLoaded();
                 CustomPlanStore = new CustomPlanStore(_customPlansDir);
                 var customPlanFile = Settings.CustomPlanFile;
                 if (string.IsNullOrEmpty(customPlanFile) || !CustomPlanStore.PlanExists(customPlanFile))
@@ -363,8 +365,9 @@ namespace NGUInjector
                 InvokeRepeating("SetResnipe", 0f,1f);
 
 
-                if (_executionLifecycle == ExecutionLifecycle.Running) RunStartupAutomationRequests();
+                if (_executionLifecycle == ExecutionLifecycle.Running && !SaveTestInternalRestart) RunStartupAutomationRequests();
                 _started = true;
+                CompleteSaveTestStartup();
                 if (ExternalUiEnabled)
                     WriteExternalUiRuntimeSnapshot(0);
             }
@@ -396,6 +399,9 @@ namespace NGUInjector
                 ServiceReviewedExactSetup();
                 _combManager.UpdateFightTimer(Time.deltaTime);
                 ReconcileCustomResources();
+
+                // Test sessions admit mutations only through their generation-fenced commands.
+                if (SaveTestActive) return;
 
                 settingsForm?.UpdateProgressBar(progressPercent);
 
@@ -454,6 +460,7 @@ namespace NGUInjector
 
         private void QuickSave()
         {
+            if (SaveTestActive) throw new InvalidOperationException("Restore the protected original before quicksaving.");
             var backup = CaptureVerifiedLocalSave();
             RequireSafeCloudSave();
             Log("Writing quicksave and json");
@@ -474,6 +481,7 @@ namespace NGUInjector
 
         private void QuickLoad()
         {
+            if (SaveTestActive) throw new InvalidOperationException("Use the dedicated save-test fixture/restore commands.");
             var filename = Path.Combine(_dir, "NGUSave.txt");
             if (!File.Exists(filename))
             {

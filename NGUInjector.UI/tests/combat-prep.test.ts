@@ -69,6 +69,20 @@ describe('combat prep argument validation', () => {
 });
 
 describe('preview safety', () => {
+  it('does not infer planner readiness or permit Start from failed runtime observations', async () => {
+    const { ui, backend, snapshot } = setup(); await ui.refresh(); await ui.previewCombatPrep();
+    snapshot.runtime.combatPrep = { available: false, status: 'error', reason: 'Native phase observation failed.' };
+    await ui.refresh();
+    const state = ui.current();
+    const body = render(CombatPrep, { props: { state, onedit: vi.fn(), onselect: vi.fn(), onpreview: vi.fn(), onstart: vi.fn(), oncancel: vi.fn() } }).body;
+    expect(body).not.toContain('Planner ready');
+    expect(body).toContain('Native phase observation failed.');
+    expect(body).toMatch(/<button[^>]*disabled[^>]*>Start selected<\/button>/);
+    await ui.startCombatPrep();
+    expect(backend.enqueueCommand.mock.calls.map(call => call[1])).toEqual(['previewCombatPrep']);
+    expect(ui.current().error).toContain('fresh injector session');
+    ui.dispose();
+  });
   it('keeps lane opportunity costs separate and requires each explicit known flag', () => {
     const value: JsonObject = { energyResourceFocusEquivalentSeconds: 0, energyResourceFocusCostKnown: true, magicResourceFocusEquivalentSeconds: 1800, magicResourceFocusCostKnown: true, energyFocusEquivalentSeconds: 900, magicFocusEquivalentSeconds: 600 };
     expect(combatResourceCost(value, 'energy')).toBe('0s');

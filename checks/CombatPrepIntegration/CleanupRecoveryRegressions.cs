@@ -34,6 +34,8 @@ public static partial class Program
         object plan, original;
         var run = CleanupRecoveryFixture(out plan, out original, false);
         ControlledCombatPrepClock = (double)Get(MainType, "CombatPrepClock");
+        ScheduledTime((double)Get(run, "DeadlineRebirthSeconds"));
+        Equal(false, CallMain("CombatPrepHasResourceSuccessor", run, "cancelled", "Cancelled by user."), "terminal deadline leaves only the unfinished owned cleanup, not a safe-background successor");
         FailDesiredEnergyPreflight = true;
         var oldWriter = Get(MainType, "OutputWriter");
         using (var log = new MemoryStream())
@@ -43,7 +45,9 @@ public static partial class Program
             {
                 Set(MainType, "OutputWriter", writer);
                 var args = Parse("{\"runId\":\"" + Get(run, "Id") + "\"}");
+                CallMain("EndCombatPrep", "cancelled", "Injector unloaded.", true);
                 var message = (string)CallMain("CancelCombatPrep", args);
+                Equal(false, FailDesiredEnergyPreflight, "unload release reaches and consumes the native resource preflight fault");
                 Equal(true, message.Contains("pending"), "cancel reports pending cleanup rather than releasing ownership");
                 Equal(true, Get(run, "CleanupPending"), "an actual resource preflight failure leaves narrow release pending");
                 Equal(true, Get(run, "NukeTimerOwned"), "nuke lease is retained while equipment cleanup is unfinished");
@@ -74,7 +78,7 @@ public static partial class Program
                 Equal(warnings, ((IList)Get(run, "Warnings")).Count, "repeated identical release warnings remain deduplicated");
                 Set(Controller, "midDrag", false);
                 Set(run, "CleanupLastAttempt", (double)Get(MainType, "CombatPrepClock") - .51);
-                CallMain("TickCombatPrep");
+                CallMain("AdvanceCombatPrep"); // Observe this release before ordinary same-entry continuation starts.
                 Equal(false, Get(run, "CleanupPending"), "cleanup recovers when drag finishes");
                 Equal(false, Get(MainInstance, "CombatPrepCleanupRecoveryRequired"), "safe cleanup clears durable recovery requirement");
                 Equal(false, CallMain("CombatPrepGearMatches", original), "release never restores original gear");
@@ -91,7 +95,9 @@ public static partial class Program
             object plan, original;
             var run = CleanupRecoveryFixture(out plan, out original, false);
             FailDesiredEnergyPreflight = true;
-            CallMain("CancelCombatPrep", Parse("{\"runId\":\"" + Get(run, "Id") + "\"}"));
+            CallMain("EndCombatPrep", "cancelled", "Injector unloaded.", true);
+            Equal(false, FailDesiredEnergyPreflight, "handoff begins from an actually failed resource release");
+            Equal(true, Get(run, "CleanupPending"), "handoff fixture retains narrow current-session release authority");
             Set(Controller, "midDrag", false);
             var phaseGear = CallMain("CombatPrepEquipped"); var swaps = Swaps; var recalls = Recalls; var writes = ResourceCommittedWrites;
             var timer = Get(Get(Character, "arbitrary"), "nukeTimer");

@@ -405,6 +405,8 @@ namespace NGUInjector.Managers
             if (StructureKey(plan) == null || Horizon(plan) < 0 || plan.StageLoopStartIndex < -1
                 || plan.StageLoopStartIndex >= plan.Stages.Length)
                 throw new ArgumentException("A nonempty plan with a valid horizon and loop boundary is required.", "plan");
+            try { plan.ValidateFightSchedules(); }
+            catch (FormatException error) { throw new ArgumentException(error.Message, "plan", error); }
             var weights = 0d;
             foreach (var stage in plan.Stages)
             {

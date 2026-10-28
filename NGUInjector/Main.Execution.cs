@@ -151,10 +151,72 @@ namespace NGUInjector
 
         internal Func<bool> CaptureExecutionBaselineRouteRetirement(ExecutionClaim claim, bool endingAppliedDashboard = false)
         {
+            if (!ExecutionClaimCurrent(claim) || (claim.Domains & ExecutionDomain.Route) == 0) return () => false;
             var receipt = _globalPresetReceipt;
-            return CaptureAppliedPresetRouteRetirement(claim, () => receipt != null
+            var applied = CaptureAppliedPresetRouteRetirement(claim, () => receipt != null
                 && (receipt.Owner == "dashboard" ? endingAppliedDashboard || !Settings.UseCustomRebirthPlan && _globalPresetManualId == receipt.Id
                     : Settings.UseCustomRebirthPlan && _customStageEquipmentKey == receipt.Owner));
+            var ordinary = CaptureOrdinaryRouteRetirement(claim);
+            return () => applied() || ordinary();
+        }
+
+        private Func<bool> CaptureOrdinaryRouteRetirement(ExecutionClaim claim = null)
+        {
+            var route = Character.adventure;
+            var inline = _inlineStageSelection;
+            var receipt = _globalPresetReceipt;
+            var resourcesBaseline = _executionBaselineResourceIntent;
+            // Safe Zone is an allowed retirement effect, not evidence for initial admission.
+            if (!_ordinaryRouteActuated || _ordinaryRouteEpoch?.Matches() != true || route.zone < 0
+                || _ordinaryRouteZone != route.zone || _ordinaryRouteStart != route.itopodStart || _ordinaryRouteEnd != route.itopodEnd
+                || _ordinaryRouteIdle != route.autoattacking || _ordinaryRouteBeast != route.beastModeOn
+                || receipt != null && (receipt.Owner == "dashboard" ? !Settings.UseCustomRebirthPlan && _globalPresetManualId == receipt.Id
+                    : Settings.UseCustomRebirthPlan && receipt.Owner == _customStageEquipmentKey)
+                || Settings.ManualAdventureEnabled || ZoneHelpers.ZoneIsTitan(route.zone)
+                || _questManager != null && _questManager.IsQuesting() >= 0
+                || claim != null && (!ExecutionClaimCurrent(claim) || (claim.Domains & ExecutionDomain.Route) == 0)
+                || _executionClaims.Any(x => !x.Ended && !ReferenceEquals(x, claim) && (x.Domains & ExecutionDomain.Route) != 0)
+                || ExecutionScopeNeedsReview(ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route | ExecutionDomain.NativeSettings)
+                || _resourceSetupExecutor.Application.BlockedLanes != 0
+                || resourcesBaseline != null && !ExecutionBaselineResourceMapMatches(resourcesBaseline)
+                || Settings.UseCustomRebirthPlan && !InlineStageRetirementObservationMatches(inline)) return () => false;
+            var zone = route.zone; var start = route.itopodStart; var end = route.itopodEnd;
+            var attack = route.autoattacking; var beast = route.beastModeOn;
+            var objects = _ordinaryRouteObjects;
+            var epoch = _ordinaryRouteEpoch;
+            var settings = Settings; var permissions = ExecutionRebindPermissions() + ":" + RoutePermissionKey("adventure-route");
+            var generation = _executionGeneration; var entry = ExecutionPersistenceEntry; var stage = _customStageKey;
+            var revisions = (long[])_executionDomainRevisions.Clone();
+            var conflicts = SelectedSetupConflictVersion(Character);
+            var gear = LoadoutManager.CaptureExactLoadout(); var material = gear.Select(x => LoadoutPresetPrimitiveKey(x.equipment)).ToArray();
+            var support = CaptureSupportState().StableKey; var accounting = ResourceWriter.AllocatedResourceKey();
+            var boss = Character.bossController;
+            var context = ResourceWriter.CaptureResourceContext(Character).Concat(SupportObjects()).ToArray();
+            return () => {
+                if (!epoch.Matches() || generation != _executionGeneration || entry != ExecutionPersistenceEntry || stage != _customStageKey
+                    || !revisions.SequenceEqual(_executionDomainRevisions)
+                    || !ReferenceEquals(Settings, settings) || permissions != ExecutionRebindPermissions() + ":" + RoutePermissionKey("adventure-route")
+                    || !ReferenceEquals(receipt, _globalPresetReceipt) || !ReferenceEquals(boss, Character.bossController)
+                    || !ReferenceEquals(resourcesBaseline, _executionBaselineResourceIntent)
+                    || !ReferenceEquals(objects, _ordinaryRouteObjects) || !_ordinaryRouteActuated
+                    || SelectedSetupConflictVersion(Character) != conflicts || _resourceSetupExecutor.Application.BlockedLanes != 0
+                    || claim != null && (!ExecutionClaimCurrent(claim) || !ExecutionClaimSetupOwned(claim))
+                    || _executionClaims.Any(x => !x.Ended && !ReferenceEquals(x, claim) && (x.Domains & ExecutionDomain.Route) != 0)
+                    || Settings.UseCustomRebirthPlan && (!ReferenceEquals(inline, _inlineStageSelection)
+                        || !InlineStageRetirementObservationMatches(inline))
+                    || Character.bossController == null || Character.bossController.isFighting || Character.bossController.nukeBoss
+                    || _questManager != null && _questManager.IsQuesting() >= 0) return false;
+                var current = CombatPrepAdventureRouteObjects();
+                var resources = ResourceWriter.CaptureResourceContext(Character).Concat(SupportObjects()).ToArray();
+                return objects != null && current.Length == objects.Length && !current.Where((x, i) => !ReferenceEquals(x, objects[i])).Any()
+                    && resources.Length == context.Length && !resources.Where((x, i) => !ReferenceEquals(x, context[i])).Any()
+                    && (_ordinaryRouteZone == zone || _ordinaryRouteZone == -1) && _ordinaryRouteStart == start && _ordinaryRouteEnd == end
+                    && _ordinaryRouteIdle == attack && _ordinaryRouteBeast == beast
+                    && (route.zone == zone || route.zone == -1) && route.itopodStart == start && route.itopodEnd == end
+                    && route.autoattacking == attack && route.beastModeOn == beast
+                    && LoadoutManager.ExactLoadoutMatches(gear) && !gear.Where((x, i) => LoadoutPresetPrimitiveKey(x.equipment) != material[i]).Any()
+                    && CaptureSupportState().StableKey == support && ResourceWriter.AllocatedResourceKey() == accounting;
+            };
         }
 
         private Func<bool> CaptureAppliedPresetRouteRetirement(ExecutionClaim claim, Func<bool> selectionCurrent)
@@ -162,6 +224,8 @@ namespace NGUInjector
             if (!ExecutionClaimCurrent(claim) || (claim.Domains & ExecutionDomain.Route) == 0) return () => false;
             var receipt = _globalPresetReceipt;
             var route = Character.adventure;
+            var lazy = receipt != null && receipt.RetirementLazyPurchased && receipt.RetirementLazyEnabled
+                && Character.arbitrary.boughtLazyITOPOD && Character.arbitrary.lazyITOPODOn;
             if (SelectedSetupConflicts.TryGetValue(Character, out var unresolved) && unresolved.Rebirth == Character.stats.rebirthNumber
                 && (unresolved.Gear != null || unresolved.Support != null || unresolved.Route != null
                     || unresolved.NativeSettingsOwner == receipt?.Owner && unresolved.NativeSettings != null)) return () => false;
@@ -169,10 +233,15 @@ namespace NGUInjector
                 || !GlobalPresetNativeTargetsMatch(receipt.Policy.Stage, receipt.Owner)
                 || receipt.Policy.MaterialPersistencePending || receipt.Policy.Items.Where((x, i) => LoadoutPresetPrimitiveKey(x) != receipt.Policy.Material[i]).Any()
                 || !receipt.Policy.ExecutionPreset.Weights.Skip(3).Take(3).Any(x => x > 0)
+                || receipt.RetirementLazyPurchased != Character.arbitrary.boughtLazyITOPOD
+                || receipt.RetirementLazyEnabled != Character.arbitrary.lazyITOPODOn
+                || receipt.RetirementAttack != route.autoattacking || receipt.RetirementBeast != route.beastModeOn
                 || route.zone != receipt.Execution.Zone || route.zone == 1000
-                    && (route.itopodStart != receipt.Execution.Floor || route.itopodEnd != receipt.Execution.Floor)
+                    && (route.itopodStart != route.itopodEnd || route.itopodStart != receipt.Execution.Floor
+                        && (!lazy || route.itopodStart != Math.Min(Character.adventureController.maxItopodLevel(),
+                            Math.Min(Character.calculateBestItopodLevel(), route.highestItopodLevel - 1))))
                 || !LoadoutManager.ExactLoadoutMatches(receipt.Gear) || receipt.Support != GlobalPresetSupportState()
-                || receipt.Allocations != GlobalPresetAllocationState() || _resourceSetupExecutor.Application.BlockedLanes != 0)
+                || !GlobalPresetRetirementAllocationsMatch(receipt) || _resourceSetupExecutor.Application.BlockedLanes != 0)
                 return () => false;
             var zone = route.zone; var start = route.itopodStart; var end = route.itopodEnd; var attack = route.autoattacking;
             var settings = Settings; var settingsKey = DelegatedManualRouteSettingsKey();
@@ -180,25 +249,37 @@ namespace NGUInjector
             var owner = _customStageEquipmentKey; var conflicts = SelectedSetupConflictVersion(Character);
             var gear = LoadoutManager.CaptureExactLoadout(); var material = gear.Select(x => LoadoutPresetPrimitiveKey(x.equipment)).ToArray();
             var support = CaptureSupportState().StableKey; var allocations = ResourceWriter.AllocatedResourceKey();
-            var resourceObjects = ResourceWriter.CaptureResourceContext(Character);
-            var supportObjects = SupportObjects();
+            var resourceObjects = receipt.RetirementResourceObjects;
+            var routeObjects = receipt.RetirementRouteObjects;
+            var revisions = (long[])_executionDomainRevisions.Clone();
+            var targets = Character.advancedTraining.levelTarget.ToArray(); var autoAdvance = Character.advancedTraining.autoAdvance;
+            var beast = route.beastModeOn;
+            var lazyPurchased = Character.arbitrary.boughtLazyITOPOD; var lazyEnabled = Character.arbitrary.lazyITOPODOn;
+            var supportObjects = receipt.RetirementSupportObjects;
             var controller = Character.adventureController; var selector = controller?.zoneSelector;
             var boss = Character.bossController;
             Func<bool> resourceContextOwned = () => {
                 var current = ResourceWriter.CaptureResourceContext(Character);
                 var supportCurrent = SupportObjects();
-                return current.Length == resourceObjects.Length && !current.Where((x, i) => !ReferenceEquals(x, resourceObjects[i])).Any()
-                    && supportCurrent.Length == supportObjects.Length && !supportCurrent.Where((x, i) => !ReferenceEquals(x, supportObjects[i])).Any();
+                var routeCurrent = CombatPrepAdventureRouteObjects();
+                return resourceObjects != null && current.Length == resourceObjects.Length && !current.Where((x, i) => !ReferenceEquals(x, resourceObjects[i])).Any()
+                    && routeObjects != null && routeCurrent.Length == routeObjects.Length && !routeCurrent.Where((x, i) => !ReferenceEquals(x, routeObjects[i])).Any()
+                    && supportObjects != null && supportCurrent.Length == supportObjects.Length && !supportCurrent.Where((x, i) => !ReferenceEquals(x, supportObjects[i])).Any();
             };
+            if (!resourceContextOwned()) return () => false;
             return () => ExecutionClaimCurrent(claim) && ExecutionClaimSetupOwned(claim) && ReferenceEquals(receipt, _globalPresetReceipt)
                 && GlobalPresetEpochMatches(receipt.Policy) && ReferenceEquals(Settings, settings) && settingsKey == DelegatedManualRouteSettingsKey()
                 && generation == _protectedGeneration && entry == _protectedScheduler?.Entry && owner == _customStageEquipmentKey
+                && revisions.SequenceEqual(_executionDomainRevisions)
                 && selectionCurrent()
                 && SelectedSetupConflictVersion(Character) == conflicts && _resourceSetupExecutor.Application.BlockedLanes == 0
                 && ReferenceEquals(route, Character.adventure) && ReferenceEquals(boss, Character.bossController)
                 && ReferenceEquals(controller, Character.adventureController) && ReferenceEquals(selector, controller.zoneSelector)
                 && resourceContextOwned()
                 && (route.zone == zone || route.zone == -1) && route.itopodStart == start && route.itopodEnd == end
+                && route.beastModeOn == beast && Character.advancedTraining.autoAdvance == autoAdvance
+                && targets.SequenceEqual(Character.advancedTraining.levelTarget)
+                && lazyPurchased == Character.arbitrary.boughtLazyITOPOD && lazyEnabled == Character.arbitrary.lazyITOPODOn
                 && route.autoattacking == attack && attack && Character.bossController != null
                 && !Character.bossController.isFighting && !Character.bossController.nukeBoss
                 && LoadoutManager.ExactLoadoutMatches(gear) && !gear.Where((x, i) => LoadoutPresetPrimitiveKey(x.equipment) != material[i]).Any()
@@ -578,6 +659,16 @@ namespace NGUInjector
             return resolved;
         }
 
+        private Func<bool> CaptureSelectedSetupRouteRetirement(SelectedSetupRequirements wanted)
+        {
+            var route = wanted.RouteRetirementAuthorized;
+            var inline = _inlineStageSelection;
+            if (wanted.Claim != null || wanted.ResolvedClaims != null || Character?.adventure == null || Character.adventure.zone < 0
+                || !InlineStageSelectionCurrent(inline) || wanted.Owner != inline.Owner || wanted.Acquisition != inline.Acquisition) return route;
+            var ordinary = CaptureOrdinaryRouteRetirement();
+            return () => route?.Invoke() == true || ordinary();
+        }
+
         internal void ApplyExecutionClaim(ExecutionClaim claim, SelectedSetupRequirements setup)
         {
             if (!ExecutionClaimCurrent(claim)) throw new InvalidOperationException("Setup claim is no longer current.");
@@ -619,13 +710,53 @@ namespace NGUInjector
                 baseline = FocusSetupCurrent(_focusSetupSelection) ? _focusSetupSelection.Desired
                     : ManualAdventureBaselineAuthorized() ? _manualAdventureBaseline : null;
             if (baseline?.Authorized?.Invoke() != true) baseline = claim.ExplicitReturnBaseline;
+            var reconciled = true;
+            var fruitCapacityReturn = false;
             if (baseline != null && baseline.Authorized?.Invoke() == true)
             {
-                BeginPresetSupportAcquisition(baseline.Owner, baseline.Acquisition);
                 var successor = baseline.Copy(); successor.Recall = GearRecallFootprint.None;
                 if ((claim.Domains & ExecutionDomain.Support) != 0 && (baseline.ControlsSupport || baseline.ChangeSupport)) successor.ChangeSupport = true;
                 else if (!successor.ChangeSupport) successor.Support = CaptureSupportState().Selection;
-                ApplySelectedSetup(successor);
+                successor = ResolveExecutionSetup(successor);
+                // Fruit cap gear can grow the real pool while the current baseline
+                // funds it. Return with that successor's authority, never the outgoing
+                // gear-only claim's permissions or a historical allocation snapshot.
+                if (claim.Owner == "fruit-cap" && successor.ResolvedClaims == null && successor.ControlsGear
+                    && !LoadoutManager.ExactLoadoutMatches(successor.Gear))
+                {
+                    var resources = _executionBaselineResourceIntent;
+                    var permitted = baseline.Recall & ((resources?.Energy == true && Settings.ManageEnergy ? GearRecallFootprint.Energy : 0)
+                        | (resources?.Magic == true && Settings.ManageMagic ? GearRecallFootprint.Magic : 0));
+                    var transition = GearOptimizer.PreflightCapacityTransition(successor.Gear, permitted);
+                    if (transition.Failure != null) return false;
+                    if (transition.Recall != GearRecallFootprint.None)
+                    {
+                        var domains = ExecutionDomain.Gear | ExecutionDomain.Support | ExecutionDomain.Route | (ExecutionDomain)(int)transition.Recall;
+                        if (!ReferenceEquals(baseline, _executionBaseline) || ExecutionScopeNeedsReview(domains)
+                            || ExecutionOwnsDomain((ExecutionDomain)(int)transition.Recall)
+                            || resources == null || (resources.Owner != "preset:" + baseline.Owner && resources.Owner != baseline.Owner
+                                && resources.Owner != "inline-stage:" + _customStageKey)
+                            || !ExecutionBaselineResourceMapMatches(resources)) return false;
+                        var context = ResourceWriter.CaptureResourceContext(Character);
+                        var authority = successor.Authorized;
+                        successor.Recall = transition.Recall;
+                        successor.Authorized = () => authority() && ReferenceEquals(baseline, _executionBaseline)
+                            && ReferenceEquals(resources, _executionBaselineResourceIntent) && !ExecutionScopeNeedsReview(domains)
+                            && ResourceWriter.CaptureResourceContext(Character).SequenceEqual(context);
+                        fruitCapacityReturn = true;
+                    }
+                }
+                var changes = successor.RetireRoute || successor.ControlsGear && !LoadoutManager.ExactLoadoutMatches(successor.Gear)
+                    || successor.ChangeSupport && CaptureSupportState().Selection.StableKey != successor.Support.StableKey;
+                // Rejected successor admission is not a failed native mutation. In
+                // particular, a finite action's finally must not starve healthy lanes.
+                reconciled = !changes || Character.bossController != null && !Character.bossController.isFighting && !Character.bossController.nukeBoss
+                    && (Character.adventure.zone == -1 || CaptureSelectedSetupRouteRetirement(successor)?.Invoke() == true);
+                if (reconciled)
+                {
+                    BeginPresetSupportAcquisition(baseline.Owner, baseline.Acquisition);
+                    ApplySelectedSetup(successor);
+                }
             }
             if (claim.ResourcePolicy != null && claim.ReleaseOutcome?.Verified != true
                 && !Settings.UseCustomRebirthPlan && _globalPresetManualId == null && !_customSustainedFocusGoal.HasValue)
@@ -642,8 +773,8 @@ namespace NGUInjector
                 claim.ReleaseOutcome = result;
                 if (!result.Verified) return false;
             }
-            if ((claim.Domains & (ExecutionDomain)7) != 0) { _resourceReconciliationPending = true; ReconcileCustomResources(); }
-            return true;
+            if ((claim.Domains & (ExecutionDomain)7) != 0 || fruitCapacityReturn && reconciled) { _resourceReconciliationPending = true; ReconcileCustomResources(); }
+            return reconciled;
         }
 
         private ExecutionGrant GrantSelectedSetup(SelectedSetupRequirements wanted)

@@ -3,7 +3,6 @@ using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.IO;
-using System.Text;
 using Game = AutoExpGame;
 using static AutoExpProgram;
 
@@ -141,20 +140,22 @@ internal static class IntegrationChecks
             Tests.Add(($"finite/stat {stat} lane grant refusal changes no inputs and can retry", () => GrantRefusal(stat)));
             Tests.Add(($"finite/stat {stat} claim admitted during preflight revokes purchase grant", () => GrantRevoked(stat)));
             Tests.Add(($"finite/stat {stat} changed preflight price refuses native purchase", () => ChangedPrice(stat)));
+            Tests.Add(($"finite/stat {stat} changed preflight hardcap refuses paid saturation", () => ChangedHardcap(stat)));
             Tests.Add(($"finite/stat {stat} newer borrowed input is never overwritten", () => ForeignInput(stat)));
-            Tests.Add(($"finite/stat {stat} committed disk identity never replays", () => CommittedReplay(stat)));
+            Tests.Add(($"finite/stat {stat} fresh identical state is not blocked by purchase history", () => FreshRepeat(stat)));
         }
         foreach (var magic in new[] { false, true })
         {
             Tests.Add(($"finite/{(magic ? "magic" : "energy")} fractional BASE power keeps its fraction", () => FloatBoundary(magic, 1.5f, 1, 1)));
-            Tests.Add(($"finite/{(magic ? "magic" : "energy")} final presentation exception cannot replay purchase", () => PresentationFailure(magic)));
-            Tests.Add(($"finite/{(magic ? "magic" : "energy")} unexpected native currency change blocks all dependent purchases", () => UnknownCurrency(magic)));
+            Tests.Add(($"finite/{(magic ? "magic" : "energy")} final presentation exception stops batch and permits fresh retry", () => PresentationFailure(magic)));
+            Tests.Add(($"finite/{(magic ? "magic" : "energy")} unexpected native currency change stops only the current batch", () => UnknownCurrency(magic)));
+            Tests.Add(($"finite/{(magic ? "magic" : "energy")} native and presentation callbacks cannot reenter an EXP batch", () => ReentrantPurchase(magic)));
         }
         foreach (var lifecycle in new[] { "Quiescing", "Unloaded" })
-            Tests.Add(($"finite/lifecycle {lifecycle} refuses all six purchases", () => LifecycleRefusal(lifecycle)));
+            Tests.Add(($"finite/lifecycle {lifecycle} stops at the first refused purchase", () => LifecycleRefusal(lifecycle)));
         Tests.Add(("finite/native settings claim refuses EXP until released", ClaimRefusal));
-        Tests.Add(("finite/result storage failure withholds successor until durable flush", () => ResultStorage(false)));
-        Tests.Add(("finite/imported invocation after result storage failure never replays", () => ResultStorage(true)));
+        Tests.Add(("finite/unavailable history directory does not gate fresh purchases", () => HistoryIndependent(false)));
+        Tests.Add(("finite/obsolete unknown history does not gate fresh purchases", () => HistoryIndependent(true)));
     }
 
     private static Character Reset(long budget = 13680)
@@ -169,14 +170,14 @@ internal static class IntegrationChecks
         return c;
     }
 
-    private static void Tick(Character c, long[] increments, long remaining, bool rejectedCall = false)
+    private static object Tick(Character c, long[] increments, long remaining, bool rejectedCall = false)
     {
         var before = c.BaseStats();
         var inputs = c.settings.Inputs();
         var unrelated = Unrelated(c);
         var exp = c.realExp;
         PrepareDisplays(c);
-        new Game().Tick();
+        var batch = new Game().Tick();
         Sequence(before.Select((v, i) => v + increments[i]), c.BaseStats(), "exact BASE post-state; finite evidence: "
             + string.Join("; ", NativeBoundary.Results.Select(r => NativeBoundary.Get(r, "Reason") + " / " + NativeBoundary.Get(r, "Error")))
             + string.Join("; ", Game.Errors.Select(e => e.Error.ToString())));
@@ -203,6 +204,7 @@ internal static class IntegrationChecks
             if (exp > remaining)
                 Equal($"Auto use EXP spent {exp - remaining} EXP balancing BASE Energy/Magic stats.", Game.Logs[0], "spend log");
         }
+        return batch;
     }
 
     private static void PrepareDisplays(Character c)
@@ -230,7 +232,7 @@ internal static class IntegrationChecks
             if (boundary == null) continue;
             var calls = c.Calls.Where(call => call.Stat / 3 == lane).ToArray();
             var refreshes = calls.Sum(call => boundary.ThrowBeforeStat == call.Stat ? 0 : 2);
-            Equal(refreshes, boundary.RefreshCalls, "private and durable-commit presentation refreshes, lane " + lane);
+            Equal(refreshes, boundary.RefreshCalls, "private and verified-result presentation refreshes, lane " + lane);
             var visible = c.menuID == (lane == 0 ? 13 : 32);
             Equal(visible ? refreshes : 0, boundary.Displays.Count, "only active EXP menu renders, lane " + lane);
             DisplayMatches(boundary.Display, original, lane, boundary.CostOffset, "final restored display");
@@ -277,7 +279,8 @@ internal static class IntegrationChecks
                 Check(queries[kind].All(q => q.Amount == expected[kind]), "every preflight/native cost query uses the exact amount");
             }
         }
-        Check(NativeBoundary.Results.All(r => (bool)NativeBoundary.Get(r, "Committed") && (bool)NativeBoundary.Get(r, "Durable")), "all six native results durably committed");
+        Equal(6, NativeBoundary.Results.Count, "all six native results observed");
+        Check(NativeBoundary.Results.All(r => (bool)NativeBoundary.Get(r, "Invoked") && (bool)NativeBoundary.Property(r, "Verified")), "all six native purchases have current accounting proof");
     }
 
     private static void RestoredDisplay(int menu)
@@ -368,15 +371,18 @@ internal static class IntegrationChecks
         var c = Reset();
         c.energyPurchases.CostOffset = 1;
         c.magicPurchases.CostOffset = 1;
+        foreach (var stat in Enumerable.Range(0, 6)) NativeBoundary.Call("BuyCustomExpStat", stat, Quantum(stat));
+        Equal(3, c.energyPurchases.CostQueries.Count, "each energy route independently refuses a mismatched native price");
+        Equal(3, c.magicPurchases.CostQueries.Count, "each magic route independently refuses a mismatched native price");
         Tick(c, new long[6], 13680);
-        Equal(3, c.energyPurchases.CostQueries.Count, "every energy cost rejected before mutation");
-        Equal(3, c.magicPurchases.CostQueries.Count, "every magic cost rejected before mutation");
+        Equal(1, c.energyPurchases.CostQueries.Count, "batch stops after the first price disagreement");
+        Equal(0, c.magicPurchases.CostQueries.Count, "a refused energy purchase cannot consume the old magic plan");
     }
 
     private static void BudgetChanges()
     {
         var c = Reset();
-        // Consume between finite leaves, after the first result is durable, not inside its native accounting proof.
+        // Consume between leaves, outside the native accounting proof.
         c.energyPurchases.Presented = () => { if (c.energyPurchases.RefreshCalls == 2) c.realExp = 0; };
         Tick(c, new long[] { 25, 0, 0, 0, 0, 0 }, 0);
         Equal(1, c.Calls.Count, "stale planned budget must not reach another private purchase");
@@ -391,27 +397,38 @@ internal static class IntegrationChecks
         else boundary.ThrowBeforeStat = stat;
         var count = afterMutation ? 6 : stat;
         var increments = Balanced.Select((amount, i) => i < count ? amount : 0).ToArray();
-        Tick(c, increments, 13680 - Prices.Take(count).Sum(), rejectedCall: !afterMutation);
+        var firstBatch = Tick(c, increments, 13680 - Prices.Take(count).Sum(), rejectedCall: !afterMutation);
+        Equal(afterMutation, NativeBoundary.Get(firstBatch, "Completed"), "unknown native results stop only this batch");
+        Equal(afterMutation ? 6 : stat + 1, NativeBoundary.Get(firstBatch, "Invoked"), "batch outcome counts real native attempts");
         Equal(afterMutation ? 6 : stat + 1, c.Calls.Count, "unknown outcome blocks dependents; exact commitment permits subsequent purchases");
         Sequence(Enumerable.Range(0, afterMutation ? 6 : stat + 1), c.Calls.Select(call => call.Stat), "routing through throwing API");
         var result = NativeBoundary.Results[stat];
         Equal(afterMutation ? "ModelAppliedRenderFailed" : "UnknownOutcome", NativeBoundary.Get(result, "Disposition").ToString(), "native exception classification");
         Equal(afterMutation, NativeBoundary.Get(result, "Committed"), "commit follows exact base/currency evidence");
-        Equal(true, NativeBoundary.Get(result, "Durable"), "exception evidence is durable before return");
+        Equal(true, NativeBoundary.Get(result, "Invoked"), "the throwing native leaf was entered exactly once");
         var error = NativeBoundary.Get(result, "Error") as TargetInvocationException;
         Check(error != null, "real reflection exception retained in finite result");
         Equal($"private purchase {(afterMutation ? "after" : "before")} mutation {stat}",
             error.InnerException?.Message, "private purchase exception preserved");
         Equal(count > 0 ? 1 : 0, Game.Logs.Count, "spend-only log follows observed debit, not exception absence");
-        // Recreate the original opportunity, then reload disk evidence. Neither unknown nor committed leaves may replay.
         var calls = c.Calls.Count;
-        var original = new decimal[] { 25, 800000, 20, 5, 160000, 4 };
-        SetBase(c, stat, original[stat]); c.realExp = 13680;
-        NativeBoundary.Set(NativeBoundary.MainInstance, "_finiteActionLedger", null);
-        NativeBoundary.Call("BuyCustomExpStat", stat, Balanced[stat]);
-        Equal(calls, c.Calls.Count, "imported exception evidence refuses repeat native invocation");
-        Equal(original[stat], c.BaseStats()[stat], "refused replay changes no BASE stat");
-        Equal(13680L, c.realExp, "refused replay debits no EXP");
+        boundary.ThrowBeforeStat = boundary.ThrowAfterStat = null;
+        if (!afterMutation)
+        {
+            var batch = new Game().Tick();
+            Equal(true, NativeBoundary.Get(batch, "Completed"), "next ordinary pass replans after the pre-mutation exception");
+            Sequence(new decimal[] { 50, 1600000, 40, 10, 320000, 8 }, c.BaseStats(), "fresh plan completes only the still-missing BASE increments");
+            Equal(0L, c.realExp, "fresh retry conserves the original remaining EXP");
+            Equal(calls + 6 - stat, c.Calls.Count, "retry invokes only the still-unpurchased routes");
+        }
+        else
+        {
+            var current = c.BaseStats()[stat]; c.realExp = Price(stat);
+            NativeBoundary.Call("BuyCustomExpStat", stat, Quantum(stat));
+            Equal(calls + 1, c.Calls.Count, "a fresh post-commit purchase is allowed");
+            Equal(current + Quantum(stat), c.BaseStats()[stat], "post-commit retry starts at the observed BASE value");
+            Equal(0L, c.realExp, "fresh native purchase pays only its current price");
+        }
     }
 
     private static void Randomized()
@@ -527,6 +544,28 @@ internal static class IntegrationChecks
         Sequence(inputs, c.settings.Inputs(), "fresh grant returns borrowed input");
     }
 
+    private static void ChangedHardcap(int stat)
+    {
+        var c = Reset(); var before = c.BaseStats(); var inputs = c.settings.Inputs();
+        NativeBoundary.CostObserved = () => {
+            NativeBoundary.CostObserved = null;
+            var limit = (long)before[stat] + Quantum(stat) - 1;
+            if (stat % 3 == 1) c.CapLimit = limit;
+            else c.PowerBarLimit = limit;
+        };
+        NativeBoundary.Call("BuyCustomExpStat", stat, Quantum(stat));
+        Equal(0, c.Calls.Count, "hardcap drift is refused before the native debit");
+        Equal(false, NativeBoundary.Get(NativeBoundary.Results.Single(), "Invoked"), "changed hardcap cannot enter the native leaf");
+        Sequence(before, c.BaseStats(), "hardcap drift cannot pay for a clamped stat gain");
+        Equal(13680L, c.realExp, "hardcap drift consumes no EXP");
+        Sequence(inputs, c.settings.Inputs(), "hardcap drift never borrows custom inputs");
+        c.CapLimit = c.PowerBarLimit = 1000000000000000000L;
+        NativeBoundary.Call("BuyCustomExpStat", stat, Quantum(stat));
+        Equal(1, c.Calls.Count, "fresh limit permits one native purchase");
+        Equal(before[stat] + Quantum(stat), c.BaseStats()[stat], "fresh-limit retry buys the full requested gain");
+        Equal(13680L - Price(stat), c.realExp, "fresh-limit retry pays the native price");
+    }
+
     private static void ForeignInput(int stat)
     {
         var c = Reset(); var inputs = c.settings.Inputs(); var before = c.BaseStats();
@@ -541,21 +580,20 @@ internal static class IntegrationChecks
         Equal(1, c.Calls.Count, "foreign edit causes no extra invocation");
     }
 
-    private static void CommittedReplay(int stat)
+    private static void FreshRepeat(int stat)
     {
         var c = Reset(); var original = c.BaseStats()[stat]; var inputs = c.settings.Inputs();
         NativeBoundary.Call("BuyCustomExpStat", stat, Quantum(stat));
-        Equal(true, NativeBoundary.Property(NativeBoundary.Results.Single(), "Verified"), "first clean purchase has real current durable proof");
+        Equal(true, NativeBoundary.Property(NativeBoundary.Results.Single(), "Verified"), "first clean purchase has current native proof");
         SetBase(c, stat, original); c.realExp = 13680;
-        NativeBoundary.Set(NativeBoundary.MainInstance, "_finiteActionLedger", null);
         NativeBoundary.Call("BuyCustomExpStat", stat, Quantum(stat));
         var repeat = NativeBoundary.Results.Last();
-        Equal(true, NativeBoundary.Get(repeat, "PreviouslyCommitted"), "disk ledger recognizes exact original opportunity");
-        Equal(false, NativeBoundary.Property(repeat, "Verified"), "history is not fresh authority");
-        Equal(1, c.Calls.Count, "imported commitment cannot invoke twice");
-        Equal(original, c.BaseStats()[stat], "replay changes no BASE value");
-        Equal(13680L, c.realExp, "replay changes no currency");
-        Sequence(inputs, c.settings.Inputs(), "replay borrows no native input");
+        Equal(true, NativeBoundary.Get(repeat, "Invoked"), "fresh state permits a new native invocation, not history deduplication");
+        Equal(true, NativeBoundary.Property(repeat, "Verified"), "the fresh invocation has its own accounting proof");
+        Equal(2, c.Calls.Count, "both independently requested purchases invoke exactly once");
+        Equal(original + Quantum(stat), c.BaseStats()[stat], "fresh identical state receives one current increase");
+        Equal(13680L - Price(stat), c.realExp, "fresh purchase pays its native price");
+        Sequence(inputs, c.settings.Inputs(), "both purchases return their still-owned native inputs");
     }
 
     private static void LifecycleRefusal(string lifecycle)
@@ -563,8 +601,8 @@ internal static class IntegrationChecks
         var c = Reset();
         NativeBoundary.Call("SetExecutionLifecycle", Enum.Parse(NativeBoundary.MainType.GetNestedType("ExecutionLifecycle", NativeBoundary.All), lifecycle));
         Tick(c, new long[6], 13680);
-        Equal(6, NativeBoundary.Results.Count, "all six planned leaves reach real lifecycle refusal");
-        Check(NativeBoundary.Results.All(r => NativeBoundary.Get(r, "Disposition").ToString() == "RejectedUnchanged"), "quiesced core rejects every native leaf");
+        Equal(1, NativeBoundary.Results.Count, "batch stops after the first lifecycle refusal");
+        Equal(false, NativeBoundary.Get(NativeBoundary.Results.Single(), "Invoked"), "quiesced core never enters a native purchase");
     }
 
     private static void ClaimRefusal()
@@ -573,7 +611,7 @@ internal static class IntegrationChecks
         var claim = NativeBoundary.Call("BeginExecutionClaim", "manual-native-input", "autoexp-check", NativeBoundary.Domain("NativeSettings"),
             (Func<bool>)(() => ReferenceEquals(Game.Character?.Native, native) && ReferenceEquals(Game.Character?.settings?.Native, settings)));
         Tick(c, new long[6], 13680);
-        Equal(6, NativeBoundary.Results.Count, "real conflicting claim withholds all six finite actions");
+        Equal(1, NativeBoundary.Results.Count, "real conflicting claim stops the old plan at its first leaf");
         NativeBoundary.Call("EndExecutionClaim", claim, false);
         NativeBoundary.Results.Clear();
         Tick(c, Balanced, 0);
@@ -592,41 +630,36 @@ internal static class IntegrationChecks
         Sequence(inputs, c.settings.Inputs(), "outer presentation exception preserves restored inputs");
         Equal(1, Game.Errors.Count, "outer presentation exception reported once");
         Equal("post-commit presentation failed", Game.Errors[0].Error.Message, "presentation exception remains distinguishable from native invocation");
-        Equal(true, NativeBoundary.Get(NativeBoundary.Results.Last(), "Durable"), "outer rendering occurs only after durable result");
+        Equal(true, NativeBoundary.Get(NativeBoundary.Results.Last(), "Committed"), "outer rendering follows a committed native result");
+        Equal(false, NativeBoundary.Property(NativeBoundary.Results.Last(), "Verified"), "failed presentation cannot authorize the rest of the old batch");
         controller.Presented = null;
-        SetBase(c, stat, before[stat]); c.realExp = 13680;
-        NativeBoundary.Set(NativeBoundary.MainInstance, "_finiteActionLedger", null);
-        NativeBoundary.Call("BuyCustomExpStat", stat, Balanced[stat]);
-        Equal(count, c.Calls.Count, "outer refresh failure never replays the committed native purchase");
+        var batch = new Game().Tick();
+        Equal(true, NativeBoundary.Get(batch, "Completed"), "next normal pass replans from the committed prefix");
+        Sequence(before.Select((v, i) => v + Balanced[i]), c.BaseStats(), "fresh plan does not repeat already committed increments");
+        Equal(0L, c.realExp, "fresh plan spends exactly the still-available budget");
+        Equal(6, c.Calls.Count, "each planned BASE route bought once across both ordinary passes");
     }
 
-    private static void ResultStorage(bool import)
+    private static void HistoryIndependent(bool obsolete)
     {
         var c = Reset(); var before = c.BaseStats(); var inputs = c.settings.Inputs();
-        var identity = NativeBoundary.Call("ActionIdentity", "exp-purchase:0", "auto-exp", before[0].ToString(CultureInfo.InvariantCulture), null);
-        var hash = NativeBoundary.Invoke(NativeBoundary.Plugin.GetType("NGUInjector.JsonFiles", true), "ComputeRevision", Encoding.UTF8.GetBytes((string)NativeBoundary.Get(identity, "Key")));
-        var file = Path.Combine((string)NativeBoundary.Get(NativeBoundary.MainType, "_dir"), "finite-actions-v1", hash + ".json");
-        FileStream held = null;
-        c.energyPurchases.Presented = () => { if (held == null) held = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read); };
-        try
+        var runtime = Path.Combine((string)NativeBoundary.Get(NativeBoundary.MainType, "_dir"), "history-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(runtime); NativeBoundary.Set(NativeBoundary.MainType, "_dir", runtime);
+        var path = Path.Combine(runtime, "finite-actions-v1");
+        if (obsolete)
         {
-            NativeBoundary.Call("BuyCustomExpStat", 0, 1L);
-            var first = NativeBoundary.Results.Single();
-            Equal(true, NativeBoundary.Get(first, "Committed"), "result storage fault does not erase real native commitment");
-            Equal(false, NativeBoundary.Get(first, "Durable"), "result storage fault cannot publish durable success");
-            Equal(before[0] + 1, c.BaseStats()[0], "native model applied exactly once before storage fault");
-            Equal(13530L, c.realExp, "exact native debit before storage fault");
-            Sequence(inputs, c.settings.Inputs(), "input return precedes result persistence");
-            NativeBoundary.Call("BuyCustomExpStat", 0, 1L);
-            Equal(1, c.Calls.Count, "dirty committed result withholds a dependent native successor");
+            Directory.CreateDirectory(path);
+            File.WriteAllText(Path.Combine(path, "obsolete.json"), "{\"state\":\"Unknown\",\"kind\":\"exp-purchase:0\"}");
         }
-        finally { c.energyPurchases.Presented = null; held?.Dispose(); }
-        if (import) NativeBoundary.Set(NativeBoundary.MainInstance, "_finiteActionLedger", null);
+        else File.WriteAllText(path, "history storage is unavailable");
         NativeBoundary.Call("BuyCustomExpStat", 0, 1L);
-        Equal(import ? 1 : 2, c.Calls.Count, "imported invocation blocks replay; in-session durable flush admits only successor");
-        Equal(before[0] + (import ? 1 : 2), c.BaseStats()[0], "recovery never repeats predecessor accounting");
-        Equal(import ? 13530L : 13380L, c.realExp, "recovery has exact currency accounting");
-        Equal(import ? "UnknownOutcome" : "AppliedVerified", NativeBoundary.Get(NativeBoundary.Results.Last(), "Disposition").ToString(), "recovery follows actual durable evidence");
+        NativeBoundary.Call("BuyCustomExpStat", 0, 1L);
+        Equal(2, c.Calls.Count, "history availability cannot admit or withhold either current native request");
+        Equal(before[0] + 2, c.BaseStats()[0], "two fresh purchases each add one BASE power");
+        Equal(13380L, c.realExp, "history-independent purchases conserve native EXP");
+        Sequence(inputs, c.settings.Inputs(), "history-independent purchases return original inputs");
+        if (obsolete) Equal(1, Directory.GetFiles(path).Length, "purchases create no ledger entries");
+        else Equal("history storage is unavailable", File.ReadAllText(path), "purchases do not touch history storage");
     }
 
     private static void UnknownCurrency(bool magic)
@@ -635,17 +668,47 @@ internal static class IntegrationChecks
         var controller = magic ? (Purchases)c.magicPurchases : c.energyPurchases;
         c.menuID = -1;
         controller.AfterPurchase = () => c.realExp = 0;
-        NativeBoundary.Call("BuyCustomExpStat", stat, 1L);
-        Equal(before[stat] + 1, c.BaseStats()[stat], "actual native BASE mutation is observable despite unexpected currency consumer");
+        var batch = new Game().Tick();
+        Equal(false, NativeBoundary.Get(batch, "Completed"), "unknown accounting stops this batch");
+        Equal(stat + 1, NativeBoundary.Get(batch, "Invoked"), "batch outcome includes the unverified native invocation");
+        Equal(stat + 1, c.Calls.Count, "the old plan has no native calls after its unknown leaf");
+        Sequence(before.Select((value, i) => value + (i <= stat ? Balanced[i] : 0)), c.BaseStats(), "only the invoked BASE prefix is retained");
         Equal(0L, c.realExp, "unexpected native currency consumer is retained, not repaired");
         Sequence(inputs, c.settings.Inputs(), "unknown native outcome still returns the owned input field");
-        Equal("UnknownOutcome", NativeBoundary.Get(NativeBoundary.Results.Single(), "Disposition").ToString(), "wrong currency delta cannot claim verified commitment");
-        Equal(false, NativeBoundary.Get(NativeBoundary.Results.Single(), "Committed"), "unknown accounting publishes no committed success");
-        Equal(1, controller.RefreshCalls, "unknown outcome gets no durable-success presentation refresh");
+        Equal("UnknownOutcome", NativeBoundary.Get(NativeBoundary.Results.Last(), "Disposition").ToString(), "wrong currency delta cannot claim verified commitment");
+        Equal(false, NativeBoundary.Get(NativeBoundary.Results.Last(), "Committed"), "unknown accounting publishes no committed success");
+        Equal(1, controller.RefreshCalls, "unknown outcome gets no verified-success presentation refresh");
+        controller.AfterPurchase = null;
         c.realExp = 13680;
-        NativeBoundary.Set(NativeBoundary.MainInstance, "_finiteActionLedger", null);
-        foreach (var next in Enumerable.Range(0, 6)) NativeBoundary.Call("BuyCustomExpStat", next, Quantum(next));
-        Equal(1, c.Calls.Count, "imported unknown currency evidence withholds every NativeSettings-dependent leaf");
-        Equal(13680L, c.realExp, "unknown evidence never spends replacement currency");
+        var calls = c.Calls.Count;
+        batch = new Game().Tick();
+        Equal(true, NativeBoundary.Get(batch, "Completed"), "fresh ordinary pass is not quarantined by earlier unknown accounting");
+        Check(c.Calls.Count > calls, "fresh ordinary pass exercises real native purchases");
+        Equal(13680L - c.Calls.Skip(calls).Sum(x => x.Cost), c.realExp, "fresh retry conserves replacement EXP without repairing the earlier consumer");
+        Equal(c.Calls.Skip(calls).Select(x => x.Stat).Distinct().Count(), c.Calls.Count - calls, "fresh batch invokes each route at most once");
+    }
+
+    private static void ReentrantPurchase(bool magic)
+    {
+        var c = Reset(); var controller = magic ? (Purchases)c.magicPurchases : c.energyPurchases;
+        var callbacks = 0;
+        controller.Presented = () => {
+            if (!NativeBoundary.InAutoExp) return;
+            callbacks++;
+            var nested = new Game().Tick();
+            Equal(false, NativeBoundary.Get(nested, "Completed"), "nested batch refuses during native and outer presentation callbacks");
+            Equal(0, NativeBoundary.Get(nested, "Invoked"), "nested batch enters no native leaves");
+            var leaf = NativeBoundary.Call("BuyCustomExpStat", magic ? 3 : 0, 1L);
+            Equal(false, NativeBoundary.Get(leaf, "Invoked"), "direct leaf reentry cannot bypass the purchase guard");
+        };
+        try
+        {
+            var batch = Tick(c, Balanced, 0);
+            Equal(true, NativeBoundary.Get(batch, "Completed"), "outer batch completes despite refused reentry");
+            Equal(6, NativeBoundary.Get(batch, "Invoked"), "only the six outer native requests are counted");
+            Equal(13680L, NativeBoundary.Get(batch, "Spent"), "batch reports its observed EXP debit");
+            Equal(6, callbacks, "both native and final presentation callbacks exercised for all three lane stats");
+        }
+        finally { controller.Presented = null; }
     }
 }

@@ -97,10 +97,15 @@ namespace NGUInjector
             {
                 // A transient request, never a silent migration of an unreviewed saved preset.
                 request.MagicPriorities = new[] { "RIT" }.Concat(request.MagicPriorities.Where(x => x != "RIT")).ToArray();
-                var bloodImportance = Math.Max(request.Weights[1], request.Weights[2]);
-                request.Weights[2] = bloodImportance > 0 ? bloodImportance : request.Weights.Max();
             }
             return request;
+        }
+
+        private static IEnumerable<PresetCandidate> LoadoutPresetSetupCandidates(IEnumerable<PresetCandidate> candidates, bool reviewed)
+        {
+            // Reviewed funding cannot select replacement gear, even when the best setup cannot be funded.
+            return reviewed ? candidates.Where(x => x.SetupScore.HasValue).OrderByDescending(x => x.SetupScore.Value).Take(1)
+                : candidates.Where(x => x.Feasible && x.Score.HasValue).OrderByDescending(x => x.Score.Value);
         }
 
         private static CustomLoadoutPreset ResolveAdventurePreset(CustomLoadoutPreset preset, out string key, out string label)
@@ -245,10 +250,13 @@ namespace NGUInjector
             // Prep owns weighted NGU spill, not native menu transfers. Snapshot-only setup ranking.
             if (prepSelection)
                 foreach (var row in s.EnergyNgu.Concat(s.MagicNgu)) if (row.Target > 0) row.Target = 0;
-            // Native NGU transfers cannot change an instant total-capacity objective.
-            if (!LoadoutPresetPlanner.CapacityOnly(definition?.Weights)) LoadoutPresetPlanner.RequireSupportedNguAdvance(s);
-            s.Available[0] = s.Available[1] = c.buttons.ngu.interactable;
-            s.Reasons[0] = s.Reasons[1] = "NGU locked.";
+            // Cap-only setups can still fund reviewed NGU fallbacks with finite native targets.
+            if (!LoadoutPresetPlanner.CapacityOnly(definition?.Weights) || definition?.ResourcePrioritiesReviewed == true
+                && (definition.EnergyPriorities.Contains("NGU") || definition.MagicPriorities.Contains("NGU")))
+                LoadoutPresetPlanner.RequireSupportedNguAdvance(s);
+            var canLevel = c.canLevel();
+            s.Available[0] = s.Available[1] = c.buttons.ngu.interactable && canLevel;
+            s.Reasons[0] = s.Reasons[1] = canLevel ? "NGU locked." : "Native level gain is currently disabled.";
             s.Available[2] = c.buttons.bloodMagic.interactable;
             s.Reasons[2] = "Blood Magic locked.";
             if (s.Available[2])
@@ -315,6 +323,8 @@ namespace NGUInjector
                 for (var i = 3; i < 6; i++) { s.Available[i] = false; s.Reasons[i] = "Farming is unavailable while Beast Mode is on; turn it off and preview again."; }
             if (energyWeights.All(x => x == 0)) capture.Warnings.Add("All energy NGU targets excluded by zero weights.");
             if (magicWeights.All(x => x == 0)) capture.Warnings.Add("All magic NGU targets excluded by zero weights.");
+            // Keep the acquired OS even when optional WAN capture is locked or leveling is paused.
+            if (c.wandoos98 != null) s.WandoosOs = (int)c.wandoos98.os;
             if (definition != null) CapturePresetActivities(s, definition);
             if (capture.Stage != null)
             {
@@ -1107,6 +1117,7 @@ namespace NGUInjector
                 var coordinator = reference;
                 var applying = coordinator._globalPresetApplyingPolicy;
                 var applyingOwner = applying?.Owner;
+                var fightEntry = coordinator._stageFightSchedule?.Entry;
                 var receipt = coordinator._globalPresetReceipt;
                 var application = coordinator._presetResources = coordinator._resourceSetupExecutor.Application;
                 _presetResourceOutcome = coordinator.ReconcileResourceSetup(new ResourceSetupIntent {
@@ -1129,6 +1140,11 @@ namespace NGUInjector
                 _presetResourcePresentationPending = application.PresentationPending;
                 _presetResourcePresentationCharacter = _presetResourcePresentationPending ? c : null;
                 if (!_presetResourceOutcome.Verified) throw new ResourceMutationException(_presetResourceOutcome);
+                if (candidate.ControlsEnergy && Settings.ManageEnergy
+                    && fightEntry == coordinator._stageFightSchedule?.Entry
+                    && (receipt?.Owner == coordinator.ProtectedPresetOwner || applyingOwner == coordinator.ProtectedPresetOwner)
+                    && coordinator.ExecutionBaselineResourceMapMatches(new ResourceSetupIntent { Desired = desired, Energy = true }))
+                    coordinator.ObserveStageFightAugmentFunding(desired);
                 if (receipt != null && candidate.ControlsMagic && Settings.ManageMagic)
                 {
                     var temporary = candidate.Blood > 0 && !GlobalPresetHasMagicObjective(receipt.Policy);

@@ -153,7 +153,7 @@ namespace NGUInjector
         private void RouteCombatPrepAdventure()
         {
             var run = _combatPrepRun;
-            if (run?.Automatic != true || run.Status != "running" || run.CleanupPending || run.Retired
+            if (run?.Automatic != true || run.Status != "running" || run.CleanupPending || run.Retired || run.FightSuspended || run.FightResuming
                 || run.PhaseIndex < 0 || !run.Inputs.WeightedProfiles
                 || !ReferenceEquals(reference, this) || !AutomaticCombatPrepOwnerMatches(run)) return;
             if (SelectedSetupConflicts.TryGetValue(Character, out var conflict) && conflict.Rebirth == Character.stats.rebirthNumber && conflict.Route != null)

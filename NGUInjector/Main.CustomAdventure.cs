@@ -24,6 +24,8 @@ namespace NGUInjector
 
         private bool TryRouteCustomAdventureGoal()
         {
+            if (!ReferenceEquals(reference, this) || _unloaded) return false;
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
             if (ServiceCustomAdventureGoldPushCleanup()) return true;
             if (!Settings.CustomAdventureEnabled)
             {
@@ -85,7 +87,6 @@ namespace NGUInjector
 
                         _customAdventureGoldPushZone = nextZone;
                         _customAdventureGoldPushEnteredZone = false;
-                        PersistRouteExecutionCommitments();
                         if (Character.adventure.zone != -1)
                             _combManager.MoveToZone(-1, RouteProcessGrant(_customAdventureGoldProcess), () => ObserveRouteProcess(_customAdventureGoldProcess));
                         Log($"Custom adventure gold push died in {ZoneName(failedZone)}; recovering and trying {ZoneName(nextZone)} with gold/combat gear.");
@@ -172,6 +173,8 @@ namespace NGUInjector
 
         private bool RouteConfiguredAdventureGoal(string note)
         {
+            if (!ReferenceEquals(reference, this) || _unloaded) return false;
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return false;
             if (_customAdventureGoldPushActive) CancelCustomAdventureGoldPush("configured adventure route takeover");
             if (_manualTitanActive) return false;
             if (!Settings.CustomAdventureEnabled)
@@ -255,9 +258,12 @@ namespace NGUInjector
 
         private void RouteCustomItopod(string reason)
         {
-            PrepareOptimalItopodFloor();
+            var grant = ObserveRouteGrant(1000);
+            // Unavailable admission is a blocked route; losing an admitted grant still fails below.
+            if (!ValidateExecutionGrant(grant, ExecutionDomain.Route | ExecutionDomain.NativeSettings)) return;
+            PrepareOptimalItopodFloor(grant);
             SetCustomAutomationStatus($"Adventure: ITOPOD optimal floor. {reason}.");
-            _combManager.IdleZone(1000, false, false);
+            _combManager.IdleZone(1000, false, false, grant);
         }
 
         private static int FindMatchingAdventureRule(double power, double toughness, double regen)
@@ -311,15 +317,16 @@ namespace NGUInjector
             return state;
         }
 
-        private static void PrepareOptimalItopodFloor()
+        private static void PrepareOptimalItopodFloor(ExecutionGrant grant)
         {
+            if (Character.bossController.isFighting || Character.bossController.nukeBoss) return;
             var owner = reference;
-            var grant = owner.ObserveRouteGrant(1000);
             var controller = Character.adventureController;
             var optimal = ZoneHelpers.CalculateBestItopodLevel();
             var start = Character.adventure.itopodStart; var end = Character.adventure.itopodEnd;
             var startText = controller.itopodStartInput.text; var endText = controller.itopodEndInput.text;
             Action require = () => { if (!owner.ValidateExecutionGrant(grant, ExecutionDomain.Route | ExecutionDomain.NativeSettings)
+                || Character.bossController.isFighting || Character.bossController.nukeBoss
                 || Character.adventure.itopodStart != start || Character.adventure.itopodEnd != end
                 || controller.itopodStartInput.text != startText || controller.itopodEndInput.text != endText)
                 throw new InvalidOperationException("Optimal tower settings authority changed."); };
@@ -331,6 +338,7 @@ namespace NGUInjector
             if (!owner.ValidateExecutionGrant(grant, ExecutionDomain.Route | ExecutionDomain.NativeSettings)
                 || Character.adventure.itopodStart != optimal || Character.adventure.itopodEnd != optimal)
                 throw new InvalidOperationException("Optimal tower floor did not verify.");
+            owner._ordinaryRouteStart = optimal; owner._ordinaryRouteEnd = optimal;
         }
 
         private static bool TimeMachineUnlockedForCustomAdventure()
@@ -398,7 +406,6 @@ namespace NGUInjector
             _customAdventureGoldPushHighestZone = -1;
             _customAdventureGoldProcess = null;
             _customAdventureGoldPushCleanupReason = null;
-            PersistRouteExecutionCommitments();
             Log($"Custom adventure gold push cancelled for {reason}.");
         }
     }

@@ -124,7 +124,7 @@ public sealed class NativeBoundary : IDisposable
             }
             Set(FiniteFixture, "Temp", temp);
             Set(FiniteFixture, "FinitePurchaseRendered", (Action)Presentation);
-            Console.WriteLine("AutoExp uses compiled Main.CustomExp, Main.PurchaseActions, Main.FiniteActions, execution core and disk ledger; native game purchases. No live actions.");
+            Console.WriteLine("AutoExp uses compiled Main.CustomExp, Main.PurchaseActions, Main.FiniteActions and execution grants; native game purchases without disk-history admission. No live actions.");
             return lifetime;
         }
         catch { lifetime.Dispose(); throw; }
@@ -248,11 +248,12 @@ internal sealed class AutoExpGame
     internal static ExpSettings Settings;
     internal static readonly List<string> Logs = new();
     internal static readonly List<(string Context, Exception Error)> Errors = new();
-    internal void Tick()
+    internal object Tick()
     {
+        var previous = NativeBoundary.InAutoExp;
         NativeBoundary.InAutoExp = true;
-        try { NativeBoundary.Call("RunCustomAutoExp"); }
-        finally { NativeBoundary.InAutoExp = false; }
+        try { return NativeBoundary.Call("RunCustomAutoExp"); }
+        finally { NativeBoundary.InAutoExp = previous; }
     }
 }
 

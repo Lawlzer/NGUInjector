@@ -4,7 +4,7 @@ import { stagePresets } from './fixtures/activity-policy';
 function snapshot(patch: Record<string, unknown> = {}) {
   const active = typeof patch.activeStageIndex === 'number' ? patch.activeStageIndex : 2;
   return {
-    available: true, status: 'running', planName: '8/15/30m NUMBER', planVersion: 17,
+    available: true, status: 'running', planName: '8/15/30m NUMBER', planVersion: 18,
     schedulerMode: 'stages', activeStageIndex: 2, stageProgress: .25, elapsedSeconds: 675,
     stageElapsedSeconds: 75, cycle: 2, repeating: true, loopStartIndex: 5,
     stages: ([

@@ -21,9 +21,13 @@ namespace NGUInjector
             assert(defaults.Count == 12 && defaults["SupportMode"].Value == "planned", "ratio-free defaults use planned support");
             assert(defaults["Weights"].Count == 14 && defaults["Weights"].Children.Skip(12).All(weight => weight.AsDouble == 0), "fourteen-lane defaults leave caps opt-in");
             assert(!defaults.Linq.Any(field => field.Key == "EnergyNguWeights" || field.Key == "MagicNguWeights"), "preset definitions have no NGU ratio defaults");
+            assert(!defaults.Linq.Any(field => new[] {"ResourcePrioritiesReviewed", "EnergyPriorities", "MagicPriorities"}.Contains(field.Key)),
+                "resource priorities are not global defaults");
             assert(!defaults.Linq.Any(field => field.Key == "BeardRotation" || field.Key == "HorizonSeconds") && defaults["BeardPriority"].Count == 0,
                 "defaults do not change legacy beard identity or add a horizon");
             var minimal = CustomLoadoutPreset.Parse(JsonFiles.ParseObject("{\"Id\":\"minimal\",\"Name\":\"Minimal\"}")).ToJson();
+            assert(!minimal.Linq.Any(field => new[] {"ResourcePrioritiesReviewed", "EnergyPriorities", "MagicPriorities"}.Contains(field.Key)),
+                "resource priorities stay opt-in for legacy normalization");
             foreach (var field in defaults)
                 assert(minimal[field.Key].ToString() == field.Value.ToString(), "model default parity: " + field.Key);
             defaults["Weights"][0] = 99;
@@ -61,13 +65,13 @@ namespace NGUInjector
                 && actual[6] == mixed[0] * .2 && actual[7] == mixed[1] * .2, "mixed normalized objectives retain additive digger formula");
 
             var seeds = PresetDefinitions.SeedRows();
-            assert(seeds.Count == 18, "shared catalog ships exactly eighteen seeds");
+            assert(seeds.Count == 17, "shared catalog ships exactly seventeen seeds");
             foreach (var i in new[] {0, 1, 2, 6, 7, 8, 9, 10, 11, 12, 13})
             {
                 var seed = seeds.Children.Single(row => row["Id"].Value == "builtin_" + definitions["objectives"][i]["key"].Value);
                 assert(seed["Name"].Value == definitions["objectives"][i]["seedName"].Value, "specialist seed identity " + i);
             }
-            assert(seeds.Children.Select(row => row["Id"].Value).Distinct().Count() == 18, "seed IDs are unique");
+            assert(seeds.Children.Select(row => row["Id"].Value).Distinct().Count() == 17, "seed IDs are unique");
             foreach (var i in new[] {12, 13})
             {
                 var id = "builtin_" + PresetDefinitions.ObjectiveKeys[i];
@@ -84,10 +88,35 @@ namespace NGUInjector
             var dynamicSeed = seeds.Children.Single(row => row["Id"].Value == "builtin_adventureDynamic");
             assert(dynamicSeed["Name"].Value == "adventure-dynamic" && dynamicSeed["AdventureDynamicWeight"].AsDouble == 1
                 && dynamicSeed["Weights"].Count == 14 && dynamicSeed["Weights"].Children.All(weight => weight.AsDouble == 0), "dynamic seed has fourteen zero fixed lanes and unit dynamic weight");
-            assert(!seeds.Children.Any(row => new[] {"builtin_pp", "builtin_boosts", "builtin_zone"}.Contains(row["Id"].Value)), "fresh catalog replaces only the three farming seeds");
-            assert(seeds[12]["Weights"].ToString() == "[0,0,1,0,0,0,0,1,0,0,0,0,0,0]"
-                && seeds[13]["Weights"].ToString() == "[0,0,1,0,0,0,0,0,0,1,0,0,0,0]"
-                && seeds[14]["Weights"].ToString() == "[0,0,0,0,0,0,0,0,1,1,0,0,0,0]", "composite seeds retain blood/AT/Wandoos objective semantics");
+            assert(!seeds.Children.Any(row => new[] {"builtin_pp", "builtin_boosts", "builtin_zone", "builtin_balanced"}.Contains(row["Id"].Value)), "fresh catalog excludes historical farming and Balanced seeds");
+            assert(seeds.Children.Single(row => row["Id"].Value == "builtin_augmentsBlood")["Weights"].ToString() == "[0,0,1,0,0,0,0,1,0,0,0,0,0,0]"
+                && seeds.Children.Single(row => row["Id"].Value == "builtin_atAdventure")["Weights"].ToString() == "[0,0,1,0,0,0,0,0,0,1,0,0,0,0]"
+                && seeds.Children.Single(row => row["Id"].Value == "builtin_atWandoos")["Weights"].ToString() == "[0,0,0,0,0,0,0,0,1,1,0,0,0,0]", "composite seeds retain blood/AT/Wandoos objective semantics");
+            foreach (var row in definitions["presets"].Children.Concat(new[] {definitions["newPreset"]}))
+            {
+                var energy = "NGU,WAN,TM,AUG,AT"; var magic = "NGU,RIT,WAN,TM";
+                switch (row["Id"].Value)
+                {
+                    case "builtin_timeMachine": energy = "TM,NGU,WAN,AUG,AT"; magic = "TM,RIT,NGU,WAN"; break;
+                    case "builtin_augments": energy = "AUG,NGU,WAN,TM,AT"; break;
+                    case "builtin_blood": magic = "RIT,NGU,WAN,TM"; break;
+                    case "builtin_wandoos": energy = "WAN,NGU,TM,AUG,AT"; magic = "WAN,RIT,NGU,TM"; break;
+                    case "builtin_advancedTraining": energy = "AT,NGU,WAN,TM,AUG"; break;
+                    case "builtin_augmentsBlood": energy = "AUG,NGU,WAN,TM,AT"; magic = "RIT,NGU,WAN,TM"; break;
+                    case "builtin_atAdventure": energy = "AT,NGU,WAN,TM,AUG"; magic = "RIT,NGU,WAN,TM"; break;
+                    case "builtin_atWandoos": energy = "AT,WAN,NGU,TM,AUG"; magic = "RIT,NGU,TM"; break;
+                }
+                assert(row["ResourcePrioritiesReviewed"].IsBoolean && row["ResourcePrioritiesReviewed"].AsBool
+                    && row["EnergyPriorities"].Children.Select(token => token.Value).SequenceEqual(energy.Split(','))
+                    && row["MagicPriorities"].Children.Select(token => token.Value).SequenceEqual(magic.Split(',')), "explicit reviewed catalog lane order: " + row["Id"].Value);
+            }
+            foreach (var prior in BeforeResourcePriorityRows(true, true).Children)
+            {
+                var current = JsonFiles.ParseObject(seeds.Children.Single(row => row["Id"].Value == prior["Id"].Value).ToString());
+                foreach (var field in new[] {"ResourcePrioritiesReviewed", "EnergyPriorities", "MagicPriorities"}) current.Remove(field);
+                assert(current.Count == prior.Count && prior.Linq.All(field => current[field.Key].ToString() == field.Value.ToString()),
+                    "catalog setup, weights and all non-priority fields remain exactly unchanged: " + prior["Id"].Value);
+            }
             foreach (var row in definitions["presets"].Children.Concat(new[] {definitions["newPreset"]}))
                 assert(!row.Linq.Any(field => field.Key == "BeardPriority" || field.Key == "BeardRotation"), "raw definitions do not duplicate authoritative beard policy");
             foreach (var row in seeds.Children.Concat(new[] {PresetDefinitions.NewPresetJson()}))
@@ -106,6 +135,46 @@ namespace NGUInjector
                 && !fresh.Linq.Any(field => field.Key == "Id"), "new preset uses All NGU ratios and leaves ID generation to caller");
             fresh["BeardRotation"][0] = 6;
             assert(PresetDefinitions.NewPresetJson()["BeardRotation"].ToString() == policy["optionalBeards"].ToString(), "new preset beard pools are deep clones");
+        }
+
+        internal static JSONArray BeforeResourcePriorityRows(bool full, bool explicitBeards)
+        {
+            // Independent historical fixture, not reconstructed from the live catalog or migration matcher.
+            var rows = JSON.Parse(@"[
+                {""Id"":""builtin_energyNgu"",""Name"":""Energy NGU"",""Weights"":[1,0,0,0,0,0,0,0,0,0,0,0]},
+                {""Id"":""builtin_magicNgu"",""Name"":""Magic NGU"",""Weights"":[0,1,0,0,0,0,0,0,0,0,0,0]},
+                {""Id"":""builtin_blood"",""Name"":""Blood"",""Weights"":[0,0,1,0,0,0,0,0,0,0,0,0]},
+                {""Id"":""builtin_adventureDynamic"",""Name"":""adventure-dynamic"",""AdventureDynamicWeight"":1,""Weights"":[0,0,0,0,0,0,0,0,0,0,0,0]},
+                {""Id"":""builtin_timeMachine"",""Name"":""Time Machine"",""Weights"":[0,0,0,0,0,0,1,0,0,0,0,0]},
+                {""Id"":""builtin_augments"",""Name"":""Augments"",""Weights"":[0,0,0,0,0,0,0,1,0,0,0,0]},
+                {""Id"":""builtin_wandoos"",""Name"":""Wandoos"",""Weights"":[0,0,0,0,0,0,0,0,1,0,0,0]},
+                {""Id"":""builtin_advancedTraining"",""Name"":""Advanced Training"",""Weights"":[0,0,0,0,0,0,0,0,0,1,0,0]},
+                {""Id"":""builtin_adventurePower"",""Name"":""Adventure Power"",""Weights"":[0,0,0,0,0,0,0,0,0,0,1,0]},
+                {""Id"":""builtin_adventureToughness"",""Name"":""Adventure Toughness"",""Weights"":[0,0,0,0,0,0,0,0,0,0,0,1]},
+                {""Id"":""builtin_allNgu"",""Name"":""All NGU"",""Weights"":[1,1,0,0,0,0,0,0,0,0,0,0]},
+                {""Id"":""builtin_augmentsBlood"",""Name"":""Augments + Blood"",""Weights"":[0,0,1,0,0,0,0,1,0,0,0,0]},
+                {""Id"":""builtin_atAdventure"",""Name"":""AT Adventure"",""Weights"":[0,0,1,0,0,0,0,0,0,1,0,0],""AdvancedTrainingWeights"":[1,1,0,0,0]},
+                {""Id"":""builtin_atWandoos"",""Name"":""AT Wandoos"",""Weights"":[0,0,0,0,0,0,0,0,1,1,0,0],""AdvancedTrainingWeights"":[0,0,0,1,1]},
+                {""Id"":""builtin_adventureStats"",""Name"":""Adventure Stats"",""Weights"":[0,0,0,0,0,0,0,0,0,0,1,1]},
+                {""Id"":""builtin_energyCap"",""Name"":""Energy Cap"",""Weights"":[0,0,0,0,0,0,0,0,0,0,0,0,1,0],""AutoUpdate"":true,""SupportMode"":""current""},
+                {""Id"":""builtin_magicCap"",""Name"":""Magic Cap"",""Weights"":[0,0,0,0,0,0,0,0,0,0,0,0,0,1],""AutoUpdate"":true,""SupportMode"":""current""}
+            ]").AsArray;
+            var result = new JSONArray();
+            foreach (var definition in rows.Children)
+            {
+                var row = full ? JsonFiles.ParseObject("{\"Weights\":[1,1,0,0,0,0,0,0,0,0,0,0,0,0],\"AutoUpdate\":true,"
+                    + "\"AdvancedTrainingWeights\":[1,1,0,0,0],\"MagicBloodPercent\":-1,\"SupportMode\":\"planned\",\"DiggerBudgetPercent\":75,"
+                    + "\"Zone\":-1,\"MinimumPower\":0,\"MinimumToughness\":0,\"SwapSeconds\":5,\"BeardPriority\":[],\"DiggerWeights\":[]}") : new JSONObject();
+                foreach (var field in definition.Linq) row[field.Key] = field.Value;
+                if (full) while (row["Weights"].Count < 14) row["Weights"].Add(0);
+                if (explicitBeards)
+                {
+                    row["BeardPriority"] = JSON.Parse("[1,3,5,6]");
+                    row["BeardRotation"] = JSON.Parse("[0,2,4]");
+                }
+                result.Add(row);
+            }
+            return result;
         }
     }
 }

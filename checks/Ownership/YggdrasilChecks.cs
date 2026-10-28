@@ -109,8 +109,21 @@ public static partial class OwnershipChecks
             if (failure == "unknown")
             {
                 Equal(0, G(YggFruits[0], "harvests"), "tooltip interruption genuinely precedes native harvest counter");
-                var seeds = G(G(Character, "yggdrasil"), "seeds"); Invoke(YggManager, "ManageYggHarvest", true); Equal(seeds, G(G(Character, "yggdrasil"), "seeds"), "unknown partial reward never repeats native seed effect");
-                Equal(1, FruitEntries.Count(x => x == "harvest:0"), "UNKNOWN ledger withholds replay even with readable native state");
+                Equal(0f, G(YggFruits[0], "seconds"), "native harvest clears its ripe timer before the interrupted tooltip");
+                var seeds = (long)G(G(Character, "yggdrasil"), "seeds"); Invoke(YggManager, "ManageYggHarvest", true);
+                Equal(seeds, G(G(Character, "yggdrasil"), "seeds"), "next pass never reconsumes a fruit whose native timer was cleared");
+                Equal(1, FruitEntries.Count(x => x == "harvest:0"), "native current state, not an UNKNOWN journal, withholds consumed fruit");
+                S(YggFruits[0], "activated", true); S(YggFruits[0], "seconds", 14400f);
+                var controller = ((Array)G(YggController, "fruits")).GetValue(0);
+                var tier = (int)Invoke(controller, "harvestTier", 0);
+                var reward = (long)Invoke(controller, "harvestSeedReward", 0, (int)Invoke(controller, "tierFactor", tier), 1f);
+                Invoke(YggManager, "ManageYggHarvest", true);
+                Equal(seeds + reward, G(G(Character, "yggdrasil"), "seeds"), "a genuinely ripe later fruit grants only its exact current native reward");
+                Equal(2, FruitEntries.Count(x => x == "harvest:0"), "a fresh ripe opportunity is not permanently banned by the prior unknown result");
+                Equal(1, G(YggFruits[0], "harvests"), "successful fresh harvest advances the actual native counter once");
+                Equal(0f, G(YggFruits[0], "seconds"), "successful fresh harvest consumes the ripe native opportunity");
+                Invoke(YggManager, "ManageYggHarvest", true);
+                Equal(2, FruitEntries.Count(x => x == "harvest:0"), "consumed native opportunity has no third invocation");
             }
             else Equal(1, G(YggFruits[0], "harvests"), "committed render failure remains one native harvest");
         });
@@ -142,8 +155,12 @@ public static partial class OwnershipChecks
         finally { FruitRendered = FruitTooltipAction = null; }
         Equal(1, FruitEntries.Count(x => x == "harvest:0"), "pre-rebirth uses one identified native fruit leaf");
         SamePitMap(baseline, CapturePitGear(), "pre-rebirth cleanup applies authorized CURRENT baseline, not an implicit snapshot"); Equal(false, M("ExecutionOwnsDomain", Domain("Gear, Support")), "pre-rebirth releases acquired setup on committed/unknown action result");
-        Equal(fault == "unknown", Invoke(rebirth, "PreRebirth"), "next pass proceeds only with resolved native fruit history"); Equal(1, FruitEntries.Count, "next pass cannot repeat harvest");
-        Equal(fault != "unknown", G(MainObject, "RebirthFinitePrerequisitesResolved"), "actual finite ledger withholds rebirth after unknown reward");
+        Equal(false, Invoke(rebirth, "PreRebirth"), "next pass sees no harvestable native fruit despite an interrupted result");
+        Equal(1, FruitEntries.Count, "cleared native timer prevents another harvest even when the counter was not reached");
+        Equal(fault == "unknown" ? 0 : 1, G(YggFruits[0], "harvests"), "readiness never fabricates a native counter after interrupted presentation");
+        Equal(0f, G(YggFruits[0], "seconds"), "current native timer proves no fruit work remains");
+        Equal(false, Invoke(rebirth, "PreRebirth"), "consumed native fruit no longer blocks rebirth on an obsolete unknown history");
+        Equal(1, FruitEntries.Count, "readiness after consumption invokes no extra harvest");
         Equal(7L, G(G(Character, "stats"), "rebirthNumber"), "deferral never fabricates native rebirth engagement");
     }
 

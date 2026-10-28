@@ -52,6 +52,45 @@ namespace NGUInjector.CustomPlans
             return NewDefinition(Definitions.Value["newPreset"]);
         }
 
+        internal static JSONObject BeforeResourcePriorities(string id, bool explicitBeards)
+        {
+            // Frozen normalized pre-priority catalog. Do not derive migration eligibility from live defaults or policy.
+            var row = JsonFiles.ParseObject("{\"Weights\":[0,0,0,0,0,0,0,0,0,0,0,0,0,0],\"AutoUpdate\":true,"
+                + "\"AdvancedTrainingWeights\":[1,1,0,0,0],\"MagicBloodPercent\":-1,\"SupportMode\":\"planned\","
+                + "\"DiggerBudgetPercent\":75,\"Zone\":-1,\"MinimumPower\":0,\"MinimumToughness\":0,\"SwapSeconds\":5,"
+                + "\"BeardPriority\":[],\"DiggerWeights\":[]}");
+            switch (id)
+            {
+                case "builtin_energyNgu": row["Name"] = "Energy NGU"; row["Weights"][0] = 1; break;
+                case "builtin_magicNgu": row["Name"] = "Magic NGU"; row["Weights"][1] = 1; break;
+                case "builtin_blood": row["Name"] = "Blood"; row["Weights"][2] = 1; break;
+                case "builtin_adventureDynamic": row["Name"] = "adventure-dynamic"; row["AdventureDynamicWeight"] = 1; break;
+                case "builtin_timeMachine": row["Name"] = "Time Machine"; row["Weights"][6] = 1; break;
+                case "builtin_augments": row["Name"] = "Augments"; row["Weights"][7] = 1; break;
+                case "builtin_wandoos": row["Name"] = "Wandoos"; row["Weights"][8] = 1; break;
+                case "builtin_advancedTraining": row["Name"] = "Advanced Training"; row["Weights"][9] = 1; break;
+                case "builtin_adventurePower": row["Name"] = "Adventure Power"; row["Weights"][10] = 1; break;
+                case "builtin_adventureToughness": row["Name"] = "Adventure Toughness"; row["Weights"][11] = 1; break;
+                case "builtin_allNgu": row["Name"] = "All NGU"; row["Weights"][0] = row["Weights"][1] = 1; break;
+                case "builtin_augmentsBlood": row["Name"] = "Augments + Blood"; row["Weights"][2] = row["Weights"][7] = 1; break;
+                case "builtin_atAdventure": row["Name"] = "AT Adventure"; row["Weights"][2] = row["Weights"][9] = 1; break;
+                case "builtin_atWandoos":
+                    row["Name"] = "AT Wandoos"; row["Weights"][8] = row["Weights"][9] = 1;
+                    row["AdvancedTrainingWeights"] = JSON.Parse("[0,0,0,1,1]"); break;
+                case "builtin_adventureStats": row["Name"] = "Adventure Stats"; row["Weights"][10] = row["Weights"][11] = 1; break;
+                case "builtin_energyCap": row["Name"] = "Energy Cap"; row["Weights"][12] = 1; row["SupportMode"] = "current"; break;
+                case "builtin_magicCap": row["Name"] = "Magic Cap"; row["Weights"][13] = 1; row["SupportMode"] = "current"; break;
+                default: return null;
+            }
+            row["Id"] = id;
+            if (explicitBeards)
+            {
+                row["BeardPriority"] = JSON.Parse("[1,3,5,6]");
+                row["BeardRotation"] = JSON.Parse("[0,2,4]");
+            }
+            return row;
+        }
+
         private static JSONObject NewDefinition(JSONNode definition)
         {
             var row = DefaultJson();

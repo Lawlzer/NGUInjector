@@ -642,12 +642,12 @@ public static partial class PresetIntegrationChecks
 
     private static void CheckInlineStageOwnedMaterialRevision()
     {
-        var plan = SetupInlineStagePlan(); RunVerifiedInline(plan, "owned material entry");
+        var plan = SetupInlineStagePlan(); PreparePresetNativeBoost(); RunVerifiedInline(plan, "owned material entry");
         var selection = Get(MainInstance, "_inlineStageSelection"); var acquisition = Get(selection, "Acquisition");
         var material = ((string[])Get(selection, "Material")).ToArray();
         var head = Get(Get(Character, "inventory"), "head");
         var searches = InlineGearSelections; var swaps = Get(typeof(Program), "Swaps");
-        AutoBoostAction = () => { Set(head, "spec1Cur", (float)Get(head, "spec1Cur") + 1000f); Invoke(typeof(Program), "RefreshBonuses"); };
+        AutoBoostAction = () => ApplyPresetNativeBoost(head, -1, 27, 1000f);
         try { CallMain("RunCustomAutoBoost"); }
         finally { AutoBoostAction = null; }
         Check(!material.SequenceEqual((string[])Get(selection, "Material")), "causally owned boost revises the same selected equipment's approved material");

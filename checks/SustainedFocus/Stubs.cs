@@ -183,6 +183,9 @@ namespace NGUInjector
         internal void MarkJustRefreshed() { _customFocusLastResourceRefresh = DateTime.UtcNow; }
         internal void MarkRefreshDue() { _customFocusLastResourceRefresh = DateTime.MinValue; }
         internal void InvalidateCustomRuntimePlanCache() { Invalidations++; _checkScheduler?.Suspend(); }
+        internal void InvalidateCustomFightSchedulePlanCache() { Invalidations++; }
+        internal bool StageFightFundingContextMatches(string context) => false;
+        internal void ObserveStageFightAugmentFunding(IDictionary<ResourceTarget, long[]> desired) { }
         internal void ValidateScheduledPlanEdit(string name, CustomPlan plan) { }
         internal void ForgetStageProgress(string name)
         {
@@ -251,6 +254,7 @@ namespace NGUInjector
         internal NguController NGUController = new NguController();
         internal AdventureController adventureController = new AdventureController();
         internal Adventure adventure = new Adventure();
+        internal Arbitrary arbitrary = new Arbitrary();
         internal BossController bossController = new BossController();
         internal Inventory inventory = new Inventory();
         internal InventoryController inventoryController = new InventoryController();
@@ -279,6 +283,7 @@ namespace NGUInjector
         internal float totalWandoosMagicSpeed() { return 1; }
         internal float totalAdvancedTrainingSpeedBonus() { return 1; }
         internal double grossGoldPerSecond() { return GoldPerSecond; }
+        internal int calculateBestItopodLevel() => throw new NotSupportedException("Native tower floor math is tested in the native fixture.");
         internal void removeMostEnergy()
         {
             EnergyRecalls++;
@@ -348,9 +353,11 @@ namespace NGUInjector
         internal BonusController itopod = new BonusController();
         internal FocusZoneSelector zoneSelector = new FocusZoneSelector();
         internal object playerController = new object(), enemyAI = new object();
+        internal int maxItopodLevel() => throw new NotSupportedException("Native tower floor limits are tested in the native fixture.");
     }
     internal sealed class FocusZoneSelector { internal void changeZone(int zone) { Main.Character.adventure.zone = zone; } }
-    internal sealed class Adventure { internal int zone = -1, itopodStart, itopodEnd; internal bool autoattacking; }
+    internal sealed class Adventure { internal int zone = -1, itopodStart, itopodEnd, highestItopodLevel; internal bool autoattacking, beastModeOn; }
+    internal sealed class Arbitrary { internal bool boughtLazyITOPOD, lazyITOPODOn; }
     internal sealed class BossController { internal bool isFighting, nukeBoss; }
     internal sealed class Inventory { internal double[] macguffinBonuses = Enumerable.Repeat(1d, 13).ToArray(); }
     internal sealed class InventoryController { internal bool midDrag; internal Dictionary<specType, float> bonuses = new Dictionary<specType, float> {{specType.Augs, 0}}; }
@@ -432,7 +439,7 @@ namespace NGUInjector
         internal int ritualsUnlocked() { return 8; }
         internal void updateMenu() { if (ThrowOnMenu) throw new InvalidOperationException("Blood UI unavailable"); }
     }
-    internal sealed class Training { internal long[] energy = new long[5], level = new long[5], levelTarget = new long[5]; }
+    internal sealed class Training { internal long[] energy = new long[5], level = new long[5], levelTarget = new long[5]; internal bool autoAdvance; }
     internal sealed class TrainingController
     {
         internal Managers.AdvancedTrainingController defense = new Managers.AdvancedTrainingController(), attack = new Managers.AdvancedTrainingController(),
@@ -449,6 +456,8 @@ namespace NGUInjector.Managers
     internal sealed class GearResult { internal bool Success = true; internal string Message = "gear"; internal ih[] Items = new ih[0]; }
     internal static class GearOptimizer
     {
+        internal static (string Failure, GearRecallFootprint Recall) PreflightCapacityTransition(ih[] gear, GearRecallFootprint recall) =>
+            throw new NotSupportedException("Coupled fruit return capacity is tested against the compiled native actuator.");
         internal static GearRecallFootprint LegacyRecallFootprint()
         {
             return (Main.Settings.ManageEnergy ? GearRecallFootprint.Energy : GearRecallFootprint.None)
@@ -506,11 +515,8 @@ namespace NGUInjector.Managers
         }
     }
     internal sealed class AdvancedTrainingController { internal float baseTime = 1; internal void updateText() { } }
-    internal enum LockType { Titan, Yggdrasil, MoneyPit, Gold, None }
     internal static partial class LoadoutManager
     {
-        internal static LockType CurrentLock = LockType.None;
-        internal static bool CanSwap() { return CurrentLock == LockType.None; }
         internal static void RemoveResourcesForGearSwap()
         {
             if (!EquipmentRecording.Enabled) throw new Exception("Sustain must not swap gear.");
@@ -552,8 +558,6 @@ namespace NGUInjector.Managers
     }
     internal static class DiggerManager
     {
-        internal static LockType CurrentLock = LockType.None;
-        internal static bool CanSwap() { return CurrentLock == LockType.None; }
         internal sealed class DiggerRequest { internal int Id, Weight; internal string Name; }
         internal static string EquipWeightedDiggers(IEnumerable<DiggerRequest> diggers, double budget)
         {
@@ -617,7 +621,6 @@ namespace NGUInjector.Managers
             BeardRandomize.Clear();
             Diggers.Clear();
             Budgets.Clear();
-            LoadoutManager.CurrentLock = DiggerManager.CurrentLock = LockType.None;
         }
     }
 }

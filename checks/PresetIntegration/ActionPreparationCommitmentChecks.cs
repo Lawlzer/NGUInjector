@@ -3,65 +3,38 @@ using System.Collections;
 using System.IO;
 using System.Linq;
 
-// Separate C-owned partial. Shared fixture owner adds this Compile entry and
-// calls CheckActionPreparationIdentityRegressions() from its native action group.
+// Preparation-specific native checks. The shared action selector owns dispatch.
 public static partial class PresetIntegrationChecks
 {
+    private static void ConfigureStageFightSchedule(object stage, string id, int anchor = 0, int delay = 0, int interval = 0)
+    {
+        var schedule = Activator.CreateInstance(Plugin.GetType("NGUInjector.CustomPlans.CustomFightSchedule", true));
+        Set(schedule, "Id", id); Set(schedule, "Anchor", anchor); Set(schedule, "DelaySeconds", delay); Set(schedule, "IntervalSeconds", interval);
+        Set(stage, "FightSchedule", schedule);
+    }
+
     private static void CheckActionPreparationIdentityRegressions()
     {
         var before = Assertions;
-        foreach (var manualRebirth in new[] { false, true })
-        {
-            SetupAdventureDynamic("native-manual-prep-import-" + manualRebirth, "[0,0,0,0,0,0,0,0,0,0,0,0,1,0]");
-            Equal(null, Get(MainInstance, "_protectedScheduler"), "manual preparation import fixture has no scheduler");
-            Set(MainInstance, "_manualRebirthPending", manualRebirth);
-            var opportunity = "native-explicit-preparation-" + manualRebirth;
-            var summary = (string)CallMain("RunFightPrep", null, false, false, "native manual preparation import", null, opportunity);
-            Check(summary.Contains("boss push running"), "actual manual preparation acquires exact native setup without a scheduler: " + summary);
-            Equal(true, Property(MainInstance, "FightPreparationVerified"), "manual process has real native selected-setup proof before retirement");
-            CallMain("StopBossPush");
-            var commitment = CallMain("ExportFightPreparationCommitment");
-            Equal("Committed", Property(Json(commitment, "state"), "Value"), "actual retired preparation retains terminal semantic history");
-            var original = Json(commitment, "original").ToString();
-            var path = Path.Combine((string)Get(MainType, "_dir"), "execution-fight-prep-selection.json");
-            var setup = CallMain("ImportExactExecutionSelection", JsonParse(File.ReadAllText(path)));
-            var swaps = Get(typeof(Program), "Swaps"); var rebirth = Get(Get(Character, "stats"), "rebirthNumber");
-            Set(MainInstance, "_completedFightPreparationRecord", null);
-            Set(MainInstance, "_manualRebirthPending", false); Set(MainInstance, "_customPreRebirthPrepCompleted", true);
-            CallMain("ImportReviewedFightPreparation", commitment, setup);
-            Equal(manualRebirth, Get(MainInstance, "_manualRebirthPending"), "committed import retains the original manual-rebirth choice");
-            Equal(opportunity, Get(MainInstance, "_manualRebirthOpportunity"), "committed import retains original explicit opportunity, including fight-only requests");
-            Equal(manualRebirth, Get(MainInstance, "_customPreRebirthPrepCompleted"), "fight-only import cannot authorize automatic rebirth completion");
-            Equal(original, Json(CallMain("ExportFightPreparationCommitment"), "original").ToString(), "terminal import retains original entry/start/window rather than renewing it");
-            Equal(null, Property(MainInstance, "FightPreparationClaim"), "terminal history import creates no native cleanup/action authority");
-            Equal(false, Property(MainInstance, "BossPushRunning"), "terminal import does not re-enter a boss process");
-            Equal(swaps, Get(typeof(Program), "Swaps"), "semantic completion import performs no native gear write");
-            Equal(rebirth, Get(Get(Character, "stats"), "rebirthNumber"), "semantic completion import engages no native rebirth");
-        }
-        CheckNativePreparationFruitIdentity();
-        CheckPreparationIngressAndEntryRegressions();
-        Console.WriteLine("Preparation identity native regressions: " + (Assertions - before) + " assertions.");
-    }
-
-    private static void CheckPreparationIngressAndEntryRegressions()
-    {
         CheckExplicitPreparationIngress();
         CheckPreparationIngressScope();
-        foreach (var automatic in new[] { false, true })
-        {
-            CheckStageEntryPreparationRetry(automatic);
-            CheckStageEntryPreparationReceiptFailure(automatic);
-        }
-        CheckStageEntryPreparationRetryGuards();
+        CheckNativeBusyPreparation();
+        CheckSessionPreparationRetry();
+        foreach (var automatic in new[] { false, true }) CheckStageEntryPreparationReceiptFailure(automatic);
+        CheckStandardStageFightFunding();
+        Equal(null, MainType.GetMethod("ExportFightPreparationCommitment", All), "session preparation exports no action history");
+        Equal(null, MainType.GetMethod("ImportReviewedFightPreparation", All), "session preparation cannot resurrect a previous request");
+        Console.WriteLine("Preparation session native regressions: " + (Assertions - before) + " assertions.");
     }
 
-    private static void SetupPreparationIngress()
+    private static object SetupPreparationIngress()
     {
         var plan = SetupInlineStagePlan(); RunVerifiedInline(plan, "explicit preparation ingress baseline");
         Set(Get(Character, "allDiggers"), "baseGoldCost", Enumerable.Repeat(1e200, 12).ToList());
         ListField(Get(Character, "yggdrasil"), "fruits", 7);
         var all = Get(Character, "yggdrasilController"); Set(all, "character", Character);
         Set(ArrayField(all, "fruits", 1).GetValue(0), "character", Character);
+        return plan;
     }
 
     private static void InvokeExplicitPreparation(string ingress, bool rebirth)
@@ -71,8 +44,6 @@ public static partial class PresetIntegrationChecks
             CallMain("RunProbeCommand", new System.Collections.Generic.List<string>(), rebirth ? "rebirth" : "fight-prep");
             return;
         }
-        // No window/control construction: run the actual click handler with only
-        // its optional presentation fields absent and its button map empty.
         var form = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(Plugin.GetType("NGUInjector.SettingsForm", true));
         GC.SuppressFinalize(form);
         Set(form, "_customFocusButtons", Activator.CreateInstance(Field(form, "_customFocusButtons").FieldType));
@@ -85,25 +56,19 @@ public static partial class PresetIntegrationChecks
         foreach (var rebirth in new[] { false, true })
         {
             SetupPreparationIngress();
-            Check(((string)CallMain("RunManualFightPrep")).Contains("identified explicit request"), "raw fight preparation still requires an explicit identity");
-            Check(((string)CallMain("RunManualRebirth")).Contains("identified explicit request"), "raw rebirth still requires an explicit identity");
-            Equal(null, Property(MainInstance, "FightPreparationIdentity"), "raw calls cannot acquire a preparation record");
-            string previous = null;
-            for (var request = 0; request < 2; request++)
-            {
-                InvokeExplicitPreparation(ingress, rebirth);
-                var commitment = CallMain("ExportFightPreparationCommitment");
-                var opportunity = (string)Property(Json(commitment, "opportunity"), "Value");
-                Check(Guid.TryParseExact(opportunity, "N", out _), ingress + " assigns an explicit request identity before preparation");
-                Check(opportunity != previous, ingress + " creates a fresh identity only for a new explicit invocation");
-                Equal(rebirth, Property(Json(Json(commitment, "original"), "manualRebirth"), "AsBool"), ingress + " preserves the selected fight/rebirth intent");
-                Equal(null, Get(MainInstance, "_currentExecutionCommandId"), ingress + " clears its scoped identity after dispatch");
-                Equal(true, Property(MainInstance, "BossPushRunning"), ingress + " actually admits the prepared boss process");
-                Equal(true, Property(MainInstance, "FightPreparationVerified"), ingress + " uses real native selected-setup proof");
-                if (rebirth) Equal(opportunity, Get(MainInstance, "_manualRebirthOpportunity"), ingress + " retains the original opportunity for asynchronous rebirth continuation");
-                CallMain("StopBossPush"); CallMain("ResetCustomPreRebirthPrep");
-                previous = opportunity;
-            }
+            Check(((string)CallMain("RunManualFightPrep")).Contains("identified explicit request"), "raw fight preparation requires an explicit identity");
+            Check(((string)CallMain("RunManualRebirth")).Contains("identified explicit request"), "raw rebirth requires an explicit identity");
+            Equal(null, Property(MainInstance, "FightPreparationIdentity"), "raw calls cannot acquire a preparation attempt");
+            InvokeExplicitPreparation(ingress, rebirth);
+            var attempt = Get(MainInstance, "_fightPreparationAttempt");
+            var opportunity = (string)Get(Get(attempt, "Identity"), "Opportunity");
+            Check(Guid.TryParseExact(opportunity, "N", out _), ingress + " supplies an explicit request identity");
+            Equal(rebirth, Get(MainInstance, "_manualRebirthPending"), ingress + " retains only the current session's rebirth intent");
+            Equal(null, Get(MainInstance, "_currentExecutionCommandId"), ingress + " clears scoped command identity after dispatch");
+            Equal(true, Property(MainInstance, "BossPushRunning"), ingress + " admits the real prepared boss process");
+            Equal(true, Property(MainInstance, "FightPreparationVerified"), ingress + " verifies real native setup");
+            Equal(false, File.Exists(Path.Combine((string)Get(MainType, "_dir"), "execution-fight-prep-selection.json")), "fight preparation creates no restorable selection journal");
+            CallMain("StopBossPush"); CallMain("ResetCustomPreRebirthPrep");
         }
     }
 
@@ -115,200 +80,132 @@ public static partial class PresetIntegrationChecks
         try
         {
             InvokeExplicitPreparation("probe", false);
-            var original = CallMain("ExportFightPreparationCommitment").ToString();
+            var attempt = Get(MainInstance, "_fightPreparationAttempt");
             var process = Get(MainInstance, "_bossPushProcess");
-            Equal(external, Property(Json(CallMain("ExportFightPreparationCommitment"), "opportunity"), "Value"), "nested probe preserves its audited external command identity");
-            Equal(external, Get(MainInstance, "_currentExecutionCommandId"), "nested ingress restores the outer external scope");
+            Equal(external, Get(Get(attempt, "Identity"), "Opportunity"), "nested ingress retains external command identity");
+            Equal(external, Get(MainInstance, "_currentExecutionCommandId"), "nested ingress restores the outer scope");
             InvokeExplicitPreparation("probe", false);
-            Check(ReferenceEquals(process, Get(MainInstance, "_bossPushProcess")), "same external opportunity cannot acquire a second boss process");
-            Equal(original, CallMain("ExportFightPreparationCommitment").ToString(), "same external opportunity retains exact preparation commitments");
-            CallMain("StopBossPush");
-            var completed = CallMain("ExportFightPreparationCommitment").ToString();
-            InvokeExplicitPreparation("probe", false);
-            Equal(false, Property(MainInstance, "BossPushRunning"), "completed external opportunity cannot replay through explicit ingress");
-            Equal(completed, CallMain("ExportFightPreparationCommitment").ToString(), "completed external history is not replaced by a generated identity");
+            Check(ReferenceEquals(process, Get(MainInstance, "_bossPushProcess")), "same session request cannot acquire a second boss process");
+            Check(ReferenceEquals(attempt, Get(MainInstance, "_fightPreparationAttempt")), "same request retains its selected attempt");
+            CallMain("StopBossPush"); InvokeExplicitPreparation("probe", false);
+            Equal(false, Property(MainInstance, "BossPushRunning"), "completed session request cannot re-enter its boss process");
         }
         finally { Set(MainInstance, "_currentExecutionCommandId", null); }
+    }
 
-        SetupPreparationIngress();
-        Set(MainInstance, "_currentExecutionCommandId", external);
-        var stats = Get(Character, "stats"); Set(Character, "stats", null);
-        try
+    private static void CheckNativeBusyPreparation()
+    {
+        var plan = SetupPreparationIngress();
+        var boss = Get(Character, "bossController");
+        foreach (var field in new[] { "isFighting", "nukeBoss" })
         {
-            Throws(() => CallMain("RunManualPreparationIngress", true), "NullReferenceException", "native metadata failure propagates out of explicit ingress");
-            Equal(external, Get(MainInstance, "_currentExecutionCommandId"), "throwing ingress restores its original external identity in finally");
+            Set(boss, field, true);
+            var searches = InlineGearSelections; var swaps = Get(typeof(Program), "Swaps"); var transfers = ResourceTransfers;
+            var result = (string)CallMain("RunFightPrep", plan, true, "native busy preparation", null, "busy-" + field);
+            Check(result.Contains("waiting for the current native boss fight"), "native busy preparation waits before selection: " + result);
+            Equal(null, Property(MainInstance, "FightPreparationIdentity"), "foreign native fight creates no preparation authority");
+            Equal(searches, InlineGearSelections, "native busy preparation performs no gear search");
+            Equal(swaps, Get(typeof(Program), "Swaps"), "native busy preparation performs no equipment write");
+            Equal(transfers, ResourceTransfers, "native busy preparation performs no recall");
+            Equal(false, CallMain("PrepareFinalRebirthAction"), "native busy blocks final NUMBER setup");
+            Set(boss, field, false);
         }
-        finally { Set(Character, "stats", stats); Set(MainInstance, "_currentExecutionCommandId", null); }
-        CallMain("SetExecutionLifecycle", Enum.Parse(MainType.GetNestedType("ExecutionLifecycle", All), "Quiescing"));
-        Throws(() => CallMain("RunManualPreparationIngress", false), "quiesced", "explicit ingress cannot bypass lifecycle admission");
-        Equal(null, Get(MainInstance, "_currentExecutionCommandId"), "quiesced rejection mints no dispatch identity");
-        Equal(null, Property(MainInstance, "FightPreparationIdentity"), "failed ingresses produce no preparation or native action authority");
     }
 
-    private static object SetupEntryPreparation(bool automatic = false)
+    private static void CheckSessionPreparationRetry()
     {
-        var plan = SetupInlineStagePlan(); RunVerifiedInline(plan, "stage entry preparation baseline");
-        var stage = ((Array)Get(plan, "Stages")).GetValue(0);
-        Set(stage, "FightOnEntry", true); Set(stage, "ExecutionMode", automatic ? 1 : 0);
-        var store = Get(MainType, "CustomPlanStore"); var name = Property(Get(MainType, "Settings"), "CustomPlanFile");
-        Invoke(store, "Save", name, plan); plan = Invoke(store, "Load", name);
-        CallMain("GetProtectedStage", plan);
-        return plan;
-    }
-
-    private static void CheckStageEntryPreparationRetry(bool automatic)
-    {
-        var plan = SetupEntryPreparation(automatic); var runtime = CallMain("GetProtectedStage", plan);
-        var scheduler = Get(MainInstance, "_protectedScheduler"); var entry = Property(scheduler, "Entry");
-        var deadline = Property(scheduler, "ExpectedEndSeconds"); var entered = Property(scheduler, "EnteredAt");
-        var fightKey = Property(Get(MainType, "Settings"), "CustomPlanFile") + ":" + CallMain("CustomStageRuntimeKey", plan, runtime);
-        var checkpoint = (string)Property(MainInstance, "ProtectedCheckpointPath");
-        var swaps = Get(typeof(Program), "Swaps"); var transfers = ResourceTransfers; var selections = 0;
-        Program.FinitePreparationSelectionStarting = () => { selections++; throw new InvalidOperationException("entry selection unavailable"); };
+        var plan = SetupPreparationIngress();
+        var searches = 0;
+        Program.FinitePreparationSelectionStarting = () => { searches++; throw new InvalidOperationException("selection unavailable"); };
         try
         {
-            CallMain("RunCustomPlanAutomation", plan);
-            Check(((string)CallMain("GetCustomAutomationStatus")).Contains("entry selection unavailable"), "entry selection fault is actually exercised");
-            Equal(false, Property(MainInstance, "BossPushRunning"), "failed entry selection never starts a boss process/automatic=" + automatic);
-            Equal(fightKey, Get(MainInstance, "_customStageFightKey"), "failed setup retains its original durable attempt receipt");
-            Equal(fightKey, Property(Json(JsonParse(File.ReadAllText(checkpoint)), "fightEntry"), "Value"), "attempt receipt is saved before selection");
+            var result = (string)CallMain("RunFightPrep", plan, false, "retry preparation", null, "retry-original");
+            Check(result.Contains("selection unavailable"), "selection denial is exercised");
+            var attempt = Get(MainInstance, "_fightPreparationAttempt");
             var identity = Property(MainInstance, "FightPreparationIdentity");
-            var original = Json(CallMain("ExportFightPreparationCommitment"), "original").ToString();
-            var selectionPath = Path.Combine((string)Get(MainType, "_dir"), "execution-fight-prep-selection.json");
-            File.WriteAllText(selectionPath, "{}");
-            Program.FinitePreparationSelectionStarting = () => selections++;
-            using (var held = new FileStream(selectionPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-            {
-                Equal(true, CallMain("TryRunCustomStageEntryFight", plan, runtime), "same entry resumes acquisition but withholds setup on real selection-checkpoint failure");
-                Equal(false, Property(MainInstance, "BossPushRunning"), "storage rejection never starts the entry fight");
-                Equal(swaps, Get(typeof(Program), "Swaps"), "selection storage must precede native gear writes");
-            }
-            var selected = Get(MainInstance, "_fightPreparationSetup");
-            Check(selected != null, "same entry retains its selected setup after storage rejection");
-            var count = selections; var current = (long)Get(Character, "curEnergy"); var idle = (long)Get(Character, "idleEnergy");
-            Set(Character, "curEnergy", current + 6000); Set(Character, "idleEnergy", idle + 6000);
-            Equal(true, CallMain("TryRunCustomStageEntryFight", plan, runtime), "same entry retries retained setup through actual capacity preflight");
-            Equal(false, Property(MainInstance, "BossPushRunning"), "infeasible retained setup admits no boss process");
-            Equal(false, Property(MainInstance, "FightPreparationVerified"), "capacity rejection cannot fabricate verified preparation");
-            Equal(swaps, Get(typeof(Program), "Swaps"), "capacity rejection changes no equipment");
-            Equal(transfers, ResourceTransfers, "failed entry preparation performs no resource transfers");
-            Set(Character, "curEnergy", current); Set(Character, "idleEnergy", idle);
-            CallMain("RunCustomPlanAutomation", plan);
-            Equal(true, Property(MainInstance, "BossPushRunning"), "recovered preparation actually starts its original boss process");
-            Equal(true, Property(MainInstance, "FightPreparationVerified"), "recovered entry has real selected-setup proof");
-            Equal(count, selections, "retry never selects replacement gear after exact selection");
-            Check(ReferenceEquals(selected, Get(MainInstance, "_fightPreparationSetup")), "all setup retries retain the SAME selected object");
-            Equal(identity, Get(MainInstance, "_bossPushIdentity"), "entry boss process consumes the original preparation identity");
-            Equal(original, Json(CallMain("ExportFightPreparationCommitment"), "original").ToString(), "retry cannot renew original entry/start/window/options");
-            Equal(entry, Property(scheduler, "Entry"), "retry grants no new scheduler entry");
-            Equal(entered, Property(scheduler, "EnteredAt"), "retry does not restart elapsed accounting");
-            Equal(deadline, Property(scheduler, "ExpectedEndSeconds"), "retry preserves original automatic/fixed deadline");
-            var process = Get(MainInstance, "_bossPushProcess");
-            Equal(false, CallMain("TryRunCustomStageEntryFight", plan, runtime), "started preparation never re-enters stage dispatch");
-            Check(ReferenceEquals(process, Get(MainInstance, "_bossPushProcess")), "started entry retains its single boss process");
+            Equal(true, CallMain("FightPreparationCanRetry", identity), "uninvoked attempt remains retryable");
+            Equal(false, Get(attempt, "BossStartAttempted"), "selection denial consumes no boss-start step");
+            Program.FinitePreparationSelectionStarting = () => searches++;
+            result = (string)CallMain("RunFightPrep", plan, false, "retry preparation", null, "retry-original");
+            Check(result.Contains("boss push running"), "recovered selection admits original process: " + result);
+            Check(ReferenceEquals(attempt, Get(MainInstance, "_fightPreparationAttempt")), "retry retains original options and epoch");
+            Equal(identity, Get(MainInstance, "_bossPushIdentity"), "boss process consumes the original preparation identity");
+            var count = searches; var process = Get(MainInstance, "_bossPushProcess");
+            CallMain("RunFightPrep", plan, false, "retry preparation", null, "retry-original");
+            Equal(count, searches, "waiting for boss admission never repeats equipment selection");
+            Check(ReferenceEquals(process, Get(MainInstance, "_bossPushProcess")), "waiting preparation retains one process");
             CallMain("StopBossPush");
-            var completed = CallMain("ExportFightPreparationCommitment").ToString();
-            Equal(false, CallMain("TryRunCustomStageEntryFight", plan, runtime), "completed entry never acquires a second preparation");
-            CallMain("InitializeProtectedStageProgress", plan); runtime = CallMain("GetProtectedStage", plan);
-            Equal(false, CallMain("TryRunCustomStageEntryFight", plan, runtime), "checkpoint reload cannot renew entry-fight authority");
-            Equal(completed, CallMain("ExportFightPreparationCommitment").ToString(), "reload retains terminal preparation history without another receipt");
-            Equal(fightKey, Get(MainInstance, "_customStageFightKey"), "retry/start/completion/reload all retain the same durable fight key");
-            Equal(count, selections, "started/completed/reloaded entry performs no replacement selection");
+            Equal(false, CallMain("FightPreparationCanRetry", identity), "completed preparation has no live retry authority");
+            Equal(false, Property(MainInstance, "BossPushRunning"), "completion does not re-enter a process");
         }
         finally { Program.FinitePreparationSelectionStarting = null; }
     }
 
     private static void CheckStageEntryPreparationReceiptFailure(bool automatic)
     {
-        var plan = SetupEntryPreparation(automatic); var runtime = CallMain("GetProtectedStage", plan);
+        var plan = SetupPreparationIngress();
+        var stage = ((Array)Get(plan, "Stages")).GetValue(0);
+        ConfigureStageFightSchedule(stage, "entry-receipt"); Set(stage, "ExecutionMode", automatic ? 1 : 0);
+        var store = Get(MainType, "CustomPlanStore"); var name = Property(Get(MainType, "Settings"), "CustomPlanFile");
+        Invoke(store, "Save", name, plan); plan = Invoke(store, "Load", name);
+        var runtime = CallMain("GetProtectedStage", plan);
+        CallMain("OverrideCustomStage", JsonParse("{\"name\":\"" + name + "\",\"expectedRevision\":\"" + Get(plan, "RuntimeRevision")
+            + "\",\"expectedEntry\":\"" + Property(runtime, "EntryIdentity") + "\",\"action\":\"restart\",\"stageIndex\":0}"));
         var path = (string)Property(MainInstance, "ProtectedCheckpointPath"); var searches = InlineGearSelections;
         using (var held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
-            Equal(true, CallMain("TryRunCustomStageEntryFight", plan, runtime), "entry receipt storage fault withholds preparation/automatic=" + automatic);
-            Equal(null, Get(MainInstance, "_customStageFightKey"), "failed receipt publication does not consume the entry");
-            Equal(null, Property(MainInstance, "FightPreparationIdentity"), "undurable entry grants no preparation identity");
-            Equal(searches, InlineGearSelections, "undurable entry performs no equipment selection");
-            Equal(false, Property(MainInstance, "BossPushRunning"), "undurable entry performs no boss admission");
+            Equal(true, CallMain("ServiceStageFightSchedule", plan), "entry marker storage fault withholds preparation/automatic=" + automatic);
+            Equal(null, Get(MainInstance, "_customStageFightKey"), "failed stage marker does not consume the entry");
+            Equal(null, Property(MainInstance, "FightPreparationIdentity"), "undurable stage entry grants no session attempt");
+            Equal(searches, InlineGearSelections, "undurable stage marker performs no selection");
         }
-        Equal(true, CallMain("TryRunCustomStageEntryFight", plan, runtime), "receipt storage recovery admits the original entry");
-        Equal(true, Property(MainInstance, "BossPushRunning"), "receipt recovery actually starts one verified preparation");
+        Equal(true, CallMain("ServiceStageFightSchedule", plan), "stage marker recovery admits its original entry");
+        Equal(true, Property(MainInstance, "BossPushRunning"), "marker recovery starts one verified preparation");
         CallMain("StopBossPush");
+        Equal(false, CallMain("ServiceStageFightSchedule", plan), "consumed stage entry cannot start another preparation");
+        CallMain("InitializeProtectedStageProgress", plan); runtime = CallMain("GetProtectedStage", plan);
+        Equal(false, CallMain("ServiceStageFightSchedule", plan), "stage marker survives reload without restoring preparation authority");
     }
 
-    private static void CheckStageEntryPreparationRetryGuards()
+    private static void CheckStandardStageFightFunding()
     {
-        foreach (var change in new[] { "reload", "entry", "epoch", "fight-requested", "unknown" })
+        foreach (var preset in new[] { false, true })
+        foreach (var funded in new[] { false, true })
         {
-            var plan = SetupEntryPreparation(); var runtime = CallMain("GetProtectedStage", plan);
-            Program.FinitePreparationSelectionStarting = () => { throw new InvalidOperationException("retain unstarted entry"); };
-            try { Equal(true, CallMain("TryRunCustomStageEntryFight", plan, runtime), "guard fixture acquires a genuinely unstarted preparation"); }
-            finally { Program.FinitePreparationSelectionStarting = null; }
-            var original = Json(CallMain("ExportFightPreparationCommitment"), "original").ToString();
-            var key = Get(MainInstance, "_customStageFightKey");
-            if (change == "reload")
+            var plan = PrepareLockedTimeMachineStage("AUG", false);
+            var stage = ((Array)Get(plan, "Stages")).GetValue(0);
+            // The reused fixture otherwise replaces AUG with WAN while Time Machine is locked.
+            Set(stage, "UseWandoosWhenTimeMachineLocked", false);
+            Equal("AUG", StagePriorities(stage, true)[0], "funding fixture retains the real Augments priority");
+            ConfigureStageFightSchedule(stage, "standard-funding", 1, 600);
+            Set(Get(Get(Character, "buttons"), "augmentation"), "m_Interactable", funded);
+            var store = Get(MainType, "CustomPlanStore");
+            if (preset)
             {
-                CallMain("InitializeProtectedStageProgress", plan); runtime = CallMain("GetProtectedStage", plan);
+                var library = Get(store, "<PresetLibrary>k__BackingField"); var root = Invoke(library, "ReadExternalLibrary");
+                var id = "scheduled-augment-" + Guid.NewGuid().ToString("N");
+                Invoke(Json(root, "Presets"), "Add", "", JsonParse("{\"Id\":\"" + id + "\",\"Name\":\"Scheduled Augments\","
+                    + "\"Weights\":[0,0,0,0,0,0,0,1,0,0,0,0,0,0],\"EnergyPriorities\":[\"AUG\"],\"MagicPriorities\":[],"
+                    + "\"ResourcePrioritiesReviewed\":true,\"SupportMode\":\"current\",\"SwapSeconds\":0,\"AutoUpdate\":true}"));
+                Invoke(library, "SaveExternalLibrary", root, Property(Json(root, "__externalUiRevision"), "Value"));
+                Set(stage, "PresetId", id);
             }
-            else if (change == "entry")
+            var name = (string)Property(Get(MainType, "Settings"), "CustomPlanFile");
+            Invoke(store, "Save", name, plan); plan = Invoke(store, "Load", name);
+            CallMain("RunCustomPlanAutomation", plan);
+            var actual = ((IEnumerable)Get(Get(Character, "augments"), "augs")).Cast<object>()
+                .Sum(augment => (long)Get(augment, "augEnergy") + (long)Get(augment, "upgradeEnergy"));
+            Equal(funded, actual > 0, "standard schedule fixture exercises actual positive funding/preset=" + preset + "/funded=" + funded
+                + "; status=" + CallMain("GetCustomAutomationStatus") + "; error=" + InlineObservedError);
+            var anchor = Get(Get(MainInstance, "_stageFightSchedule"), "AnchorAt");
+            Equal(funded ? Get(Get(Character, "rebirthTime"), "totalseconds") : null, anchor,
+                "standard schedule anchor follows verified native Augments, not configuration/preset=" + preset + "/funded=" + funded);
+            Equal(false, Property(MainInstance, "BossPushRunning"), "first-funding delay never runs a fight early");
+            if (funded)
             {
-                var args = JsonParse("{\"name\":\"fixture\",\"expectedRevision\":\"" + Get(plan, "RuntimeRevision")
-                    + "\",\"expectedEntry\":\"" + Get(MainInstance, "_protectedGeneration") + ":" + Property(Get(MainInstance, "_protectedScheduler"), "Entry")
-                    + "\",\"action\":\"restart\",\"stageIndex\":0}");
-                CallMain("OverrideCustomStage", args); // The old runtime token is intentionally retained below.
+                var saved = JsonParse(File.ReadAllText((string)Property(MainInstance, "ProtectedCheckpointPath")));
+                Equal(anchor, Property(Json(Json(saved, "fightSchedule"), "anchorAt"), "AsDouble"), "standard funding anchor is checkpointed");
             }
-            else if (change == "epoch") Set(Get(Character, "stats"), "rebirthNumber", 8L);
-            else
-            {
-                var record = Get(MainInstance, "_fightPreparationRecord");
-                if (change == "fight-requested") Set(record, "After", change);
-                else Set(record, "State", Enum.Parse(Plugin.GetType("NGUInjector.FiniteActionState", true), "Unknown"));
-                Invoke(Property(MainInstance, "FiniteActions"), "Save", record);
-            }
-            var searches = InlineGearSelections; var swaps = Get(typeof(Program), "Swaps"); var transfers = ResourceTransfers;
-            Equal(false, CallMain("TryRunCustomStageEntryFight", plan, runtime), "unstarted receipt cannot renew authority after " + change);
-            Equal(false, Property(MainInstance, "BossPushRunning"), "guard rejects boss admission after " + change);
-            Equal(key, Get(MainInstance, "_customStageFightKey"), "guard cannot mint another entry receipt after " + change);
-            Equal(original, Json(CallMain("ExportFightPreparationCommitment"), "original").ToString(), "guard preserves original commitments after " + change);
-            Equal(searches, InlineGearSelections, "guard rejects replacement search after " + change);
-            Equal(swaps, Get(typeof(Program), "Swaps"), "guard performs no gear write after " + change);
-            Equal(transfers, ResourceTransfers, "guard performs no resource transfer after " + change);
         }
-    }
-
-    private static void CheckNativePreparationFruitIdentity()
-    {
-        var plan = SetupInlineStagePlan(); RunVerifiedInline(plan, "preparation fruit identity baseline");
-        var all = Get(Character, "yggdrasilController"); Set(all, "character", Character);
-        var fruits = ListField(Get(Character, "yggdrasil"), "fruits", 2);
-        var controllers = ArrayField(all, "fruits", 1); var controller = controllers.GetValue(0);
-        Set(controller, "character", Character); Child(controller, "tooltip");
-        Set(all, "activationCost", new System.Collections.Generic.List<long> { 1, 1 });
-        Set(all, "baseSeedReward", new System.Collections.Generic.List<long> { 10, 10 });
-        Set(all, "usesEnergy", new System.Collections.Generic.List<bool> { true, true });
-        Set(Get(Character, "NGUController"), "normalMagicBoostFactor", Enumerable.Repeat(.01f, 7).ToList());
-        ListField(Get(Get(Character, "inventory"), "itemList"), "itemMaxxed", 600);
-        Set(Get(Get(Character, "buttons"), "yggdrasil"), "m_Interactable", true);
-        Set(fruits[1], "maxTier", 1L); Set(fruits[1], "seconds", 3600f); Set(fruits[1], "activated", true);
-        Set(fruits[1], "eatFruit", false);
-        var identity = CallMain("ActionIdentity", "fight-preparation", "fight-preparation", "native-original-fruit", null);
-        var claim = CallMain("BeginExecutionClaim", Get(identity, "Owner"), Get(identity, "Acquisition"),
-            Domain("Gear, Support, Route, Inventory, FiniteAction"), (Func<bool>)(() => true));
-        var setup = ExactClaimSetup(Get(Get(Character, "inventory"), "head"), "fight-preparation");
-        CallMain("ApplyExecutionClaim", claim, setup);
-        var opportunity = CallMain("PreparationFruitOpportunity", identity, 1);
-        try
-        {
-            Equal(true, CallMain("RunFruitHarvestAction", 1, true, false, claim, setup, opportunity, 0), "original preparation fruit invokes one actual native harvest");
-            var seeds = Get(Get(Character, "yggdrasil"), "seeds");
-            Equal(1, Get(fruits[1], "harvests"), "original native preparation fruit is accounted once");
-            Set(fruits[1], "seconds", 3600f); Set(fruits[1], "activated", true);
-            Equal(true, CallMain("RunFruitHarvestAction", 1, true, false, claim, setup, opportunity, 0), "same identified completed step is recognized only under current verified setup");
-            Equal(1, Get(fruits[1], "harvests"), "a later ripe cycle does not generate another preparation fruit effect");
-            Set(MainInstance, "_finiteActionLedger", null);
-            Equal(true, CallMain("RunFruitHarvestAction", 1, true, false, claim, setup, opportunity, 0), "ledger reload retains original per-preparation fruit opportunity");
-            Equal(1, Get(fruits[1], "harvests"), "ledger reload cannot consume the later native fruit cycle");
-            Equal(seeds, Get(Get(Character, "yggdrasil"), "seeds"), "repeated/imported preparation steps award no duplicate native seeds");
-        }
-        finally { CallMain("EndExecutionClaim", claim, false); }
     }
 }

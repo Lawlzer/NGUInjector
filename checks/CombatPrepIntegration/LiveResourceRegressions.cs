@@ -336,7 +336,8 @@ public static partial class Program
             Set(Get(Character, "magic"), "idleMagic", (long)Get(Get(Character, "magic"), "idleMagic") + 1);
         };
         ScheduledRefresh(run);
-        Equal("running", Get(run, "Status"), "foreign resource callback retains acquired phase while refusing dependent credit");
+        Equal("cancelled", Get(run, "Status"), "foreign resource callback cancels its bounded preparation without dependent credit");
+        Equal(false, Get(MainInstance, "CombatPrepRunActive"), "foreign resource callback cannot retain automatic retry authority");
         Equal(-1, Get(run, "AppliedResourcePhase"), "foreign resource callback cannot verify the complete phase");
         Equal(2, Get(run, "YieldedResourceLanes"), "foreign Magic callback yields only that resource lane");
         Equal(magicAmount - 1, Get(magic, "magic"), "combat cleanup does not recall the foreign Magic lane");

@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using System.IO;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
 
@@ -10,6 +9,15 @@ public static partial class PresetIntegrationChecks
 {
     private static Action<object, int, int> CapacityResourcePresentation;
     private static Action CapacityGearBoundary;
+    private static int RouteNativeNukes, RouteNativeFights, RouteNativeOsChanges;
+    private static Action<string> RouteNativeActionReturned;
+    public static void ObserveNativeRouteAction(string name, bool after)
+    {
+        if (after) { RouteNativeActionReturned?.Invoke(name); return; }
+        if (name == "startNuke") RouteNativeNukes++;
+        else if (name == "beginFight") RouteNativeFights++;
+        else RouteNativeOsChanges++;
+    }
     public static void ObserveCapacityGearBoundary() => CapacityGearBoundary?.Invoke();
     public static void ObserveCapacityResourcePresentation(object character, int target, int index) => CapacityResourcePresentation?.Invoke(character, target, index);
     private static void ConfigureRouteCapacityPluginFixture(AssemblyDefinition plugin)
@@ -33,14 +41,32 @@ public static partial class PresetIntegrationChecks
     }
     private static void ConfigureRouteCombatGameFixture(AssemblyDefinition game)
     {
+        var nativeRouteLeaves = 0;
         foreach (var type in game.MainModule.Types)
         foreach (var method in type.Methods.Where(x => x.HasBody))
         {
+            if (type.Name == "BossController" && (method.Name == "startNuke" || method.Name == "beginFight")
+                || type.Name == "Wandoos98" && method.Name == "changeOS")
+            {
+                nativeRouteLeaves++;
+                var il = method.Body.GetILProcessor(); var first = method.Body.Instructions[0];
+                var observer = game.MainModule.ImportReference(typeof(PresetIntegrationChecks).GetMethod(nameof(ObserveNativeRouteAction), All));
+                foreach (var instruction in new[] { il.Create(OpCodes.Ldstr, method.Name), il.Create(OpCodes.Ldc_I4_0), il.Create(OpCodes.Call, observer) })
+                    il.InsertBefore(first, instruction);
+                foreach (var ret in method.Body.Instructions.Where(x => x.OpCode == OpCodes.Ret).ToArray())
+                {
+                    ret.OpCode = OpCodes.Ldstr; ret.Operand = method.Name;
+                    var after = il.Create(OpCodes.Ldc_I4_1); il.InsertAfter(ret, after);
+                    var callback = il.Create(OpCodes.Call, observer); il.InsertAfter(after, callback);
+                    il.InsertAfter(callback, il.Create(OpCodes.Ret));
+                }
+            }
             if (type.Name == "Character" && new[] { "totalEnergyBar", "totalMagicBar", "totalMagicSpeed" }.Contains(method.Name))
                 Constant(method, method.Name == "totalMagicSpeed" ? 50 : 1);
             if ((type.Name == "Energy" || type.Name == "MagicDisplay")
                 && new[] { "updateEnergyText", "updateMagicText", "updateSlider" }.Contains(method.Name)) Constant(method, 0);
         }
+        Equal(3, nativeRouteLeaves, "route fixture observes both actual native boss starts and the actual OS change leaf");
         var bonuses = game.MainModule.GetType("InventoryController").Methods.Single(x => x.Name == "updateBonuses");
         foreach (var ret in bonuses.Body.Instructions.Where(x => x.OpCode == OpCodes.Ret).ToArray())
             bonuses.Body.GetILProcessor().InsertBefore(ret, Instruction.Create(OpCodes.Call,
@@ -98,7 +124,9 @@ public static partial class PresetIntegrationChecks
         CheckNativeManualTitanReadiness();
         CheckNativeManualTitanDeathHistory();
         CheckNativeRouteQuiescence();
-        CheckNativeRouteCommitmentImport();
+        CheckNativeRouteBusyRestart();
+        CheckNativeManualTitanRestart();
+        CheckNativeTowerRestart();
         CheckNativeTowerProcess();
         CheckNativeAdventureGoldProcess();
         CheckNativeTitanGoldUpgrade();
@@ -114,6 +142,7 @@ public static partial class PresetIntegrationChecks
         CheckNativeAdventureGoldDeath();
         CheckNativeAdventureGoldCleanup();
         CheckNativeBossInvocation();
+        CheckNativeBossUncertainty();
         CheckNativeWalderpAttack();
         CheckManualTitanCapacityTransition();
         CheckCapacityLifecycleRegressions();
@@ -325,10 +354,15 @@ public static partial class PresetIntegrationChecks
         Set(settings, "_manualAdventureRecoverHealth", false); Set(settings, "_manualAdventurePrecastBuffs", false);
         Set(settings, "_blacklistedBosses", new int[0]);
         var adventure = Get(Character, "adventure"); var controller = Get(Character, "adventureController");
+        var idle = Child(controller, "idleAttackMove"); Set(idle, "character", Character); Set(idle, "pc", Get(controller, "playerController"));
+        foreach (var name in new[] { "healMove", "hyperRegenMove" })
+            Set(Child(Child(controller, name), "button"), "m_Interactable", false);
         Set(Character, "bossID", 200); Set(Character, "highestBoss", 200);
         Set(adventure, "waldoDefeats", 4); Set(adventure, "waldoFinds", 4); Set(adventure, "titan5Kills", 0);
         Set(adventure, "maxHP", 100f); Set(adventure, "autoattacking", false); Set(adventure, "curHP", 100f);
         var timer = Get(adventure, "boss5Spawn") ?? Child(adventure, "boss5Spawn");
+        Set(timer, "totalseconds", 0d);
+        CallMain("ObserveManualTitanOpportunities");
         Set(timer, "totalseconds", Convert.ToDouble(Invoke(controller, "boss5SpawnTime")) + 1);
         Set(Get(Character, "advancedTraining"), "levelTarget", new long[] { 10, 20, 0, 0, 0 });
         Set(Get(Character, "advancedTraining"), "level", new long[] { 10, 20, 0, 0, 0 });
@@ -432,25 +466,154 @@ public static partial class PresetIntegrationChecks
         CallMain("SetExecutionLifecycle", Enum.Parse(MainType.GetNestedType("ExecutionLifecycle", All), "Running"));
     }
 
-    private static void CheckNativeRouteCommitmentImport()
+    private static void RestartRouteCoordinator()
+    {
+        // Replace only the injector coordinator. Native character, controllers, gear,
+        // resources, timers and user settings survive unchanged, as on reinjection.
+        MainInstance = Invoke(typeof(Program), "Blank", MainType);
+        Set(typeof(Program), "MainInstance", MainInstance); Set(MainType, "reference", MainInstance);
+        Set(MainInstance, "_combatPrepEndedRuns", new HashSet<string>());
+        Set(MainInstance, "_resourceExecutionOwner", ""); Set(MainInstance, "_resourceExecutionReason", "");
+        Set(MainInstance, "_customIronPillPrepStartedAt", -1d);
+        foreach (var field in new[] { "_manualTitanIndex", "_customTitanGoldPendingIndex", "_customTitanGoldIndex", "_customTitanFightIndex" })
+            Set(MainInstance, field, -1);
+        Set(MainInstance, "_combManager", New("CombatManager"));
+    }
+
+    private static void SelectRestartFarm()
+    {
+        var settings = Get(MainType, "Settings");
+        Set(settings, "_customAdventureEnabled", true); Set(settings, "_customAdventureGoldPush", false);
+        Set(settings, "_customAdventureMode", 1); Set(settings, "_customAdventureZone", 0);
+        Set(settings, "_customAdventureRules", Array.CreateInstance(Plugin.GetType("NGUInjector.AdventureRule", true), 0));
+        Set(Get(Character, "adventure"), "autoattacking", true);
+    }
+
+    private static void CheckNativeRouteBusyRestart()
+    {
+        PrepareRouteProcessWorld(); SelectRestartFarm();
+        var native = Get(Character, "bossController"); Invoke(native, "startNuke");
+        Equal(true, Get(native, "isFighting"), "restart begins with actual native boss combat, not an imported claim");
+        Equal(true, Get(native, "nukeBoss"), "native nuke is active at session loss");
+        RestartRouteCoordinator();
+        var swaps = Get(typeof(Program), "Swaps"); var writes = ResourceTransfers; var routes = AdventureZoneEntries;
+        var nukes = RouteNativeNukes; var fights = RouteNativeFights; var os = RouteNativeOsChanges;
+        var gear = Invoke(Plugin.GetType("NGUInjector.Managers.LoadoutManager", true), "CaptureExactLoadout");
+        var support = Property(CallMain("CaptureSupportState"), "StableKey"); var allocations = CapacityNativeMapKey(Character);
+        Throws(() => CallMain("StartBossPush"), "busy", "new session cannot duplicate an existing native boss start");
+        Throws(() => CallMain("StartMaxItopodPush", 2), "busy", "native boss blocks new bounded tower setup");
+        var ordinary = CallMain("ObserveRouteGrant", -1);
+        Equal(false, CallMain("ValidateExecutionGrant", ordinary, Domain("Route, NativeSettings")), "native busy flags deny ordinary setup authority without an imported claim");
+        Check(((string)CallMain("CombatPrepStartBlocker", (object)null)).Contains("bossController.isFighting=true"), "actual native boss busy state blocks prep acquisition before OS/recall/setup");
+        CallMain("CustomAdventureTick"); CallMain("CustomAdventureTick"); CallMain("BossPushTick");
+        Equal(false, CallMain("TryRouteManualTitan"), "native boss blocks manual setup without an imported claim");
+        Equal(false, CallMain("ExecutionOwnsDomain", Domain("Gear, Support, Route, NativeSettings")), "restart imports no prerequisite claim");
+        Equal(nukes, RouteNativeNukes, "busy restart invokes no duplicate native nuke");
+        Equal(fights, RouteNativeFights, "busy restart invokes no duplicate native fight");
+        Equal(os, RouteNativeOsChanges, "busy restart invokes no OS reset");
+        Equal(swaps, Get(typeof(Program), "Swaps"), "busy restart performs no gear setup");
+        Equal(writes, ResourceTransfers, "busy restart performs no recall or funding");
+        Equal(routes, AdventureZoneEntries, "busy restart performs no disruptive route retirement");
+        Equal(support, Property(CallMain("CaptureSupportState"), "StableKey"), "busy restart preserves exact support");
+        Equal(allocations, CapacityNativeMapKey(Character), "busy restart preserves all current allocations");
+        Invoke(native, "nukeBosses");
+        Equal(false, Get(native, "isFighting"), "native failed nuke retires itself after restart");
+        Equal(false, Get(native, "nukeBoss"), "native retirement clears its own nuke flag");
+        CallMain("CustomAdventureTick");
+        Equal(0, Get(Get(Character, "adventure"), "zone"), "ordinary enabled farm resumes from current native state when idle");
+        Equal(true, Invoke(Plugin.GetType("NGUInjector.Managers.LoadoutManager", true), "ExactLoadoutMatches", gear), "restart never restores historical gear");
+        Equal(nukes, RouteNativeNukes, "ordinary resume does not restart cancelled boss request");
+    }
+
+    private static void CheckNativeManualTitanRestart()
     {
         PrepareRouteProcessWorld(); CallMain("TryRouteManualTitan");
-        var saved = CallMain("ExportRouteExecutionCommitments");
-        var before = saved.ToString(); var swaps = Get(typeof(Program), "Swaps"); var writes = ResourceTransfers;
-        CallMain("ImportRouteExecutionCommitments", saved);
-        Equal(before, CallMain("ExportRouteExecutionCommitments").ToString(), "pending import preserves exact original acquisition/history");
+        var oldCoordinator = MainInstance;
+        var oldProcess = Get(MainInstance, "_manualTitanProcess"); var oldGrant = CallMain("RouteProcessGrant", oldProcess, false);
+        SelectRestartFarm(); RestartRouteCoordinator();
+        var swaps = Get(typeof(Program), "Swaps"); var writes = ResourceTransfers;
+        Equal(false, CallMain("TryRouteManualTitan"), "startup-current-due manual titan receives no fresh budget");
+        Equal(true, Property(Json(CallMain("GetManualTitanRuntime"), "disarmed"), "AsBool"), "interrupted spawn waits for a native reset");
+        Equal(0, Property(Json(CallMain("GetManualTitanRuntime"), "remainingDeaths"), "AsInt"), "no old death cursor or budget is imported");
+        Equal(false, CallMain("ValidateExecutionGrant", oldGrant, Domain("Route")), "old-session route grant has no current authority");
+        var zone = Get(Get(Character, "adventure"), "zone"); var maps = CapacityNativeMapKey(Character);
+        Invoke(oldCoordinator, "CustomAdventureTick"); Invoke(oldCoordinator, "CancelManualTitan", "late old-session callback");
+        Equal(zone, Get(Get(Character, "adventure"), "zone"), "superseded coordinator callbacks cannot retire the new session's native route");
+        Equal(maps, CapacityNativeMapKey(Character), "superseded coordinator callbacks cannot recall the new session's native resources");
+        var settings = Get(MainType, "Settings"); Set(settings, "_manualTitanEnabled", false); CallMain("TryRouteManualTitan");
+        Set(settings, "_manualTitanMaxDeaths", 9); Set(settings, "_manualTitanEnabled", true);
+        Equal(false, CallMain("TryRouteManualTitan"), "settings edits and off/on do not create a spawn opportunity");
         CallMain("CustomAdventureTick");
-        Equal(swaps, Get(typeof(Program), "Swaps"), "pending import never selects or equips replacement gear");
-        Equal(writes, ResourceTransfers, "pending import never clears resources or renews work");
-        // Explicit review does not invent cross-process native log continuity. It
-        // conservatively disarms and retires the old spawn with its original budget.
-        Set(MainInstance, "_importedRouteCommitments", null); Set(MainInstance, "_routeCommitmentIssue", null);
-        CallMain("CancelManualTitan", "prepare explicit same-entry review");
-        CallMain("ImportRouteExecutionCommitments", saved);
-        var rebound = CallMain("RebindRouteExecutionCommitments");
-        Equal(true, rebound, "reviewed exact same-entry import resolves safely: " + Get(MainInstance, "_routeCommitmentIssue"));
-        Equal(true, Property(Json(CallMain("GetManualTitanRuntime"), "disarmed"), "AsBool"), "review cannot renew an unprovable death cursor");
-        Equal(false, CallMain("TryRouteManualTitan"), "reviewed original spawn remains disarmed until actual timer rearm");
+        Equal(0, Get(Get(Character, "adventure"), "zone"), "cancelled bounded titan does not poison ordinary farming");
+        Equal(swaps, Get(typeof(Program), "Swaps"), "cancelled old titan never restores original gear"); Equal(writes, ResourceTransfers, "session cancellation never clears old resources");
+        var adventure = Get(Character, "adventure"); var timer = Get(adventure, "boss5Spawn");
+        var setTime = timer.GetType().GetMethod("setTime", new[] { typeof(double) });
+        var observation = ((IDictionary)Get(MainInstance, "_manualTitanSpawns"))[4];
+        Equal(false, Get(observation, "Started"), "startup disarm does not fabricate an acquired attempt");
+        Equal(null, Get(observation, "Acquisition"), "startup disarm imports no acquisition");
+        var kills = (int)Get(adventure, "titan5Kills");
+        // Observe the native kill counter/reset outcome, not a replacement injector budget.
+        Set(adventure, "titan5Kills", kills + 1); setTime.Invoke(timer, new object[] { 0d });
+        Equal(false, CallMain("TryRouteManualTitan"), "observed reset alone is not a due opportunity");
+        Equal(true, Get(observation, "ResetSeen"), "native counter/timer transition is observed before the next due spawn");
+        Equal(true, Get(observation, "Disarmed"), "countdown retains the startup disarm");
+        Equal(0, Property(Json(CallMain("GetManualTitanRuntime"), "remainingDeaths"), "AsInt"), "native reset grants no early death budget");
+        Equal(null, Get(MainInstance, "_manualTitanProcess"), "native reset acquires no route before due");
+        Equal(true, Invoke(Get(MainInstance, "_combManager"), "MoveToZone", -1), "ordinary farm retires through its actual native route grant");
+        setTime.Invoke(timer, new object[] { Convert.ToDouble(Invoke(Get(Character, "adventureController"), "boss5SpawnTime")) + 1 });
+        Check(Convert.ToDouble(Invoke(Plugin.GetType("NGUInjector.Managers.ZoneHelpers", true), "TitanSpawnSecondsRemaining", 4)) <= 0,
+            "the observed reset reaches the actual native due boundary");
+        var resumed = CallMain("TryRouteManualTitan");
+        Equal(true, resumed, "next observed native spawn permits one new bounded attempt; " + CallMain("GetManualTitanRuntime") + "; " + InlineObservedError);
+        var process = Get(MainInstance, "_manualTitanProcess");
+        Equal(kills + 1, Get(observation, "Kills"), "new attempt captures the current native opportunity counter");
+        Check(!ReferenceEquals(oldProcess, process), "a new native spawn never revives the interrupted old process");
+        var claim = Get(process, "Claim"); var acquisition = Get(claim, "Acquisition");
+        var limit = Get(observation, "Limit"); var seconds = (double)Get(observation, "OwnedSeconds");
+        resumed = CallMain("TryRouteManualTitan");
+        Equal(true, resumed, "same opportunity continues its one acquired attempt; " + CallMain("GetManualTitanRuntime") + "; " + InlineObservedError);
+        Check(ReferenceEquals(process, Get(MainInstance, "_manualTitanProcess")), "current-opportunity dedup retains exact process");
+        Check(ReferenceEquals(claim, Get(process, "Claim")), "same opportunity retains its original claim");
+        Equal(acquisition, Get(claim, "Acquisition"), "same opportunity never reacquires another attempt identity");
+        Equal(limit, Get(observation, "Limit"), "same opportunity never replenishes its death limit");
+        Check((double)Get(observation, "OwnedSeconds") >= seconds, "same opportunity charges time against the acquired attempt budget");
+        CallMain("CancelManualTitan", "restart check complete");
+    }
+
+    private static void CheckNativeTowerRestart()
+    {
+        foreach (var request in new[] { "command", "mode" })
+        {
+            PrepareNativeTowerProcess(); var adventure = Get(Character, "adventure"); var settings = Get(MainType, "Settings");
+            Set(settings, "_customAdventureMaxItopodDeaths", 2);
+            Set(settings, "_customAdventureMode", 3);
+            var start = Get(adventure, "itopodStart"); var end = Get(adventure, "itopodEnd"); var shifter = Get(Get(Character, "arbitrary"), "lazyITOPODOn");
+            RestartRouteCoordinator(); var swaps = Get(typeof(Program), "Swaps"); var writes = ResourceTransfers; var routes = AdventureZoneEntries;
+            CallMain("CustomAdventureTick"); CallMain("CustomAdventureTick");
+            Equal(0, Get(MainInstance, "_maxItopodPushRemainingDeaths"), "startup-selected tower mode cannot renew old budget");
+            Equal(null, Get(MainInstance, "_maxItopodProcess"), "restart imports no tower field-return or gear claim");
+            Equal(start, Get(adventure, "itopodStart"), "restart cannot restore old original tower start"); Equal(end, Get(adventure, "itopodEnd"), "restart cannot restore old original tower end");
+            Equal(shifter, Get(Get(Character, "arbitrary"), "lazyITOPODOn"), "restart imports no shifter return authority");
+            Equal(3, Property(settings, "CustomAdventureMode"), "budget cancellation never writes user desired mode");
+            Set(settings, "_customAdventureEnabled", false); CallMain("CustomAdventureTick");
+            Set(settings, "_customAdventureEnabled", true); CallMain("CustomAdventureTick");
+            Equal(0, Get(MainInstance, "_maxItopodPushRemainingDeaths"), "enable toggle alone does not replenish startup tower budget");
+            Equal(swaps, Get(typeof(Program), "Swaps"), "tower restart makes no historical gear return"); Equal(writes, ResourceTransfers, "tower restart makes no resource change");
+            Equal(routes, AdventureZoneEntries, "tower restart makes no old-claim route cleanup");
+            if (request == "command") CallMain("StartMaxItopodPush", 2);
+            else
+            {
+                Set(settings, "_customAdventureMode", 0); CallMain("SynchronizeMaxItopodAdventureMode");
+                Set(settings, "_customAdventureMode", 3); CallMain("SynchronizeMaxItopodAdventureMode");
+            }
+            Equal(2, Get(MainInstance, "_maxItopodPushRemainingDeaths"), "new explicit " + request + " acquires a new bounded request");
+            CallMain("CancelMaxItopodPush"); CallMain("SynchronizeMaxItopodAdventureMode");
+            Equal(0, Get(MainInstance, "_maxItopodPushRemainingDeaths"), "cancelled new request cannot automatically renew its budget");
+            Equal(3, Property(settings, "CustomAdventureMode"), "cancellation preserves selected tower mode");
+            SelectRestartFarm(); CallMain("CustomAdventureTick");
+            Equal(0, Get(adventure, "zone"), "later ordinary farm runs without importing old tower cleanup authority");
+            Equal(0, Get(MainInstance, "_maxItopodPushRemainingDeaths"), "ordinary farming never replenishes cancelled tower budget");
+        }
     }
 
     private static void PrepareNativeTowerProcess(int start = 3, int end = 4)
@@ -570,12 +733,13 @@ public static partial class PresetIntegrationChecks
         var gear = Invoke(Plugin.GetType("NGUInjector.Managers.LoadoutManager", true), "CaptureExactLoadout");
         var support = Property(CallMain("CaptureSupportState"), "Selection");
         var setup = CallMain("AcquireFiniteActionSetup", claim, gear, support, false, false);
-        var record = Activator.CreateInstance(Plugin.GetType("NGUInjector.FiniteActionRecord", true), true);
+        var attempt = Activator.CreateInstance(MainType.GetNestedType("FightPreparationAttempt", All), true);
         var identity = Activator.CreateInstance(Plugin.GetType("NGUInjector.FiniteActionIdentity", true), All, null,
             new object[] { "fight-preparation", "fight-preparation", "retained-fight-entry", "entry-1", "manual-prep" }, null);
-        Set(record, "Identity", identity);
+        Set(attempt, "Identity", identity); Set(attempt, "Settings", Get(MainType, "Settings"));
+        Set(attempt, "PlanFile", Property(Get(MainType, "Settings"), "CustomPlanFile"));
         Set(MainInstance, "_fightPreparationClaim", claim); Set(MainInstance, "_fightPreparationSetup", setup);
-        Set(MainInstance, "_fightPreparationRecord", record); Set(MainInstance, "_fightPreparationStarted", true);
+        Set(MainInstance, "_fightPreparationAttempt", attempt); Set(MainInstance, "_fightPreparationStarted", true);
         Equal(true, Property(MainInstance, "FightPreparationVerified"), "real finite preparation setup verifies before boss admission");
         var swaps = Get(typeof(Program), "Swaps"); var searches = InlineGearSelections;
         CallMain("StartBossPush");
@@ -693,7 +857,7 @@ public static partial class PresetIntegrationChecks
         Equal(true, Get(native, "nukeBoss"), "native user nuke really starts before setup application");
         Check(ReferenceEquals(process, Get(MainInstance, "_maxItopodProcess")), "unapplied acquisition retains pending native retirement process");
         var claim = Get(process, "Claim"); Equal(false, Get(claim, "Ended"), "active native nuke retains exact prerequisite claim");
-        Throws(() => CallMain("StartMaxItopodPush", 2), "already active", "pending pre-routing retirement cannot acquire a fresh death budget");
+        Throws(() => CallMain("StartMaxItopodPush", 2), "busy", "pending native retirement cannot acquire a fresh death budget");
         var swaps = Get(typeof(Program), "Swaps"); CallMain("CancelMaxItopodPush");
         Equal(swaps, Get(typeof(Program), "Swaps"), "pending native activity cannot trigger historical equipment return");
         Equal(true, Get(native, "isFighting"), "cancellation never clears native activity as a substitute for retirement");
@@ -853,7 +1017,14 @@ public static partial class PresetIntegrationChecks
             Equal(true, Get(claim, "Ended"), kind + " actual claim ended");
             Equal(swaps, Get(typeof(Program), "Swaps"), kind + " no-successor cleanup never restores historical gear");
             Equal(writes, ResourceTransfers, kind + " cleanup no resource withdrawal");
-            if (kind == "foreign") Equal(4, Get(adventure, "zone"), "foreign route cannot be overwritten by cleanup/fallback");
+            if (kind == "foreign")
+            {
+                Equal(4, Get(adventure, "zone"), "foreign route cannot be overwritten by cleanup/fallback");
+                var routes = AdventureZoneEntries;
+                CallMain("TryRouteCustomAdventureGoal"); CallMain("CustomAdventureTick");
+                Equal(4, Get(adventure, "zone"), "later ordinary ticks cannot adopt unresolved foreign route authority");
+                Equal(routes, AdventureZoneEntries, "unresolved route conflict prevents all native fallback entries");
+            }
             else Equal(true, Invoke(Plugin.GetType("NGUInjector.Managers.LoadoutManager", true), "ExactLoadoutMatches", Get(selected, "Gear")), kind + " no successor preserves actual selected map");
         }
     }
@@ -885,6 +1056,39 @@ public static partial class PresetIntegrationChecks
         Equal(true, Get(claim, "Ended"), "native completion ends actual prerequisite claim");
         Check(ReferenceEquals(b, Get(inventory, "head")), "only after native completion installs CURRENT B");
         Equal(writes, ResourceTransfers, "native boss retirement adds no resource clear");
+    }
+
+    private static void CheckNativeBossUncertainty()
+    {
+        PrepareRouteProcessWorld(); Set(Get(MainType, "Settings"), "_manualTitanEnabled", false);
+        CallMain("StartBossPush");
+        RouteNativeActionReturned = name => {
+            if (name != "startNuke") return;
+            RouteNativeActionReturned = null;
+            CallMain("InvalidateExecutionObservations", Domain("Route"));
+        };
+        var nukes = RouteNativeNukes;
+        try { CallMain("BossPushTick"); }
+        finally { RouteNativeActionReturned = null; }
+        Equal(nukes + 1, RouteNativeNukes, "uncertain callback follows one actual native invocation");
+        Equal(true, Get(MainInstance, "_bossPushStopping"), "lost callback authority retires the current bounded boss attempt");
+        CallMain("BossPushTick"); CallMain("BossPushTick");
+        Equal(nukes + 1, RouteNativeNukes, "uncertain attempt is not replayed while native combat is busy");
+        Invoke(Get(Character, "bossController"), "nukeBosses"); CallMain("BossPushTick");
+        Equal(false, Property(MainInstance, "BossPushRunning"), "native retirement finishes cancelled uncertain attempt");
+        CallMain("StartBossPush");
+        var process = Get(MainInstance, "_bossPushProcess"); CallMain("ApplyRouteProcess", process);
+        var stale = CallMain("RouteProcessGrant", process, false);
+        CallMain("InvalidateExecutionObservations", Domain("Route"));
+        var kind = Enum.Parse(MainType.GetNestedType("RouteActionKind", All), "BossNuke");
+        var rejected = CallMain("InvokeRouteAction", "uninvoked-stale-grant", stale, kind, 0);
+        Equal(false, Get(rejected, "Invoked"), "runner reports no invocation for a stale grant");
+        Equal(false, Property(rejected, "Verified"), "stale grant is never a verified effect");
+        Equal(nukes + 1, RouteNativeNukes, "rejected preflight reaches no native start");
+        CallMain("BossPushTick");
+        Equal(nukes + 2, RouteNativeNukes, "new explicit attempt can invoke the same kind after uncertainty");
+        CallMain("BossPushTick"); Equal(nukes + 2, RouteNativeNukes, "current native opportunity deduplicates repeated ticks");
+        CallMain("StopBossPush"); Invoke(Get(Character, "bossController"), "nukeBosses"); CallMain("BossPushTick");
     }
 
     private static void CheckNativeWalderpAttack()
@@ -965,6 +1169,7 @@ public static partial class PresetIntegrationChecks
 
     private static void CheckManualTitanCapacityTransition()
     {
+        CheckManualTitanCapacityDiggerGrowth();
         var before = Assertions;
         foreach (var immediate in new[] { false, true })
         {
@@ -1018,8 +1223,96 @@ public static partial class PresetIntegrationChecks
         CheckManualTitanCapacityLanes();
         CheckManualTitanCapacityFailures();
         CheckManualTitanCapacityNoopAndRetry();
-        CheckManualTitanCapacityPersistence();
+        CheckManualTitanCapacityRestart();
         CheckManualTitanCapacityIntermediateDip();
+    }
+
+    private static void CheckManualTitanCapacityDiggerGrowth()
+    {
+        var before = Assertions;
+        foreach (var change in new[] { "owned", "render", "support", "resources", "conflict", "revision" })
+        {
+            PrepareFundedTitanCapacityWorld();
+            var settings = Get(MainType, "Settings"); Set(settings, "_manualTitanLoadout", 1); Set(settings, "_upgradeDiggers", true);
+            Set(Get(Character, "settings"), "diggersOn", true);
+            var diggers = (IList)Get(Get(Character, "diggers"), "diggers");
+            foreach (var digger in diggers) { Set(digger, "maxLevel", 0L); Set(digger, "curLevel", 0L); Set(digger, "active", false); }
+            ((IList)Get(Get(Character, "diggers"), "activeDiggers")).Clear();
+            var controller = Get(Character, "allDiggers");
+            Set(controller, "baseGoldCost", Enumerable.Repeat(1e200d, 12).ToList());
+            Set(controller, "gpsGrowthRate", Enumerable.Repeat(2d, 12).ToList());
+            DiggerPrice(0, 10d); Set(Character, "realGold", 100d);
+            PrepareRepeatablePurchaseLoop();
+            Equal(true, CallMain("TryRouteManualTitan"), change + " actual capacity route starts before ordinary purchase");
+            var process = Get(MainInstance, "_manualTitanProcess"); var claim = Get(process, "Claim"); var setup = Get(process, "Setup");
+            Equal(3, Convert.ToInt32(Get(process, "ResourceRecall")), change + " route really owns both controlled-empty resource lanes");
+            var adventure = Get(Character, "adventure");
+            Set(MainInstance, "_manualTitanEnemyName", "WALDERP");
+            ((IList)Get(Get(Get(Character, "adventureController"), "log"), "Eventlog")).Add(new string("WALDERP has defeated you!".ToCharArray()));
+            Set(adventure, "zone", -1); Set(adventure, "curHP", 0f);
+            Equal(true, CallMain("ObserveManualTitanDeaths"), change + " actual native death observation consumes the original budget");
+            Set(adventure, "curHP", Convert.ToSingle(Invoke(Character, "totalAdvHP")));
+            Equal(true, CallMain("TryRouteManualTitan"), change + " original route resumes with one death already consumed");
+            var spawn = ((IDictionary)Get(MainInstance, "_manualTitanSpawns"))[4];
+            var acquisition = Get(claim, "Acquisition"); var limit = Get(spawn, "Limit"); var deaths = Get(spawn, "Deaths");
+            Equal(1, deaths, change + " regression starts with one genuinely consumed death, not a fresh budget");
+            var seconds = (double)Get(spawn, "OwnedSeconds");
+            Set(MainInstance, "_manualTitanLastTick", DateTime.UtcNow.AddSeconds(-30));
+            var combat = CallMain("RouteProcessGrant", process, false); var transition = Get(process, "TransitionGrant");
+            Equal(true, CallMain("ValidateExecutionGrant", combat, Get(claim, "Domains")), change + " original cached combat grant starts current");
+            Equal(true, CallMain("ValidateExecutionGrant", transition, Get(claim, "Domains")), change + " original cached transition grant starts current");
+            var selections = InlineGearSelections; var swaps = Get(typeof(Program), "Swaps");
+            var support = Property(CallMain("CaptureSupportState"), "StableKey"); var calls = Program.RepeatableDiggerCalls;
+            var compatible = change == "owned" || change == "render";
+            Program.FinitePurchaseRendered = () => {
+                if (change == "render") throw new InvalidOperationException("verified route growth presentation failure");
+                if (change == "support") Set(diggers[11], "curLevel", 1L);
+                if (change == "resources")
+                {
+                    Set(((IList)Get(Get(Character, "NGU"), "skills"))[0], "energy", 1L);
+                    Set(Character, "idleEnergy", (long)Get(Character, "idleEnergy") - 1);
+                }
+                if (change == "conflict") CallMain("RecordSelectedSetupConflict", Character, Get(Get(Character, "stats"), "rebirthNumber"), "support", "foreign support conflict during native purchase");
+            };
+            if (change == "revision") CallMain("InvalidateExecutionObservations", Domain("Support"));
+            try { CallMain("AutomationRoutine"); }
+            finally { Program.FinitePurchaseRendered = null; }
+            Equal(calls + (change == "revision" ? 0 : 1), Program.RepeatableDiggerCalls, change + " ordinary coordinator buys at most one native digger increment");
+            Equal(change == "revision" ? 0L : 1L, Get(diggers[0], "maxLevel"), change + " native purchased maximum is retained");
+            Equal(change == "revision" ? 100d : 90d, Get(Character, "realGold"), change + " native purchase pays exactly once");
+            var maps = CapacityNativeMapKey(Character); var zone = Get(adventure, "zone"); var writes = ResourceTransfers;
+            CallMain("CustomAdventureTick");
+            Equal(compatible, Get(MainInstance, "_manualTitanActive"), change + " next actual coordinator tick retains only verified compatible growth: " + CallMain("GetManualTitanRuntime"));
+            Equal(swaps, Get(typeof(Program), "Swaps"), change + " growth never re-equips or restores historical gear");
+            Equal(selections, InlineGearSelections, change + " growth never selects another setup");
+            Equal(limit, Get(spawn, "Limit"), change + " growth never replenishes the acquired death limit");
+            Equal(deaths, Get(spawn, "Deaths"), change + " growth never clears the consumed native death");
+            Equal(acquisition, Get(claim, "Acquisition"), change + " growth never renews the original acquisition");
+            if (compatible)
+            {
+                Check(ReferenceEquals(process, Get(MainInstance, "_manualTitanProcess")) && ReferenceEquals(claim, Get(process, "Claim"))
+                    && ReferenceEquals(setup, Get(process, "Setup")), change + " route continues the same original owner and exact setup");
+                Equal(16, Get(adventure, "zone"), change + " legitimate manual titan combat continues after the ordinary purchase");
+                Equal(support, Property(CallMain("CaptureSupportState"), "StableKey"), change + " pinned current support stays unchanged");
+                Check((double)Get(spawn, "OwnedSeconds") >= seconds + 29, change + " continuation charges elapsed time against the original ten-minute deadline");
+                Check(!ReferenceEquals(combat, Get(process, "CombatGrant")) && !ReferenceEquals(transition, Get(process, "TransitionGrant")), change + " both affected grants are renewed, not just combat");
+                Equal(true, CallMain("ValidateExecutionGrant", Get(process, "TransitionGrant"), Get(claim, "Domains")), change + " renewed transition grant is current");
+                Equal(true, CallMain("ValidateExecutionGrant", CallMain("RouteProcessGrant", process, false), Get(claim, "Domains")), change + " renewed combat grant is current");
+                Equal(maps, CapacityNativeMapKey(Character), change + " continuation preserves exact controlled-empty resources");
+                CallMain("RecordSelectedSetupConflict", Character, Get(Get(Character, "stats"), "rebirthNumber"), "support", "later foreign conflict cannot borrow verified purchase approval");
+                CallMain("CustomAdventureTick");
+                Equal(false, Get(MainInstance, "_manualTitanActive"), change + " a later conflict cannot reuse the one-purchase approval");
+            }
+            else
+            {
+                Check(ReferenceEquals(combat, Get(process, "CombatGrant")) && ReferenceEquals(transition, Get(process, "TransitionGrant")), change + " foreign state cannot acquire either replacement grant");
+                Equal(true, Get(spawn, "Disarmed"), change + " rejected growth cancels only the bounded current opportunity");
+                Equal(maps, CapacityNativeMapKey(Character), change + " rejection preserves foreign resource evidence");
+                Equal(writes, ResourceTransfers, change + " rejection performs no resource cleanup");
+                if (change != "revision") Equal(zone, Get(adventure, "zone"), change + " rejection does not retire a foreign or conflicted route");
+            }
+        }
+        Console.WriteLine("Manual titan ordinary digger growth: " + (Assertions - before) + " actual coordinator/native assertions.");
     }
 
     private static object AcquireCapacityBaseline(bool successor = false)
@@ -1075,15 +1368,14 @@ public static partial class PresetIntegrationChecks
                 routeEntries.Add(zone);
                 if (zone == -1) { beforeWithdrawal = true; Equal(allocations, CallMain("GlobalPresetAllocationState"), "actual predecessor retirement precedes every resource withdrawal"); }
             };
-            var durableChecks = 0;
+            var ownershipChecks = 0;
             CapacityResourcePresentation = (c, target, index) => {
-                if (durableChecks++ != 0) return;
+                if (ownershipChecks++ != 0) return;
                 Equal(-1, Get(Get(Character, "adventure"), "zone"), "native withdrawal presentation follows actual predecessor retirement");
-                var saved = JsonParse(File.ReadAllText(Path.Combine((string)Get(MainType, "_dir"), "route-execution-v1.json")));
-                var row = Json(saved, "processes").GetType().GetProperty("Item", new[] { typeof(int) }).GetValue(Json(saved, "processes"), new object[] { 0 });
-                Equal("manual-titan-controlled-empty-v1", Property(Json(row, "resourcePolicy"), "Value"), "semantic opt-in is durable before resource callback");
-                Equal(3, Property(Json(row, "resourceRecall"), "AsInt"), "full semantic lane footprint is durable before native effects");
-                Equal(123, Property(Json(row, "domains"), "AsInt"), "claim declares full G/S/Route/settings/E/M footprint before mutation");
+                var acquired = Get(MainInstance, "_manualTitanProcess");
+                Equal(true, Get(acquired, "CapacityTransition"), "session process opts into controlled-empty capacity before callback");
+                Equal(3, Convert.ToInt32(Get(acquired, "ResourceRecall")), "session process declares exact affected lanes before native effects");
+                Equal(123, Convert.ToInt32(Get(Get(acquired, "Claim"), "Domains")), "claim declares full G/S/Route/settings/E/M footprint before mutation");
             };
             if (immediate != 0) GearRenderObserver = () => NativeRouteCapacityClamp(immediate);
             try { Equal(true, CallMain("TryRouteManualTitan"), "actual fully funded manual-titan consumer admits lower-capacity gear: " + CallMain("GetManualTitanRuntime")); }
@@ -1283,37 +1575,29 @@ public static partial class PresetIntegrationChecks
         Equal(0L, Get(((IList)Get(Get(Character, "NGU"), "skills"))[0], "energy"), "no goal leaves affected lane idle rather than inventing a fallback");
     }
 
-    private static void CheckManualTitanCapacityPersistence()
+    private static void CheckManualTitanCapacityRestart()
     {
         var before = Assertions;
-        foreach (var kind in new[] { "valid", "missing", "mask", "owner", "foreign-bars" })
+        foreach (var foreignBars in new[] { false, true })
         {
             PrepareFundedTitanCapacityWorld(); Set(Get(MainType, "Settings"), "_manualTitanLoadout", 1);
-            Equal(true, CallMain("TryRouteManualTitan"), "persistence fixture admits actual capacity process");
-            var saved = CallMain("ExportRouteExecutionCommitments");
-            var acquisition = Get(Get(Get(MainInstance, "_manualTitanProcess"), "Claim"), "Acquisition");
-            CallMain("CancelManualTitan", "prepare reviewed capacity import");
-            Set(MainInstance, "_manualTitanLog", null); Set(MainInstance, "_manualTitanLastEvent", null);
-            var text = saved.ToString();
-            if (kind == "missing") text = text.Replace("manual-titan-controlled-empty-v1", "");
-            if (kind == "mask") text = text.Replace("\"resourceRecall\":3", "\"resourceRecall\":4");
-            if (kind == "owner") text = text.Replace("manual-titan:4", "adventure-gold");
-            if (kind == "foreign-bars") Set(((IList)Get(Get(Character, "NGU"), "skills"))[0], "energy", 1L);
+            Equal(true, CallMain("TryRouteManualTitan"), "restart fixture admits actual funded capacity process");
+            var process = Get(MainInstance, "_manualTitanProcess"); var grant = CallMain("RouteProcessGrant", process, false);
+            if (foreignBars) Set(((IList)Get(Get(Character, "NGU"), "skills"))[0], "energy", 1L);
+            var map = CapacityNativeMapKey(Character); var head = Get(Get(Character, "inventory"), "head"); var zone = Get(Get(Character, "adventure"), "zone");
             var swaps = Get(typeof(Program), "Swaps"); var writes = ResourceTransfers; var routes = AdventureZoneEntries;
-            CallMain("ImportRouteExecutionCommitments", JsonParse(text));
-            Equal(kind == "valid", CallMain("RebindRouteExecutionCommitments"), "reviewed import validates exact semantic capacity contract before native mutation: " + kind);
-            Equal(swaps, Get(typeof(Program), "Swaps"), kind + " import does not equip/search a new selection");
-            Equal(writes, ResourceTransfers, kind + " import has no allocation mutation"); Equal(routes, AdventureZoneEntries, kind + " import fabricates no route cleanup rights");
-            if (kind == "valid")
-            {
-                Equal(true, Property(Json(CallMain("GetManualTitanRuntime"), "disarmed"), "AsBool"), "unfinished imported death history stays disarmed without invented cursor");
-                Equal(false, CallMain("TryRouteManualTitan"), "review does not renew unfinished original spawn");
-                var exported = CallMain("ExportRouteExecutionCommitments").ToString();
-                Check(exported.Contains(acquisition.ToString()), "review retains original selected acquisition identity");
-            }
-            else Equal(false, CallMain("ExecutionOwnsDomain", Domain("Energy, Magic")), kind + " rejection acquires no new resource authority");
+            RestartRouteCoordinator();
+            Equal(false, CallMain("TryRouteManualTitan"), "restart cancels current-due capacity attempt instead of renewing it");
+            Equal(true, Property(Json(CallMain("GetManualTitanRuntime"), "disarmed"), "AsBool"), "unfinished capacity attempt waits for next native spawn");
+            Equal(false, CallMain("ExecutionOwnsDomain", Domain("Energy, Magic")), "restart imports no capacity resource authority");
+            Equal(false, CallMain("ValidateExecutionGrant", grant, Domain("Route")), "old capacity grant is not current-session authority");
+            Equal(map, CapacityNativeMapKey(Character), "restart uses actual maps without old controlled-empty cleanup");
+            Check(ReferenceEquals(head, Get(Get(Character, "inventory"), "head")), "restart retains current gear instead of restoring old original");
+            Equal(zone, Get(Get(Character, "adventure"), "zone"), "restart imports no old route-retirement right");
+            Equal(swaps, Get(typeof(Program), "Swaps"), "restart performs no native gear effect");
+            Equal(writes, ResourceTransfers, "restart performs no native resource effect"); Equal(routes, AdventureZoneEntries, "restart performs no native cleanup route effect");
         }
-        Console.WriteLine("Manual titan semantic capacity import: " + (Assertions - before) + " native assertions.");
+        Console.WriteLine("Manual titan capacity restart cancellation: " + (Assertions - before) + " native assertions.");
     }
 
     private static void CheckManualTitanCapacityIntermediateDip()
@@ -1391,8 +1675,7 @@ public static partial class PresetIntegrationChecks
                 CallMain("SetExecutionLifecycle", Enum.Parse(MainType.GetNestedType("ExecutionLifecycle", All), "Quiescing"));
                 Equal(true, CallMain("ServiceLifecycleRetirement"), entry + " healthy nonzero capacity hold completes actual lifecycle retirement");
                 Equal(true, CallMain("ServiceLifecycleRetirement"), entry + " repeated terminal retirement is idempotent");
-                Equal("manual-titan-clamp-safe-v1", Property(Json(CallMain("ExportRouteExecutionCommitments"), "capacityFundingPolicy"), "Value"), entry + " retains semantic delayed-clamp funding policy");
-                Equal(3, Property(Json(CallMain("ExportRouteExecutionCommitments"), "capacityFundingLanes"), "AsInt"), entry + " retains exact delayed-clamp lane mask");
+                Equal(3, Get(MainInstance, "_executionCapacityFundingLanes"), entry + " retains only session-local delayed-clamp lane safety");
                 CallMain("ReconcileCustomResources", null, true);
                 Equal(writes, ResourceTransfers, entry + " Quiescing cannot fund CURRENT B");
                 CallMain("Unload");
@@ -1411,8 +1694,6 @@ public static partial class PresetIntegrationChecks
             var map = (IDictionary)Invoke(writer, "CaptureAllocations", model);
             Equal(12L, ((long[])Property(Get(model, "training"), "attackEnergy"))[0], entry + " immutable basic12 survives");
             Check(map.Values.Cast<long[]>().Where(x => x != null).All(x => x.All(value => value >= 0)), entry + " actual native maps remain nonnegative");
-            var saved = JsonParse(File.ReadAllText(Path.Combine((string)Get(MainType, "_dir"), "route-execution-v1.json")));
-            Equal("manual-titan-clamp-safe-v1", Property(Json(saved, "capacityFundingPolicy"), "Value"), entry + " shutdown durably retains delayed-clamp semantics");
             CallMain("Unload"); Equal(entries + 1, AdventureZoneEntries, entry + " repeated Unload never repeats native retirement");
             Equal(writes, ResourceTransfers, entry + " repeated Unload never withdraws/funds native resources");
         }
@@ -1425,7 +1706,6 @@ public static partial class PresetIntegrationChecks
         var oldProcess = Get(MainInstance, "_manualTitanProcess"); var oldClaim = Get(oldProcess, "Claim");
         Equal(3, Convert.ToInt32(Get(oldProcess, "ResourceRecall")), "epoch cleanup exercises nonzero capacity dispatch");
         var model = Character; var runtime = MainInstance; var adventure = Get(model, "adventure");
-        var path = Path.Combine((string)Get(MainType, "_dir"), "route-execution-v1.json"); var semantic = File.ReadAllText(path);
         Set(Get(model, "stats"), "rebirthNumber", 8L); Set(Get(model, "rebirthTime"), "totalseconds", 25d);
         Set(Get(model, "totalPlaytime"), "totalseconds", 1501d);
         Set(adventure, "zone", 4); Set(adventure, "autoattacking", true);
@@ -1437,17 +1717,14 @@ public static partial class PresetIntegrationChecks
         var swaps = Get(typeof(Program), "Swaps"); var writes = ResourceTransfers; var entries = AdventureZoneEntries;
         CallMain("ResetCustomAutomationRuntime");
         Equal(true, Get(oldClaim, "Ended"), "NORMAL runtime reset actually ends the expired original claim without reconciliation");
-        var imported = Get(MainInstance, "_importedRouteCommitments")?.ToString();
         CallMain("ResetManualTitanRuntime");
         Equal(false, Get(MainInstance, "_manualTitanActive"), "normal epoch cleanup clears stale active capacity producer");
         Equal(false, Get(MainInstance, "_manualTitanRecovering"), "normal epoch cleanup clears stale capacity recovery latch");
         Equal(null, Get(MainInstance, "_manualTitanProcess"), "normal epoch cleanup drops expired process reference");
         Equal(null, Get(MainInstance, "_manualTitanEpoch"), "expired manual history cannot become current-session authority");
         Equal(0, ((IDictionary)Get(MainInstance, "_manualTitanSpawns")).Count, "old semantic spawn does not become a new death budget/cursor");
-        Equal(imported, Get(MainInstance, "_importedRouteCommitments")?.ToString(), "cleanup preserves quarantined semantic import without adopting its rights");
         Equal(state, CallMain("GlobalPresetAllocationState"), "normal reset/manual cleanup preserves exact new-Epoch funded maps");
         Equal(allMaps, CapacityNativeMapKey(model), "normal epoch cleanup preserves complete basic and R3 maps as well as E/M");
-        Equal(semantic, File.ReadAllText(path), "expired cleanup cannot rewrite old semantic commitments into new-Epoch rights");
         Equal(4, Get(adventure, "zone"), "expired actor cannot move the new-Epoch native route");
         Equal(4000L, Get(model, "curEnergy"), "expired cleanup preserves new Energy total"); Equal(1000L, Get(model, "idleEnergy"), "expired cleanup preserves new Energy idle");
         Equal(2000L, Get(Get(model, "magic"), "curMagic"), "expired cleanup preserves new Magic total");
@@ -1484,8 +1761,9 @@ public static partial class PresetIntegrationChecks
             var zone = Get(Get(Character, "adventure"), "zone"); var entries = AdventureZoneEntries; var state = CallMain("GlobalPresetAllocationState");
             var writes = ResourceTransfers; var swaps = Get(typeof(Program), "Swaps");
             CallMain("SetExecutionLifecycle", Enum.Parse(MainType.GetNestedType("ExecutionLifecycle", All), "Quiescing"));
-            Equal(false, CallMain("ServiceLifecycleRetirement"), kind + " same-epoch uncertainty/authority loss stays scoped blocked");
-            Equal(false, CallMain("ServiceLifecycleRetirement"), kind + " repeat cannot fabricate terminal ownership proof");
+            Equal(true, CallMain("ServiceLifecycleRetirement"), kind + " lost authority retires only the current bounded claim without cleanup");
+            Equal(true, CallMain("ServiceLifecycleRetirement"), kind + " repeated cancellation does not revive cleanup authority");
+            Equal(true, Get(claim, "Ended"), kind + " cancellation ends authority, not earned completion");
             if (kind != "lane")
             { Equal(zone, Get(Get(Character, "adventure"), "zone"), kind + " cannot acquire permission to move foreign/unowned native route"); Equal(entries, AdventureZoneEntries, kind + " no native route mutation"); }
             else Equal(-1, Get(Get(Character, "adventure"), "zone"), "lane permission loss permits only exact narrow Safe Zone retirement");

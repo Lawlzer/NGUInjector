@@ -63,9 +63,9 @@ namespace NGUInjector
                 _assertions += ExecutionCoreChecks.Run();
                 var defaults = new CustomPlan();
                 NGUInjector.Main.Settings = new FocusSettings();
-                Assert(defaults.Version == 17 && NGUInjector.Main.Settings.EnergyNguWeights.SequenceEqual(new[] {0, 0, 0, 0, 1, 0, 1, 0, 0})
+                Assert(defaults.Version == 18 && NGUInjector.Main.Settings.EnergyNguWeights.SequenceEqual(new[] {0, 0, 0, 0, 1, 0, 1, 0, 0})
                     && NGUInjector.Main.Settings.MagicNguWeights.SequenceEqual(EditedMagic), "version-17 runtime consumes global Adventure/Drop energy and Yggdrasil magic defaults");
-                foreach (var name in new[] {"24hr", "infinite"})
+                foreach (var name in new[] {"24hr", "15m-NUMBER-increase"})
                 {
                     var preset = NGUInjector.Main.CustomPlanStore.Load(name);
                     NGUInjector.Main.Settings.CustomPlanFile = name;
@@ -100,7 +100,7 @@ namespace NGUInjector
                         NGUInjector.Main.Settings = new FocusSettings { CustomPlanFile = name };
                     }
                 }
-                SaveWeights("infinite", InitialEnergy, InitialMagic);
+                SaveWeights("15m-NUMBER-increase", InitialEnergy, InitialMagic);
                 Assert(NGUInjector.Main.Settings.EnergyNguWeights.SequenceEqual(InitialEnergy) && NGUInjector.Main.Settings.MagicNguWeights.SequenceEqual(InitialMagic),
                     "global weight edits are independent of built-in presets");
                 NGUInjector.Main.Settings = new FocusSettings();

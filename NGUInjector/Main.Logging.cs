@@ -33,6 +33,8 @@ namespace NGUInjector
 
         internal static string LogError(string context, Exception e)
         {
+            try { AutomationErrorLog.Record(context, e); }
+            catch { /* Error reporting must not interrupt automation or recurse. */ }
             var message = $"ERROR in {context}: {e.Message}";
             Log(message);
             Log(e.ToString());

@@ -68,6 +68,7 @@ namespace NGUInjector
 
         private static string SetupPrimaryPriority(CustomPlanStage stage, bool energy)
         {
+            if (CustomStageAllocator.UsesLockedTimeMachineFallback(stage)) return energy ? "WAN" : "RIT";
             return ActivityPolicy.Current.PrimaryPriority(energy ? stage.EnergyPriorities : stage.MagicPriorities,
                 energy ? stage.EnergyFocus : stage.MagicFocus, energy);
         }

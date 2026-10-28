@@ -162,9 +162,22 @@ fn resource_lane_runtime() -> Value {
     json!({"externalUiEnabled": true, "status": "running", "updatedAt": Utc::now().to_rfc3339(),
         "protocolVersion": 3, "startedAt": "lane-session", "globalPresetsVersion": 2,
         "loadoutPresetsVersion": 2, "globalNguWeightsVersion": 1, "stageTimingVersion": 1,
-        "planVersion": 17, "stageOverridesV1": true, "resourceLanePrioritiesVersion": 1, "settingsCasVersion": 1,
+        "planVersion": 18, "fightScheduleVersion": 1, "stageOverridesV1": true, "resourceLanePrioritiesVersion": 2, "settingsCasVersion": 1,
         "supportedCommands": ["previewLoadoutPreset", "applyLoadoutPreset", "previewGlobalPreset",
             "applyGlobalPreset", "equipGlobalPreset", "applySettingsPatch", "setPlanStage", "savePlan", "readPlan", "createPlan"]})
+}
+
+#[test]
+fn resource_lane_protocol_requires_version_two() {
+    let protocol = protocol_info();
+    assert_eq!(
+        protocol["globalPresets"]["resourceLanePriorities"]["requiredRuntimeFields"],
+        json!({"resourceLanePrioritiesVersion": 2})
+    );
+    assert_eq!(
+        protocol["globalPresets"]["requiredRuntimeFields"],
+        json!({"globalPresetsVersion": 2, "globalNguWeightsVersion": 1})
+    );
 }
 
 #[test]
@@ -173,6 +186,7 @@ fn resource_lane_queue_requires_exact_capability_fresh_session_and_advertised_co
     let library_path = dir.path().join("presets.json");
     let runtime_path = dir.path().join("runtime.json");
     let mut saved = normalize_preset_library(library()).unwrap();
+    saved["Presets"][0]["Weights"] = json!([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     saved["Presets"][0]["ResourcePrioritiesReviewed"] = json!(true);
     saved["Presets"][0]["EnergyPriorities"] = json!(["TM", "NGU"]);
     saved["Presets"][0]["MagicPriorities"] = json!([]);
@@ -198,11 +212,16 @@ fn resource_lane_queue_requires_exact_capability_fresh_session_and_advertised_co
         for version in [
             None,
             Some(Value::Null),
+            Some(json!(-1)),
             Some(json!(0)),
-            Some(json!(2)),
+            Some(json!(1)),
+            Some(json!(3)),
+            Some(json!(2.5)),
             Some(json!("1")),
+            Some(json!("2")),
+            Some(json!(false)),
             Some(json!(true)),
-            Some(serde_json::from_str("1.00000000000000001").unwrap()),
+            Some(serde_json::from_str("2.00000000000000001").unwrap()),
         ] {
             let mut runtime = resource_lane_runtime();
             runtime
@@ -213,9 +232,11 @@ fn resource_lane_queue_requires_exact_capability_fresh_session_and_advertised_co
                 runtime["resourceLanePrioritiesVersion"] = version;
             }
             write_json_atomic(&runtime_path, &runtime, true).unwrap();
-            assert!(queue_command(dir.path(), command, args.clone())
-                .unwrap_err()
-                .contains("resourceLanePrioritiesVersion"));
+            assert_eq!(
+                queue_command(dir.path(), command, args.clone()).unwrap_err(),
+                "Reviewed resource priorities require runtime.resourceLanePrioritiesVersion == 2; command was not queued",
+                "{command}: {runtime}"
+            );
             assert!(list_json_stems(&dir.path().join("commands"))
                 .unwrap()
                 .is_empty());
@@ -307,20 +328,38 @@ fn resource_lane_plan_execution_and_bindings_resolve_committed_literal_reference
                 json!({"patch": {"_autoRebirth": true}, "expectedRevision":""}),
             ),
         ] {
-            for version in [Value::Null, json!(false), json!("1"), json!(2)] {
-                runtime["resourceLanePrioritiesVersion"] = version;
+            for version in [
+                None,
+                Some(Value::Null),
+                Some(json!(-1)),
+                Some(json!(0)),
+                Some(json!(1)),
+                Some(json!(3)),
+                Some(json!(2.5)),
+                Some(json!(false)),
+                Some(json!(true)),
+                Some(json!("1")),
+                Some(json!("2")),
+                Some(serde_json::from_str("2.00000000000000001").unwrap()),
+            ] {
+                runtime
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("resourceLanePrioritiesVersion");
+                if let Some(version) = version {
+                    runtime["resourceLanePrioritiesVersion"] = version;
+                }
                 write_json_atomic(&dir.path().join("runtime.json"), &runtime, true).unwrap();
-                assert!(
-                    queue_command(dir.path(), command, args.clone())
-                        .unwrap_err()
-                        .contains("resourceLanePrioritiesVersion"),
-                    "{binding}: {command}"
+                assert_eq!(
+                    queue_command(dir.path(), command, args.clone()).unwrap_err(),
+                    "Reviewed resource priorities require runtime.resourceLanePrioritiesVersion == 2; command was not queued",
+                    "{binding}: {command}: {runtime}"
                 );
                 assert!(list_json_stems(&dir.path().join("commands"))
                     .unwrap()
                     .is_empty());
             }
-            runtime["resourceLanePrioritiesVersion"] = json!(1);
+            runtime["resourceLanePrioritiesVersion"] = json!(2);
             write_json_atomic(&dir.path().join("runtime.json"), &runtime, true).unwrap();
             let id = queue_command(dir.path(), command, args).unwrap();
             remove_if_present(&dir.path().join("commands").join(format!("{id}.json"))).unwrap();
@@ -360,7 +399,6 @@ fn resource_lane_legacy_actions_and_unknown_library_fields_remain_unchanged_with
         .unwrap()
         .remove("resourceLanePrioritiesVersion");
     runtime["settings"] = json!({"customPlanFile": "selected"});
-    write_json_atomic(&dir.path().join("runtime.json"), &runtime, false).unwrap();
     let mut plan = default_plan();
     plan["ActivePresetId"] = json!("energy");
     write_json_atomic(&plan_path(dir.path(), "selected").unwrap(), &plan, false).unwrap();
@@ -382,16 +420,23 @@ fn resource_lane_legacy_actions_and_unknown_library_fields_remain_unchanged_with
             json!({"patch": {"_useCustomRebirthPlan": true}, "expectedRevision":""}),
         ),
     ] {
-        let id = queue_command(dir.path(), command, args.clone()).unwrap();
-        assert_eq!(
-            read_json_object(
-                &dir.path().join("commands").join(format!("{id}.json")),
-                MAX_COMMAND_BYTES,
-                false
-            )
-            .unwrap()["args"],
-            args
-        );
+        for version in [None, Some(json!(1)), Some(json!(2))] {
+            runtime
+                .as_object_mut()
+                .unwrap()
+                .remove("resourceLanePrioritiesVersion");
+            if let Some(version) = version {
+                runtime["resourceLanePrioritiesVersion"] = version;
+            }
+            write_json_atomic(&dir.path().join("runtime.json"), &runtime, true).unwrap();
+            let id = queue_command(dir.path(), command, args.clone()).unwrap();
+            let path = dir.path().join("commands").join(format!("{id}.json"));
+            assert_eq!(
+                read_json_object(&path, MAX_COMMAND_BYTES, false).unwrap()["args"],
+                args
+            );
+            remove_if_present(&path).unwrap();
+        }
     }
     assert_eq!(fs::read(&path).unwrap(), before);
 }
@@ -535,6 +580,13 @@ fn shared_definition_defaults_match_normalization_without_new_beard_fields() {
     assert_eq!(defaults["BeardPriority"], json!([]));
     assert!(!defaults.contains_key("BeardRotation"));
     assert!(!defaults.contains_key("HorizonSeconds"));
+    for key in [
+        "ResourcePrioritiesReviewed",
+        "EnergyPriorities",
+        "MagicPriorities",
+    ] {
+        assert!(!defaults.contains_key(key));
+    }
     let normalized = normalize_preset_library(json!({
         "Version": 1, "Presets": [{"Id": "minimal", "Name": "Minimal"}]
     }))
@@ -738,7 +790,7 @@ fn shared_seed_beards_come_only_from_activity_policy_not_raw_preset_overrides() 
     ))
     .unwrap();
     let seeds = definitions["presets"].as_array().unwrap();
-    assert_eq!(seeds.len(), 18);
+    assert_eq!(seeds.len(), 17);
     let dynamic = seeds
         .iter()
         .find(|row| row["Id"] == "builtin_adventureDynamic")
@@ -748,7 +800,7 @@ fn shared_seed_beards_come_only_from_activity_policy_not_raw_preset_overrides() 
     assert_eq!(dynamic["Weights"], json!(vec![0; 12]));
     assert!(!seeds.iter().any(|row| matches!(
         row["Id"].as_str(),
-        Some("builtin_pp" | "builtin_boosts" | "builtin_zone")
+        Some("builtin_pp" | "builtin_boosts" | "builtin_zone" | "builtin_balanced")
     )));
     let mut rows = Vec::new();
     for definition in seeds
@@ -777,6 +829,151 @@ fn shared_seed_beards_come_only_from_activity_policy_not_raw_preset_overrides() 
         assert_eq!(row["BeardPriority"], policy["coreBeards"]);
         assert_eq!(row["BeardRotation"], policy["optionalBeards"]);
     }
+}
+
+#[test]
+fn shared_catalog_reviewed_resource_priorities_keep_exact_setup_goals() {
+    let definitions: Value = serde_json::from_str(include_str!(
+        "../../../NGUInjector/Data/PresetDefinitions.json"
+    ))
+    .unwrap();
+    let seeds = definitions["presets"].as_array().unwrap();
+    let expected = [
+        ("builtin_energyNgu", "Energy NGU", vec![0]),
+        ("builtin_magicNgu", "Magic NGU", vec![1]),
+        ("builtin_blood", "Blood", vec![2]),
+        ("builtin_adventureDynamic", "adventure-dynamic", vec![]),
+        ("builtin_timeMachine", "Time Machine", vec![6]),
+        ("builtin_augments", "Augments", vec![7]),
+        ("builtin_wandoos", "Wandoos", vec![8]),
+        ("builtin_advancedTraining", "Advanced Training", vec![9]),
+        ("builtin_adventurePower", "Adventure Power", vec![10]),
+        (
+            "builtin_adventureToughness",
+            "Adventure Toughness",
+            vec![11],
+        ),
+        ("builtin_allNgu", "All NGU", vec![0, 1]),
+        ("builtin_augmentsBlood", "Augments + Blood", vec![2, 7]),
+        ("builtin_atAdventure", "AT Adventure", vec![2, 9]),
+        ("builtin_atWandoos", "AT Wandoos", vec![8, 9]),
+        ("builtin_adventureStats", "Adventure Stats", vec![10, 11]),
+        ("builtin_energyCap", "Energy Cap", vec![12]),
+        ("builtin_magicCap", "Magic Cap", vec![13]),
+    ];
+    assert_eq!(seeds.len(), expected.len());
+    for (seed, (id, name, indices)) in seeds.iter().zip(expected) {
+        assert_eq!(seed["Id"], id);
+        assert_eq!(seed["Name"], name);
+        let normalized =
+            normalize_preset_library(json!({"Version": 1, "Presets": [seed]})).unwrap();
+        let row = &normalized["Presets"][0];
+        let mut weights = vec![0; 14];
+        for index in indices {
+            weights[index] = 1;
+        }
+        assert_eq!(row["Weights"], json!(weights), "setup weights for {id}");
+        assert_eq!(
+            row.get("AdventureDynamicWeight").cloned(),
+            if id == "builtin_adventureDynamic" {
+                Some(json!(1))
+            } else {
+                None
+            }
+        );
+        assert_eq!(row["AutoUpdate"], true);
+        assert_eq!(
+            row["SupportMode"],
+            if id.ends_with("Cap") {
+                "current"
+            } else {
+                "planned"
+            }
+        );
+        assert_eq!(
+            row["AdvancedTrainingWeights"],
+            if id == "builtin_atWandoos" {
+                json!([0, 0, 0, 1, 1])
+            } else {
+                json!([1, 1, 0, 0, 0])
+            }
+        );
+    }
+    for seed in seeds
+        .iter()
+        .chain(std::iter::once(&definitions["newPreset"]))
+    {
+        let (energy, magic) = match seed["Id"].as_str().unwrap_or("") {
+            "builtin_timeMachine" => ("TM,NGU,WAN,AUG,AT", "TM,RIT,NGU,WAN"),
+            "builtin_augments" => ("AUG,NGU,WAN,TM,AT", "NGU,RIT,WAN,TM"),
+            "builtin_blood" => ("NGU,WAN,TM,AUG,AT", "RIT,NGU,WAN,TM"),
+            "builtin_wandoos" => ("WAN,NGU,TM,AUG,AT", "WAN,RIT,NGU,TM"),
+            "builtin_advancedTraining" => ("AT,NGU,WAN,TM,AUG", "NGU,RIT,WAN,TM"),
+            "builtin_augmentsBlood" => ("AUG,NGU,WAN,TM,AT", "RIT,NGU,WAN,TM"),
+            "builtin_atAdventure" => ("AT,NGU,WAN,TM,AUG", "RIT,NGU,WAN,TM"),
+            "builtin_atWandoos" => ("AT,WAN,NGU,TM,AUG", "RIT,NGU,TM"),
+            _ => ("NGU,WAN,TM,AUG,AT", "NGU,RIT,WAN,TM"),
+        };
+        assert_eq!(seed["ResourcePrioritiesReviewed"], true);
+        assert_eq!(
+            seed["EnergyPriorities"],
+            json!(energy.split(',').collect::<Vec<_>>())
+        );
+        assert_eq!(
+            seed["MagicPriorities"],
+            json!(magic.split(',').collect::<Vec<_>>())
+        );
+    }
+    assert_eq!(definitions["newPreset"]["Name"], "All NGU");
+    assert_eq!(
+        definitions["newPreset"]["Weights"],
+        json!([1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    );
+}
+
+#[test]
+fn catalog_changes_do_not_migrate_saved_builtins_or_balanced_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("presets.json");
+    let original = json!({"Version": 1, "Presets": [
+        {"Id": "builtin_balanced", "Name": "Balanced", "Weights": [1,1,1,1,1,1,1,1,1,1,1,1]},
+        {"Id": "builtin_allNgu", "Name": "All NGU", "Weights": [1,1,0,0,0,0,0,0,0,0,0,0], "BeardPriority": [1,3,5,6], "BeardRotation": [0,2,4]}
+    ], "MigrationReceipts": {"historical-hash": {"PresetId": "deleted", "Future": serde_json::from_str::<Value>("900719925474099312345").unwrap()}}});
+    write_json_atomic(&path, &original, false).unwrap();
+    let plan_path = plan_path(dir.path(), "balanced").unwrap();
+    write_json_atomic(
+        &plan_path,
+        &json!({"ActivePresetId": "builtin_balanced", "Stages": [{"PresetId": "@active"}]}),
+        false,
+    )
+    .unwrap();
+    let plan_before = fs::read(&plan_path).unwrap();
+    let before = fs::read(&path).unwrap();
+    let loaded = read(dir.path());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(loaded["Presets"].as_array().unwrap().len(), 2);
+    for row in loaded["Presets"].as_array().unwrap() {
+        for field in [
+            "ResourcePrioritiesReviewed",
+            "EnergyPriorities",
+            "MagicPriorities",
+        ] {
+            assert!(
+                row.get(field).is_none(),
+                "offline read must not adopt {field}"
+            );
+        }
+    }
+    save(dir.path(), &loaded).unwrap();
+    let reread = read(dir.path());
+    assert_eq!(reread["Presets"], loaded["Presets"]);
+    assert_eq!(reread["MigrationReceipts"], original["MigrationReceipts"]);
+    assert_eq!(fs::read(&plan_path).unwrap(), plan_before);
+    let mut removed = reread;
+    removed["Presets"].as_array_mut().unwrap().remove(0);
+    assert!(save(dir.path(), &removed)
+        .unwrap_err()
+        .contains("builtin_balanced"));
 }
 
 #[test]
@@ -1563,7 +1760,7 @@ fn referenced_plans_require_valid_schema_offline_and_global_capability_when_queu
         .unwrap_err()
         .contains("DurationSeconds"));
     plan["Stages"][0]["DurationSeconds"] = json!(0);
-    let mut runtime = json!({"externalUiEnabled": true, "status": "running", "updatedAt": Utc::now().to_rfc3339(), "protocolVersion": 3, "stageTimingVersion": 1, "globalNguWeightsVersion": 1, "planVersion": 17, "supportedCommands": ["readPlan", "savePlan", "createPlan"]});
+    let mut runtime = json!({"externalUiEnabled": true, "status": "running", "updatedAt": Utc::now().to_rfc3339(), "protocolVersion": 3, "stageTimingVersion": 1, "globalNguWeightsVersion": 1, "planVersion": 18, "fightScheduleVersion": 1, "supportedCommands": ["readPlan", "savePlan", "createPlan"]});
     for (command, args) in [
         (
             "savePlan",
@@ -2054,7 +2251,7 @@ fn inherited_stages_require_global_capability_before_queueing() {
     let mut plan = default_plan();
     plan["ActivePresetId"] = json!("energy");
     plan["Stages"][0]["PresetId"] = json!("@active");
-    let mut runtime = json!({"externalUiEnabled": true, "status": "running", "updatedAt": Utc::now().to_rfc3339(), "protocolVersion": 3, "stageTimingVersion": 1, "globalNguWeightsVersion": 1, "planVersion": 17, "supportedCommands": ["readPlan", "savePlan", "createPlan"]});
+    let mut runtime = json!({"externalUiEnabled": true, "status": "running", "updatedAt": Utc::now().to_rfc3339(), "protocolVersion": 3, "stageTimingVersion": 1, "globalNguWeightsVersion": 1, "planVersion": 18, "fightScheduleVersion": 1, "supportedCommands": ["readPlan", "savePlan", "createPlan"]});
     for (command, args) in [
         (
             "savePlan",

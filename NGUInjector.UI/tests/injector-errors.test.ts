@@ -41,6 +41,15 @@ describe('injector error projection', () => {
     expect(injectorErrors(value)).toEqual([]);
   });
 
+  it('surfaces explicitly blocked allocation even when its executor is waiting, and observation failures', () => {
+    const value = state({ resourceAllocation: { state: 'Waiting', blocked: true, owner: 'stage:24hr', reason: 'Preset allocation blocked: route changed.' },
+      execution: { status: 'error', available: false, waitingReason: 'Native resource observations failed.' } });
+    expect(injectorErrors(value).map(error => error.message)).toEqual(['Preset allocation blocked: route changed.', 'Native resource observations failed.']);
+    value.snapshot.runtime.resourceAllocation = { state: 'Applied', blocked: false };
+    value.snapshot.runtime.execution = {};
+    expect(injectorErrors(value)).toEqual([]);
+  });
+
   it('uses the running plan and only its active failed stage, not historical or pending stages', () => {
     const value = state({ status: 'running', settings: { useCustomRebirthPlan: true, customPlanFile: '24hr' },
       planProgress: { status: 'running', planName: '24hr', activeStageIndex: 1, stages: [
@@ -58,9 +67,9 @@ describe('injector error projection', () => {
       execution: { support: { desiredFeasible: false, reason: 'Insufficient gold for selected support.' } },
       executionReview: { reviewRequired: true, reason: 'Selected gear is missing.' },
       combatPrep: { status: 'failed', cleanupRecoveryRequired: true, cleanupRecoveryReason: 'Checkpoint access denied.' },
-      bloodGoals: { status: 'error', reason: 'Ritual estimate failed.' }, ironPill: { status: 'blocked', reason: 'Cooldown.' }
+      bloodGoals: { status: 'error', reason: 'Ritual estimate failed.' }, ironPill: { status: 'blocked', reason: 'Cooldown.' }, nguAllocation: { status: 'error', available: false, reason: 'NGU observation failed.' }
     });
-    expect(injectorErrors(value).map(error => error.message)).toEqual(['Insufficient gold for selected support.', 'Selected gear is missing.', 'Checkpoint access denied.', 'Allocation rejected.', 'Ritual estimate failed.']);
+    expect(injectorErrors(value).map(error => error.message)).toEqual(['Insufficient gold for selected support.', 'Selected gear is missing.', 'Checkpoint access denied.', 'Allocation rejected.', 'Ritual estimate failed.', 'NGU observation failed.']);
   });
 
   it('shows command, save and poll failures together without duplicating the controller error', () => {
@@ -71,6 +80,25 @@ describe('injector error projection', () => {
     value.pollError = 'Runtime read denied.';
     value.error = value.pollError;
     expect(injectorErrors(value).map(error => error.message)).toEqual(['Save command rejected.', 'Settings revision changed.', 'Runtime read denied.']);
+  });
+
+  it('identifies persisted command failures as earlier receipts even after a later successful read', () => {
+    const value = state({ status: 'running', startedAt: '2026-10-24T11:26:10Z', execution: { lifecycle: 'Running' }, automationErrors: [] });
+    value.snapshot.command_results = [
+      { id: 'old-read', command: 'readPlan', success: false, message: 'Execution is quiesced; ordinary commands are not admitted.', completed_at: '2026-10-24T11:25:00Z' },
+      { id: 'new-read', command: 'readPlan', success: true, message: 'Plan read and normalized.', completed_at: '2026-10-24T12:50:00Z' }
+    ];
+    const before = stringifyJson(value);
+    const errors = injectorErrors(value);
+    expect(errors.map(error => [error.context, error.message])).toEqual([['Earlier command failed: readPlan', 'Execution is quiesced; ordinary commands are not admitted.']]);
+    expect(errors[0].details).toContain('old-read');
+    expect(errors[0].details).toContain('2026-10-24T11:25:00Z');
+    expect(stringifyJson(value)).toBe(before);
+  });
+
+  it('does not treat a quiescence message as grounds to hide a reported execution fault', () => {
+    const value = state({ execution: { domains: { Route: { state: 'Failed', reason: 'Execution is quiesced; ordinary commands are not admitted.' } } } });
+    expect(injectorErrors(value).map(error => [error.context, error.message])).toEqual([['Route', 'Execution is quiesced; ordinary commands are not admitted.']]);
   });
 
   it('accepts missing and unknown older telemetry without inventing errors or defaults', () => {

@@ -134,7 +134,6 @@ namespace NGUInjector
             _customTitanGoldProcess.SelectedMaterial = material;
             _customTitanGoldProcess.Applied = false;
             // The same acquired definition is retried after bounded partial/render failures.
-            PersistRouteExecutionCommitments();
             ApplyRouteProcess(_customTitanGoldProcess);
         }
 
@@ -300,7 +299,6 @@ namespace NGUInjector
             if (index < 0 || index >= _customTitanAutokillCooldownUntil.Length) return;
             _customTitanAutokillCooldownUntil[index] = DateTime.UtcNow.AddSeconds(CustomTitanAutokillFailureCooldownSeconds);
             _customTitanAutokillCooldownReason[index] = reason;
-            PersistRouteExecutionCommitments();
             var warning = $"WARNING: Titan autokill failed for {ZoneName(ZoneHelpers.TitanZones[index])}; retry in one hour. {reason}";
             Log(warning); SetCustomAutomationStatus(warning); settingsForm?.ReportCustomError(warning);
         }
@@ -327,7 +325,6 @@ namespace NGUInjector
             _customTitanGoldActive = false; _customTitanGoldProcess = null; _customTitanGoldIndex = -1;
             _customTitanGoldSpawns?.Clear(); _customTitanGoldReadiness = null; _customTitanGoldUsesGoldGear = false;
             _customTitanGoldPendingIndex = -1;
-            PersistRouteExecutionCommitments();
             Log("Titan gold auto-kill ended: " + reason);
         }
 
@@ -335,7 +332,6 @@ namespace NGUInjector
         {
             if (!_customTitanFightActive || !EndRouteProcess(_customTitanFightProcess)) return;
             _customTitanFightActive = false; _customTitanFightProcess = null; _customTitanFightIndex = -1; _customTitanFightReadiness = null;
-            PersistRouteExecutionCommitments();
             Log("Titan autokill route ended: " + reason);
         }
     }

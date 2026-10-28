@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { JsonObject, NguiState } from '../src/lib/api';
-import { canCommand, diffObject, equal, freshEdits, freshPlan, heartbeat, longTarget, mergePatch, parseNumber, planDeletionReason, pollResult, reorderStages, validateAugmentArgs, validatePlan, validatePriorities, validateSettings } from '../src/lib/model';
+import { builtInPlans, canCommand, diffObject, equal, freshEdits, freshPlan, heartbeat, longTarget, mergePatch, parseNumber, planDeletionReason, pollResult, reorderStages, validateAugmentArgs, validatePlan, validatePriorities, validateSettings } from '../src/lib/model';
 
 const plan = (): JsonObject => ({
   Version: 14, __externalUiRevision: 'a'.repeat(64), Name: 'test', GearGoal: 9, ActiveGoalPresetIndex: 0, GoalPresets: [{ Name: 'Default', GearGoal: 9, FuturePreset: true }],
@@ -43,6 +43,27 @@ describe('patches and fresh snapshots', () => {
 });
 
 describe('plan validation', () => {
+  it.each([undefined, 0, 900, 2147483647])('retains optional RebirthPrepStartSeconds without changing unknown fields: %s', RebirthPrepStartSeconds => {
+    const value = plan();
+    if (RebirthPrepStartSeconds !== undefined) value.RebirthPrepStartSeconds = RebirthPrepStartSeconds;
+    const before = structuredClone(value);
+    validatePlan(value);
+    expect(value).toEqual(before);
+  });
+  it.each([null, -1, 1.5, 2147483648, NaN, Infinity, '900', true, {}, []])('rejects invalid RebirthPrepStartSeconds: %s', RebirthPrepStartSeconds => {
+    expect(() => validatePlan({ ...plan(), RebirthPrepStartSeconds })).toThrow('RebirthPrepStartSeconds');
+  });
+  it.each([undefined, false, true])('retains optional UseWandoosWhenTimeMachineLocked without changing unknown fields: %s', UseWandoosWhenTimeMachineLocked => {
+    const row: JsonObject = { Name: 'Time Machine', Future: { keep: 42 } };
+    if (UseWandoosWhenTimeMachineLocked !== undefined) row.UseWandoosWhenTimeMachineLocked = UseWandoosWhenTimeMachineLocked;
+    const value = { ...plan(), Stages: [row], StageLoopStartIndex: -1 };
+    const before = structuredClone(value);
+    validatePlan(value);
+    expect(value).toEqual(before);
+  });
+  it.each([null, 0, 1, 'true', {}, []])('rejects a non-boolean UseWandoosWhenTimeMachineLocked: %s', UseWandoosWhenTimeMachineLocked => {
+    expect(() => validatePlan({ ...plan(), Stages: [{ UseWandoosWhenTimeMachineLocked }], StageLoopStartIndex: -1 })).toThrow('Stage 1 UseWandoosWhenTimeMachineLocked must be boolean');
+  });
   it.each([undefined, false, true])('retains optional FightOnEntry without migrating the plan: %s', FightOnEntry => {
     const row: JsonObject = { Name: 'After augments' };
     if (FightOnEntry !== undefined) row.FightOnEntry = FightOnEntry;
@@ -129,8 +150,22 @@ describe('augment command arguments', () => {
 
 describe('plan deletion safeguards', () => {
   const state = (): NguiState => ({ runtime_dir: 'A:/runtime', marker_enabled: true, connected: true, protocol: {}, settings: {}, runtime: { externalUiEnabled: true, status: 'running', updatedAt: new Date().toISOString(), protocolVersion: 3, supportedCommands: ['deletePlan'], settings: { customPlanFile: 'custom', useCustomRebirthPlan: true } }, profiles: [], plans: ['default', 'custom', 'other'], logs: [], command_results: [] });
-  it.each(['default', '24hr', '1h-3m-rebirth', 'infinite', 'DEFAULT'])('protects builtin %s even offline', name => {
-    expect(planDeletionReason({ ...state(), connected: false }, name)).toContain('Built-in plans cannot be deleted');
+  it('exposes exactly the current built-in catalog and labels', () => {
+    expect(builtInPlans).toEqual([
+      { name: '24hr', label: '24h NGU' },
+      { name: '15m-NUMBER-increase', label: '15m NUMBER' },
+      { name: '30m-NUMBER-increase', label: '30m NUMBER' },
+      { name: '1h-1m-NUMBER-increase', label: '1h1m NUMBER' }
+    ]);
+  });
+  it.each(['24hr', '15m-NUMBER-increase', '30m-NUMBER-increase', '1h-1m-NUMBER-increase'])('protects builtin %s case-insensitively even offline', name => {
+    for (const variant of [name, name.toUpperCase(), name.toLowerCase()]) {
+      expect(planDeletionReason({ ...state(), connected: false }, variant)).toContain('Built-in plans cannot be deleted');
+    }
+  });
+  it.each(['default', 'DEFAULT', '1h-3m-rebirth', 'infinite', 'Infinite'])('allows deletion of retired builtin %s when other guards pass', name => {
+    expect(planDeletionReason(state(), name)).toBe('');
+    expect(planDeletionReason({ ...state(), connected: false }, name)).toBe('');
   });
   it('protects the actual running plan even if a pending patch would stop it', () => {
     expect(planDeletionReason(state(), 'CUSTOM', Date.now(), { _useCustomRebirthPlan: false })).toContain('active running plan');
@@ -238,6 +273,29 @@ describe('heartbeat and command results', () => {
     expect(canCommand(state(0), 'optimizeGear', 10000)).toBe(false);
     expect(canCommand({ ...state(0), runtime: { ...state(0).runtime, protocolVersion: 1 } }, 'focusGoal', 10000)).toBe(false);
     expect(canCommand({ ...state(0), runtime: { ...state(0).runtime, protocolVersion: 2 } }, 'focusGoal', 10000)).toBe(false);
+  });
+  it.each(['LoadingSave', 'Quiescing', 'Unloaded', 'FutureLifecycle', '', null])('blocks ordinary commands during execution lifecycle %s without declaring transport disconnected', lifecycle => {
+    const snapshot = state(0);
+    snapshot.runtime.execution = { lifecycle };
+    const commands = ['readPlan', 'savePlan', 'applySettingsPatch', 'focusGoal'];
+    snapshot.runtime.supportedCommands = commands;
+    expect(heartbeat(snapshot, 10000).connected).toBe(true);
+    for (const command of commands) expect(canCommand(snapshot, command, 10000)).toBe(false);
+  });
+  it('admits ordinary commands after execution reaches Running', () => {
+    const snapshot = state(0);
+    snapshot.runtime.execution = { lifecycle: 'Running' };
+    expect(canCommand(snapshot, 'focusGoal', 10000)).toBe(true);
+  });
+  it.each(['status', 'unload', 'restoreSaveTest'])('retains the injector quiescence exception for advertised %s only on a fresh bridge', command => {
+    const snapshot = state(0);
+    snapshot.runtime.execution = { lifecycle: 'LoadingSave' };
+    expect(canCommand(snapshot, command, 10000)).toBe(false);
+    snapshot.runtime.supportedCommands = [command];
+    expect(canCommand(snapshot, command, 10000)).toBe(true);
+    expect(canCommand(snapshot, command, 16000)).toBe(false);
+    snapshot.runtime.protocolVersion = 2;
+    expect(canCommand(snapshot, command, 10000)).toBe(false);
   });
   it('awaits a result and retains gear data', async () => {
     vi.useFakeTimers();
